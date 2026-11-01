@@ -665,6 +665,7 @@ fn unused_follows_csharp_and_php_namespaces() {
     assert!(!out.contains("Infra/Helper.cs:1"), "{out}");
 
     let (_tmp, root) = fixture("php");
+    composer_install(&root);
     fs::write(
         root.join("easement.yml"),
         "version: 1\ncomponents:\n  web: { in: src/Web }\n  infra: { in: src/Infra }\n  domain: { in: src/Domain }\nentry: [src/Web/OrderController.php]\n",
@@ -1015,6 +1016,19 @@ fn no_scip_ruby_here() -> bool {
     cfg!(all(target_os = "linux", target_arch = "aarch64")) && which::which("scip-ruby").is_err()
 }
 
+/// scip-php reads the autoloader, so the (empty) dependencies of a PHP
+/// fixture have to be installed.
+fn composer_install(root: &Path) {
+    // `which` finds composer.bat on Windows, which `Command` alone does not.
+    let composer = which::which("composer").expect("composer is needed for the PHP indexer");
+    let status = std::process::Command::new(composer)
+        .args(["install", "--no-interaction", "--quiet"])
+        .current_dir(root)
+        .status()
+        .expect("composer runs");
+    assert!(status.success(), "composer install");
+}
+
 /// Every layered fixture has one forbidden import, web -> infra, and allowed ones
 /// that must be seen: the count of internal dependencies proves the adapter resolved them.
 fn layered(name: &str, file: &str, target: &str, internal_deps: u64) {
@@ -1031,15 +1045,7 @@ fn layered(name: &str, file: &str, target: &str, internal_deps: u64) {
         .unwrap();
     }
     if name == "php" {
-        // scip-php reads the autoloader, so the (empty) dependencies have to be installed.
-        // `which` finds composer.bat on Windows, which `Command` alone does not.
-        let composer = which::which("composer").expect("composer is needed for the PHP indexer");
-        let status = std::process::Command::new(composer)
-            .args(["install", "--no-interaction", "--quiet"])
-            .current_dir(&root)
-            .status()
-            .expect("composer runs");
-        assert!(status.success(), "composer install");
+        composer_install(&root);
     }
     let (found, stats) = violations(&root);
     assert_eq!(
