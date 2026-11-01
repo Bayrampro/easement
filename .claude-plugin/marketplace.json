@@ -1,0 +1,17 @@
+{
+  "name": "easement",
+  "description": "The easement skill: keeps code inside the architecture declared in easement.yml",
+  "owner": {
+    "name": "Kirill Mokevnin",
+    "url": "https://github.com/mokevnin"
+  },
+  "plugins": [
+    {
+      "name": "easement",
+      "source": ".",
+      "description": "Teaches the agent to work with easement: explain before adding code, check after, fix violations by their reason",
+      "homepage": "https://github.com/mokevnin/easement",
+      "license": "MIT"
+    }
+  ]
+}
