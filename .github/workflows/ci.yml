@@ -116,13 +116,6 @@ jobs:
           composer global require "davidrjenni/scip-php:dev-main#71a5b117ec4c5dd2af302e363410e604e5df309e" --no-interaction --prefer-source
           composer global config bin-dir --absolute --quiet >> "$GITHUB_PATH"
 
-      # The wrapper of scip-java needs bash 4.4 or newer; the bash of macOS is 3.2.
-      - name: Install a current bash
-        if: runner.os == 'macOS'
-        run: |
-          brew install bash
-          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
-
       # scip-java wraps javac in a bash script that needs bash 4.4; macOS ships 3.2.
       - name: Install a current bash
         if: runner.os == 'macOS'
