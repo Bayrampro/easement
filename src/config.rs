@@ -321,7 +321,8 @@ pub struct Rule {
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let value = load_value(path, &mut Vec::new())?;
-        let config: Config = serde_norway::from_value(value)
+        // The merged value has no line numbers, so the error names the path to the field.
+        let config: Config = serde_path_to_error::deserialize(value)
             .with_context(|| format!("invalid config {}", path.display()))?;
         let config = config.with_tests()?;
         config.validate()?;
@@ -825,6 +826,22 @@ rules:
         // Only keys that start with `x-` are free; a typo is still an error.
         std::fs::write(&path, "version: 1\ncomponents:\n  a: { in: a }\nban: {}\n").unwrap();
         assert!(Config::load(&path).is_err());
+    }
+
+    #[test]
+    fn a_config_error_names_the_path_to_the_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("easement.yml");
+        std::fs::write(
+            &path,
+            "version: 1\ncomponents:\n  a: { in: a }\n  b: { in: b, publik: [x] }\n",
+        )
+        .unwrap();
+        let err = format!("{:#}", Config::load(&path).unwrap_err());
+        assert!(
+            err.contains("components.b.publik: unknown field `publik`"),
+            "{err}"
+        );
     }
 
     #[test]
