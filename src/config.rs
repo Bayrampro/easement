@@ -34,7 +34,7 @@ pub struct Config {
     /// Components from the top layer to the bottom one: a layer may depend on
     /// any layer below it, never on one above.
     #[serde(default)]
-    pub layers: Vec<String>,
+    pub layers: Vec<Layer>,
     /// Fail on files that belong to no component.
     #[serde(default)]
     pub strict: bool,
@@ -218,6 +218,38 @@ pub struct Component {
     /// Who to ask about the component and its rules: a team, a person.
     #[serde(default)]
     pub owner: Option<String>,
+}
+
+/// One layer of `layers`: a component, sibling components that do not
+/// depend on each other, or a closed component that the layers above it
+/// cannot reach past.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum Layer {
+    One(String),
+    Siblings(Vec<String>),
+    Closed(ClosedLayer),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClosedLayer {
+    name: String,
+    #[serde(default)]
+    closed: bool,
+}
+
+impl Layer {
+    pub fn names(&self) -> Vec<&str> {
+        match self {
+            Layer::One(name) | Layer::Closed(ClosedLayer { name, .. }) => vec![name],
+            Layer::Siblings(names) => names.iter().map(String::as_str).collect(),
+        }
+    }
+
+    fn closed(&self) -> bool {
+        matches!(self, Layer::Closed(ClosedLayer { closed: true, .. }))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -511,7 +543,7 @@ impl Config {
             }
         }
         let mut layers = BTreeSet::new();
-        for name in &self.layers {
+        for name in self.layers.iter().flat_map(Layer::names) {
             check(name, "layers")?;
             if !layers.insert(name) {
                 bail!("component `{name}` is listed twice in layers");
@@ -611,10 +643,12 @@ impl Config {
         }
     }
 
-    /// Whether `from` is a higher layer than `to`.
+    /// Whether `from` is a higher layer than `to`, with no closed layer between.
     fn above(&self, from: &str, to: &str) -> bool {
-        let at = |name: &str| self.layers.iter().position(|l| l == name);
-        matches!((at(from), at(to)), (Some(f), Some(t)) if f < t)
+        let at = |name: &str| self.layers.iter().position(|l| l.names().contains(&name));
+        // A closed layer between them stops the layers above from reaching past it.
+        matches!((at(from), at(to)), (Some(f), Some(t))
+            if f < t && !self.layers[f + 1..t].iter().any(Layer::closed))
     }
 }
 
@@ -810,6 +844,38 @@ rules:
         assert!(c.allows("c", "m"));
         assert!(!c.allows("a", "c"));
         assert!(!c.allows("b", "a"));
+    }
+
+    #[test]
+    fn sibling_layers_are_independent_and_a_closed_layer_cannot_be_skipped() {
+        let c = parse(
+            "version: 1
+components:
+  web: { in: web }
+  api: { in: api }
+  jobs: { in: jobs }
+  service: { in: service }
+  repo: { in: repo }
+layers:
+  - web
+  - [api, jobs]
+  - { name: service, closed: true }
+  - repo
+",
+        )
+        .unwrap();
+        assert!(c.allows("web", "api"));
+        assert!(!c.allows("api", "jobs"));
+        assert!(!c.allows("jobs", "api"));
+        assert!(c.allows("api", "service"));
+        assert!(c.allows("service", "repo"));
+        // Nothing above `service` reaches past it.
+        assert!(!c.allows("api", "repo"));
+        assert!(!c.allows("web", "repo"));
+        assert!(!c.allows("repo", "web"));
+        let twice =
+            "version: 1\ncomponents:\n  a: { in: a }\n  b: { in: b }\nlayers: [a, [a, b]]\n";
+        assert!(format!("{:#}", parse(twice).unwrap_err()).contains("twice"));
     }
 
     #[test]

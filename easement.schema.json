@@ -52,12 +52,23 @@
       }
     },
     "layers": {
-      "description": "Components from the top layer to the bottom one: a layer may depend on any layer below it, never on one above.",
+      "description": "Components from the top layer to the bottom one: a layer may depend on any layer below it, never on one above. A list in place of a name holds sibling components of one layer, which do not depend on each other; {name, closed: true} is a layer the ones above cannot reach past.",
       "type": "array",
       "items": {
-        "type": "string"
-      },
-      "uniqueItems": true
+        "oneOf": [
+          { "type": "string" },
+          { "type": "array", "items": { "type": "string" }, "minItems": 2 },
+          {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "closed": { "type": "boolean" }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+          }
+        ]
+      }
     },
     "no_cycles": {
       "description": "Fail on dependency cycles between components: true for all, or a list of components.",

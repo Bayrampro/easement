@@ -276,7 +276,19 @@ rules:
     because: handlers go through services
 ```
 
-A layer may depend on every layer below it and never on one above. `must_not_depend_on` wins over everything that would allow the dependency: `may_depend_on`, `common` and `layers`. Its violations read `handler -> repository is forbidden`.
+A layer may depend on every layer below it and never on one above. Two more shapes refine that:
+
+```yaml
+layers:
+  - web
+  - [api, jobs]                      # siblings: one layer, never each other
+  - { name: service, closed: true }  # the layers above go through it
+  - repository
+```
+
+A list puts sibling components in one layer: both may use the layers below, neither the other. A closed layer cannot be skipped: `api` may use `service` but not `repository`, which only `service` reaches.
+
+`must_not_depend_on` wins over everything that would allow the dependency: `may_depend_on`, `common` and `layers`. Its violations read `handler -> repository is forbidden`.
 
 An item of `must_not_depend_on` and `forbid_external` can carry a reason of its own, which is printed instead of the `because` of the rule:
 
