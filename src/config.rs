@@ -54,6 +54,10 @@ pub struct Config {
     /// import anything.
     #[serde(default)]
     pub tests: Option<TestsMode>,
+    /// Files the program starts from (`cmd/**`, `src/main.ts`): with it, a
+    /// file of a component that no chain of imports from them reaches is `unused`.
+    #[serde(default)]
+    pub entry: Vec<String>,
     /// Rules whose violations are reported as warnings and do not fail the check.
     #[serde(default)]
     pub warn: Vec<String>,
@@ -78,7 +82,7 @@ pub enum TestsMode {
 pub const TESTS: &str = "tests";
 
 /// Test files by the conventions of the supported languages.
-const TEST_PATTERNS: &[&str] = &[
+pub const TEST_PATTERNS: &[&str] = &[
     "**/*_test.go",
     "**/*.test.*",
     "**/*.spec.*",
@@ -503,6 +507,7 @@ impl Config {
             self.target_only.iter().map(String::as_str).collect(),
         )?;
         plain("unowned", self.unowned.iter().map(String::as_str).collect())?;
+        plain("entry", self.entry.iter().map(String::as_str).collect())?;
         plain(
             "uncovered_ok",
             self.uncovered_ok

@@ -56,15 +56,29 @@
       "type": "array",
       "items": {
         "oneOf": [
-          { "type": "string" },
-          { "type": "array", "items": { "type": "string" }, "minItems": 2 },
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2
+          },
           {
             "type": "object",
             "properties": {
-              "name": { "type": "string" },
-              "closed": { "type": "boolean" }
+              "name": {
+                "type": "string"
+              },
+              "closed": {
+                "type": "boolean"
+              }
             },
-            "required": ["name"],
+            "required": [
+              "name"
+            ],
             "additionalProperties": false
           }
         ]
@@ -91,7 +105,25 @@
     "warn": {
       "description": "Rules whose violations are reported as warnings and do not fail the check. Rules about the config, such as unmatched, cannot be listed.",
       "type": "array",
-      "items": { "enum": ["dependency", "privacy", "cycle", "external", "metric", "orphan", "isolation", "required", "file", "symbol", "unused-suppression", "suppression-reason", "excluded", "reach"] }
+      "items": {
+        "enum": [
+          "dependency",
+          "privacy",
+          "cycle",
+          "external",
+          "metric",
+          "orphan",
+          "isolation",
+          "required",
+          "file",
+          "symbol",
+          "unused-suppression",
+          "suppression-reason",
+          "excluded",
+          "reach",
+          "unused"
+        ]
+      }
     },
     "exclude": {
       "description": "Globs of paths to skip.",
@@ -113,6 +145,13 @@
     },
     "unowned": {
       "description": "Globs of files and directories that may belong to no component in strict mode.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "entry": {
+      "description": "Files the program starts from (cmd/**, src/main.ts). With it, a checked file of a component that no chain of imports from them, from a test or from a file of no component reaches fails as unused. Go is judged by package; Kotlin, Swift, Ruby, C# and PHP are not judged.",
       "type": "array",
       "items": {
         "type": "string"

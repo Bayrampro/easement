@@ -208,6 +208,7 @@ Every violation carries a rule id, used in the JSON report, the baseline and sup
 | `unmatched` | an `in` pattern of a component matches no file of the project |
 | `excluded` | a component imports a file that `exclude` hides |
 | `reach` | a component reaches one its `must_not_reach` names through a chain of imports |
+| `unused` | with `entry`, a file of a component that no chain of imports from an entry reaches |
 
 ### Public API
 
@@ -432,6 +433,24 @@ unowned: [ent, cmd, tools]
 ```
 
 Unlike `exclude`, files in `unowned` are still read, so components can depend on them. `exclude` hides files from the check altogether.
+
+### Unused files
+
+```yaml
+entry: [cmd, src/main.ts]
+warn: [unused]          # report first, gate later
+```
+
+With `entry`, a checked file of a component that no chain of imports reaches fails as `unused`, at its first line: code nothing runs. An agent may delete such a file, so the rule counts a file as used whenever it cannot be sure. The chains start from:
+
+- the `entry` files, and the files that `package.json` names in `main`, `module`, `types`, `bin` and `exports`;
+- test files (`*_test.go`, `*.test.*`, `test_*.py`, `conftest.py`, …, with or without `tests: auto`) and files of no component, which are mostly scripts;
+- what a toolchain runs by convention: a Go `package main`, `__main__.py`, `setup.py`, `build.rs`, Rust's `src/main.rs`, `src/lib.rs`, `src/bin`, `examples`, `benches` and `tests`, `.d.ts` declarations, `package-info.java`;
+- `target_only` and excluded files, whose own imports count too.
+
+Imports for a side effect (`import "./polyfill"`), `require` and `import()` of relative paths are followed in JavaScript and TypeScript. Go is judged by package, as it compiles: a file of a package that something imports is used. Python runs the `__init__.py` of every package above a module. An `entry` pattern that matches no file fails as `unmatched`, since it would make everything it reaches look unused.
+
+A file that a framework, dependency injection or reflection loads by name looks unused: add it to `entry`. The rule judges Go, TypeScript, JavaScript, Python, Rust and Java, each checked against its indexer. It takes a language's files as used, and says so with `confidence: partial`, when an indexer left some of them uncovered, for Java beside Kotlin (which uses Java classes of its package without an import), and for Kotlin, Swift, Ruby, C# and PHP. In `--diff` mode a new file nothing imports is reported; a file left dead by removing its last import is not, because no changed line points at it, so run the full check too. Start with `warn: [unused]` on an existing codebase.
 
 ### Cycles
 

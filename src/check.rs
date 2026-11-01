@@ -42,6 +42,8 @@ pub enum RuleId {
     Excluded,
     /// A chain of imports from a component to one its `must_not_reach` names.
     Reach,
+    /// A file of a component that no chain of imports from an `entry` reaches.
+    Unused,
 }
 
 impl RuleId {
@@ -62,6 +64,7 @@ impl RuleId {
             RuleId::Unmatched => "unmatched",
             RuleId::Excluded => "excluded",
             RuleId::Reach => "reach",
+            RuleId::Unused => "unused",
         }
     }
 
@@ -73,7 +76,7 @@ impl RuleId {
     }
 
     /// Every rule, in the order of the declaration.
-    pub const ALL: [RuleId; 15] = [
+    pub const ALL: [RuleId; 16] = [
         RuleId::Dependency,
         RuleId::Privacy,
         RuleId::Cycle,
@@ -89,6 +92,7 @@ impl RuleId {
         RuleId::Unmatched,
         RuleId::Excluded,
         RuleId::Reach,
+        RuleId::Unused,
     ];
 
     /// Rules that an inline comment can suppress.
@@ -200,6 +204,9 @@ pub struct Stats {
     /// name only.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub std_unknown: Vec<String>,
+    /// Why `unused` took some files as used without judging them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unused_partial: Vec<String>,
     /// Source files of an indexed language that its indexer did not cover.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub uncovered: Vec<String>,
@@ -1135,7 +1142,41 @@ pub fn unmatched(
             specifier: String::new(),
             evidence: Vec::new(),
         })
+        .chain(
+            crate::unused::unmatched_entries(config, files)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|pattern| Violation {
+                    rule: RuleId::Unmatched,
+                    file: config_file.to_string(),
+                    line: entry_line(config_text, pattern),
+                    message: format!(
+                        "`entry` pattern `{pattern}` matches no file, so everything it would reach looks unused; fix the pattern or drop it"
+                    ),
+                    because: None,
+                    from: String::new(),
+                    to: String::new(),
+                    target: pattern.to_string(),
+                    specifier: String::new(),
+                    evidence: Vec::new(),
+                }),
+        )
         .collect()
+}
+
+/// The line, counted from 1, of `pattern` under `entry:`, else 1.
+fn entry_line(text: &str, pattern: &str) -> usize {
+    let lines: Vec<&str> = text.lines().map(without_comment).collect();
+    lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("entry:"))
+        .and_then(|start| {
+            lines[start..]
+                .iter()
+                .position(|l| holds(l, pattern))
+                .map(|i| start + i + 1)
+        })
+        .unwrap_or(1)
 }
 
 /// The line, counted from 1, where `component` lists `pattern` under

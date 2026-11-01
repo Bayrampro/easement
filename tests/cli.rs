@@ -455,6 +455,184 @@ fn public_api_cycles_reasons_and_suppressions() {
 }
 
 #[test]
+fn a_file_no_entry_reaches_is_unused() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: src/app }\nentry: [src/main.ts]\n",
+        ),
+        (
+            "src/main.ts",
+            "import { a } from \"./app/a\";\nconsole.log(a);\n",
+        ),
+        (
+            "src/app/a.ts",
+            "import { b } from \"./b\";\nexport const a = b;\n",
+        ),
+        ("src/app/b.ts", "export const b = 1;\n"),
+        ("src/app/dead.ts", "export const dead = 1;\n"),
+        // Used by a test only: still used.
+        ("src/app/helper.ts", "export const helper = 1;\n"),
+        (
+            "src/app/a.test.ts",
+            "import { helper } from \"./helper\";\nexport const t = helper;\n",
+        ),
+    ]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "src/app/dead.ts:1: not reachable from any `entry`; if a framework, DI, reflection or a build tool loads it, add it to `entry` [unused]",
+        ))
+        .stdout(contains("src/app/b.ts:1").not())
+        .stdout(contains("src/app/helper.ts:1").not());
+}
+
+#[test]
+fn unused_follows_go_packages_and_python_packages() {
+    let (_tmp, root) = project(&[
+        ("go.mod", "module ex.com/m\n\ngo 1.22\n"),
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: app }\n  dead: { in: dead }\nentry: [cmd]\n",
+        ),
+        (
+            "cmd/main.go",
+            "package main\n\nimport \"ex.com/m/app\"\n\nfunc main() { app.A() }\n",
+        ),
+        (
+            "app/a.go",
+            "package app\n\nfunc A() int { return helper() }\n",
+        ),
+        // Used from a.go without an import: Go compiles the package whole.
+        (
+            "app/b.go",
+            "package app\n\nfunc helper() int { return 1 }\n",
+        ),
+        ("dead/d.go", "package dead\n\nfunc D() {}\n"),
+    ]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("dead/d.go:1: not reachable from any `entry`"))
+        .stdout(contains("app/b.go:1").not());
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: app }\nentry: [main.py]\n",
+        ),
+        ("main.py", "from app.a import a\nprint(a())\n"),
+        ("app/__init__.py", ""),
+        ("app/a.py", "def a():\n    return 1\n"),
+        ("app/dead.py", "def dead():\n    return 2\n"),
+    ]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("app/dead.py:1: not reachable from any `entry`"))
+        .stdout(contains("app/__init__.py:1").not());
+    // Kotlin sees only imports, so the rule does not judge it, and says so.
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: src/app }\nentry: [src/Main.kt]\n",
+        ),
+        ("src/Main.kt", "package main\nclass Main\n"),
+        ("src/app/A.kt", "package app\nclass A\n"),
+    ]);
+    easement(&root, &["check"])
+        .success()
+        .stdout(contains("`unused` cannot judge .kt files"));
+}
+
+#[test]
+fn unused_counts_what_tools_and_conventions_load() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: src/app }\n  gen: { in: src/gen }\nentry: [src/main.ts]\ntarget_only: [src/gen]\n",
+        ),
+        (
+            "src/main.ts",
+            "import \"./app/polyfill\";\nimport { routes } from \"./gen/routes\";\nconsole.log(routes);\n",
+        ),
+        // Run for its side effect only.
+        ("src/app/polyfill.ts", "(globalThis as any).x = 1;\n"),
+        // Used only by generated code.
+        (
+            "src/gen/routes.ts",
+            "import { page } from \"../app/page\";\nexport const routes = [page];\n",
+        ),
+        ("src/app/page.ts", "export const page = 1;\n"),
+        // Ambient declarations and a package's own `bin`.
+        ("src/app/globals.d.ts", "declare const VERSION: string;\n"),
+        ("src/app/cli.ts", "console.log(1);\n"),
+        (
+            "package.json",
+            "{\"name\": \"m\", \"bin\": {\"m\": \"src/app/cli.ts\"}}\n",
+        ),
+        ("src/app/dead.ts", "export const dead = 1;\n"),
+    ]);
+    let out = stdout_of(easement(&root, &["check"]).code(1));
+    assert!(
+        out.contains("src/app/dead.ts:1: not reachable from any `entry`"),
+        "{out}"
+    );
+    for used in ["polyfill.ts", "page.ts", "globals.d.ts", "cli.ts"] {
+        assert!(!out.contains(&format!("src/app/{used}:1")), "{used}: {out}");
+    }
+
+    // A stale `entry` would make everything unused: it fails as `unmatched`.
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: src/app }\nentry: [src/old_main.ts]\n",
+        ),
+        ("src/app/a.ts", "export const a = 1;\n"),
+    ]);
+    easement(&root, &["check"]).code(1).stdout(contains(
+        "easement.yml:4: `entry` pattern `src/old_main.ts` matches no file",
+    ));
+}
+
+#[test]
+fn unused_knows_go_programs_python_conventions_and_kotlin_beside_java() {
+    let (_tmp, root) = project(&[
+        ("go.mod", "module ex.com/m\n\ngo 1.22\n"),
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  tools: { in: tools }\nentry: [cmd]\n",
+        ),
+        ("cmd/main.go", "package main\n\nfunc main() {}\n"),
+        // A second program, outside `entry`.
+        ("tools/gen/main.go", "package main\n\nfunc main() {}\n"),
+    ]);
+    easement(&root, &["check"]).success();
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: app }\nentry: [main.py]\n",
+        ),
+        ("main.py", "print(1)\n"),
+        ("app/conftest.py", "import pytest\n"),
+        ("app/__main__.py", "print(2)\n"),
+    ]);
+    easement(&root, &["check"]).success();
+    // Kotlin uses Java classes of its package without an import.
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: src/app }\nentry: [src/Main.kt]\n",
+        ),
+        ("src/Main.kt", "package app\nfun main() { Helper() }\n"),
+        (
+            "src/app/Helper.java",
+            "package app;\npublic class Helper {}\n",
+        ),
+    ]);
+    easement(&root, &["check"]).success().stdout(contains(
+        "`unused` did not judge the java files: Kotlin beside it",
+    ));
+}
+
+#[test]
 fn layers_forbidden_externals_metrics_and_strict() {
     let (_tmp, root) = fixture("policy");
     let out = easement(&root, &["check", "--format", "json"])

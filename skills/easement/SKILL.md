@@ -39,6 +39,8 @@ Two cases are cleanup, not exceptions:
 
 Warnings (rules in `warn`) do not fail the check, but they are debt the team tolerates for now: add no new ones, and fix the ones in code you change.
 
+An `unused` violation means no chain of imports from an `entry` reaches the file. Delete it only if your own change added it; otherwise tell a human, because a framework or reflection may load it, and the fix is then an `entry`.
+
 An `excluded` violation means the code imports a file that `exclude` hides, so no rule sees the dependency. Import from a checked component instead; if the file is generated code the project needs, ask a human to move its pattern to `target_only`.
 
 An `unmatched` violation is about the config, not the code: an `in` pattern of a component points at no file, usually because the code moved. It needs a change to `easement.yml`, so tell a human which pattern it is and where the code went.

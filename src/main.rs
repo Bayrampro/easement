@@ -18,6 +18,7 @@ mod scope;
 mod stdlib;
 mod suggest;
 mod suppress;
+mod unused;
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -245,6 +246,19 @@ impl Project {
             &scan.paths,
             &scan.all_files,
         ));
+        let unused = unused::unused(&unused::Input {
+            config: &self.config,
+            map: &map,
+            root: &self.root,
+            deps: &scan.deps,
+            unread_deps: &scan.unread_deps,
+            unread: &scan.unread,
+            paths: &scan.paths,
+            all_files: &scan.all_files,
+            uncovered: &scan.uncovered,
+        })?;
+        violations.extend(unused.violations);
+        stats.unused_partial = unused.reasons;
         stats.files = scan
             .paths
             .iter()

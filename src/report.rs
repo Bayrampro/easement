@@ -47,6 +47,7 @@ fn confidence_reasons(stats: &Stats, changes: Option<&Changes>) -> Vec<String> {
             stats.limited_to.join(", ")
         ));
     }
+    reasons.extend(stats.unused_partial.iter().cloned());
     if !stats.std_unknown.is_empty() {
         reasons.push(format!(
             "`$std` cannot tell the standard library of .{} files, so their standard imports count as other modules; name those modules instead",
@@ -212,6 +213,15 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
                 "  … and {} more (all of them in `--format json`, `stats.uncovered`)\n",
                 stats.uncovered.len() - UNCOVERED_SHOWN
             ));
+        }
+    }
+    if !stats.unused_partial.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        for reason in &stats.unused_partial {
+            out.push_str(&paint(color, YELLOW, reason));
+            out.push('\n');
         }
     }
     if !stats.std_unknown.is_empty() {

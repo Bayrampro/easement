@@ -55,6 +55,11 @@ pub struct Scan {
     /// Every checked file, relative to the root with `/` separators.
     pub paths: Vec<String>,
     pub deps: Vec<Dep>,
+    /// Imports in files the checks do not read (`target_only`, excluded):
+    /// not judged, but they still reach a file.
+    pub unread_deps: Vec<Dep>,
+    /// The `target_only` and excluded files the walk saw.
+    pub unread: Vec<String>,
     pub symbols: Vec<SymbolRef>,
     pub suppressions: Vec<Suppression>,
     /// Source files of an indexed language that the indexer did not cover,
@@ -194,7 +199,19 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         let file = slash(file);
         project.contains(file.as_str()) && !target_only.is_match(&file)
     };
-    deps.extend(facts.deps.into_iter().filter(|dep| is_source(&dep.file)));
+    let (sources, unread_deps): (Vec<Dep>, Vec<Dep>) =
+        facts.deps.into_iter().partition(|dep| is_source(&dep.file));
+    deps.extend(sources);
+    let mut unread_deps = unread_deps;
+    unread_deps.extend(scip::facts(&hidden, &documents, false).deps);
+    let mut unread: Vec<String> = excluded.iter().cloned().collect();
+    unread.extend(
+        all_files
+            .iter()
+            .filter(|f| target_only.is_match(f.as_str()))
+            .cloned(),
+    );
+    unread.sort();
     let symbols = facts
         .symbols
         .into_iter()
@@ -209,6 +226,8 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         all_files,
         paths,
         deps,
+        unread_deps,
+        unread,
         symbols,
         suppressions,
         uncovered: indexed.uncovered,
