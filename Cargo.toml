@@ -56,6 +56,7 @@ assets = [
 assert_cmd = "2.2.2"
 insta = { version = "1.49.0", features = ["json"] }
 predicates = "3.1.4"
+schemars = "1.2.3"
 serde_json = "1.0.154"
 
 # The profile that 'dist' will build with

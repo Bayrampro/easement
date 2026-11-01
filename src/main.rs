@@ -719,4 +719,79 @@ mod tests {
             .collect();
         assert_eq!(listed, rules);
     }
+
+    /// The schema is written by hand, for the descriptions editors show; the
+    /// fields come from the config types, so a field the schema misses fails here.
+    #[test]
+    fn the_schema_has_every_field_of_the_config() {
+        let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
+        let generated = serde_json::to_value(
+            schemars::generate::SchemaSettings::draft07()
+                .into_generator()
+                .into_root_schema_for::<crate::config::Config>(),
+        )
+        .unwrap();
+        let keys = |object: &serde_json::Value| -> Vec<String> {
+            let mut keys: Vec<String> = object["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("no properties in {object}"))
+                .keys()
+                .cloned()
+                .collect();
+            keys.sort();
+            keys
+        };
+        // The form of a `oneOf` that is an object, wherever the schema lists it.
+        let object_in = |one_of: &serde_json::Value| -> serde_json::Value {
+            one_of
+                .as_array()
+                .and_then(|forms| forms.iter().find(|f| f.get("properties").is_some()))
+                .unwrap_or_else(|| panic!("no object among {one_of}"))
+                .clone()
+        };
+        let defs = &generated["definitions"];
+        let mut root = keys(&generated);
+        // `extends` is merged away before the config is read into its type.
+        root.push("extends".into());
+        root.sort();
+        assert_eq!(keys(&schema), root, "the top level");
+        for (generated, written, what) in [
+            (
+                &defs["GoSettings"],
+                schema["properties"]["go"].clone(),
+                "go",
+            ),
+            (
+                &defs["Component"],
+                schema["definitions"]["component"].clone(),
+                "a component",
+            ),
+            (
+                &defs["Rule"],
+                schema["definitions"]["rule"].clone(),
+                "a rule",
+            ),
+            (
+                &defs["NamedLayer"],
+                object_in(&schema["properties"]["layers"]["items"]["oneOf"]),
+                "a named layer",
+            ),
+            (
+                &defs["Reasoned"],
+                object_in(&schema["definitions"]["listed"]["oneOf"]),
+                "a name with a reason",
+            ),
+            (
+                &defs["AcceptedGlobs"],
+                object_in(&schema["definitions"]["accepted"]["oneOf"]),
+                "an uncovered_ok entry",
+            ),
+        ] {
+            assert_eq!(keys(&written), keys(generated), "{what}");
+        }
+        assert_eq!(
+            schema["properties"]["tests"]["enum"], defs["TestsMode"]["enum"],
+            "the values of tests"
+        );
+    }
 }

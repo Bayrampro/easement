@@ -11,6 +11,7 @@ pub const DEFAULT_CONFIG: &str = "easement.yml";
 pub const DEFAULT_BASELINE: &str = "easement.baseline.yml";
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
@@ -66,6 +67,7 @@ pub struct Config {
 /// Go files behind a build constraint (`//go:build race`) are indexed, and so
 /// seen, only for the tags the indexer builds with.
 #[derive(Debug, Default, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct GoSettings {
     #[serde(default)]
@@ -73,6 +75,7 @@ pub struct GoSettings {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TestsMode {
     Auto,
@@ -102,6 +105,7 @@ pub const TEST_PATTERNS: &[&str] = &[
 /// A name in a rule's list, optionally with a reason of its own that is shown
 /// instead of the reason of the whole rule.
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum Listed {
     Plain(String),
@@ -109,6 +113,7 @@ pub enum Listed {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Reasoned {
     name: String,
@@ -134,6 +139,7 @@ impl Listed {
 /// An `uncovered_ok` entry: a glob, or `name` with one glob or a list of them
 /// that share a reason.
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum Accepted {
     Plain(String),
@@ -141,6 +147,7 @@ pub enum Accepted {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AcceptedGlobs {
     name: OneOrMany,
@@ -150,6 +157,7 @@ pub struct AcceptedGlobs {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(untagged)]
 enum OneOrMany {
     One(String),
@@ -169,6 +177,7 @@ impl Accepted {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum NoCycles {
     #[default]
@@ -188,6 +197,7 @@ impl NoCycles {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Component {
     #[serde(rename = "in")]
@@ -229,6 +239,7 @@ pub struct Component {
 /// depend on each other, or a closed component that the layers above it
 /// cannot reach past.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum Layer {
     One(String),
@@ -237,6 +248,7 @@ pub enum Layer {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct NamedLayer {
     name: String,
@@ -258,6 +270,7 @@ impl Layer {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum Patterns {
     One(String),
@@ -274,6 +287,7 @@ impl Patterns {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
     #[serde(default)]
