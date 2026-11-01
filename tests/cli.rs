@@ -97,6 +97,23 @@ fn go_reports_layer_violation() {
         .stdout(contains("1 violation(s)"));
 }
 
+/// The report is what agents read, so all of it is pinned, not only the parts a test
+/// looks for: a field that appears, disappears or changes shows up in the snapshot.
+#[test]
+fn the_report_of_check_is_pinned() {
+    let (_tmp, root) = fixture("go");
+    let mut report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    // Whether the index came from the cache depends on which test ran first.
+    let stats = report["stats"].as_object_mut().unwrap();
+    stats.remove("indexed");
+    stats.remove("from_cache");
+    insta::assert_json_snapshot!("check_json", report);
+    insta::assert_snapshot!("check_text", stdout_of(easement(&root, &["check"]).code(1)));
+}
+
 #[test]
 fn ts_resolves_relative_alias_require_and_js_extension() {
     let (_tmp, root) = fixture("ts");

@@ -1,0 +1,32 @@
+---
+source: tests/cli.rs
+assertion_line: 113
+expression: report
+---
+{
+  "confidence": "full",
+  "confidence_reasons": [],
+  "legalized": 0,
+  "passed": false,
+  "stale": [],
+  "stats": {
+    "external_deps": 1,
+    "files": 5,
+    "internal_deps": 6,
+    "suppressed": 0,
+    "unmapped_files": 1
+  },
+  "violations": [
+    {
+      "file": "internal/handlers/books.go",
+      "from": "handler",
+      "line": 6,
+      "message": "handler -> repository is not allowed (imports internal/repository/books.go)",
+      "rule": "dependency",
+      "specifier": "internal/repository/books.go",
+      "target": "internal/repository/books.go",
+      "to": "repository"
+    }
+  ],
+  "warnings": []
+}

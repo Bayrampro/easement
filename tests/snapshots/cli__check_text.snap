@@ -1,0 +1,8 @@
+---
+source: tests/cli.rs
+assertion_line: 114
+expression: "stdout_of(easement(&root, &[\"check\"]).code(1))"
+---
+internal/handlers/books.go:6: handler -> repository is not allowed (imports internal/repository/books.go) [dependency]
+
+easement failed: 1 violation(s), 0 stale, 0 legalized; 5 files, 6 internal deps, 1 files outside components

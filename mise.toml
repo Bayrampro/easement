@@ -20,6 +20,8 @@ hk = "2.8.1"
 pkl = "0.32.2"
 cargo-deny = "0.20.2"
 "github:bnjbvr/cargo-machete" = "0.9.2"
+# Reviews the snapshots of the tests (`cargo insta review`).
+cargo-insta = "1.49.0"
 jactionlint = "2.3.0"
 # Used by jactionlint to check the run: scripts of workflows.
 shellcheck = "0.11.0"
