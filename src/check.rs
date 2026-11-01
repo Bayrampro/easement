@@ -195,6 +195,11 @@ pub struct Stats {
     pub indexed: usize,
     #[serde(skip_serializing_if = "is_zero")]
     pub from_cache: usize,
+    /// File extensions whose standard library `$std` cannot tell, among the
+    /// files of components whose rules name it: their imports were judged by
+    /// name only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub std_unknown: Vec<String>,
     /// Source files of an indexed language that its indexer did not cover.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub uncovered: Vec<String>,
@@ -252,6 +257,16 @@ pub fn evaluate(
             Target::Internal(path) => slash(path),
             Target::External(module) => {
                 stats.external_deps += usize::from(counted);
+                if let Some(from) = map.component_of(&file)
+                    && counted
+                    && map.uses_std(from)
+                    && !crate::stdlib::knows(&file)
+                {
+                    let ext = file.rsplit_once('.').map_or("", |(_, e)| e).to_string();
+                    if !stats.std_unknown.contains(&ext) {
+                        stats.std_unknown.push(ext);
+                    }
+                }
                 if let Some(from) = map.component_of(&file)
                     && let Some(problem) = map.external_problem(from, &file, module)
                 {

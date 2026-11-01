@@ -47,6 +47,12 @@ fn confidence_reasons(stats: &Stats, changes: Option<&Changes>) -> Vec<String> {
             stats.limited_to.join(", ")
         ));
     }
+    if !stats.std_unknown.is_empty() {
+        reasons.push(format!(
+            "`$std` cannot tell the standard library of .{} files, so their standard imports count as other modules; name those modules instead",
+            stats.std_unknown.join(", .")
+        ));
+    }
     if !stats.uncovered.is_empty() {
         reasons.push(format!(
             "{} source files were not covered by an indexer, so imports in or of them were not checked",
@@ -202,6 +208,20 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
                 stats.uncovered.len() - UNCOVERED_SHOWN
             ));
         }
+    }
+    if !stats.std_unknown.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&paint(
+            color,
+            YELLOW,
+            &format!(
+                "`$std` cannot tell the standard library of .{} files: their standard imports count as other modules; name those modules instead",
+                stats.std_unknown.join(", .")
+            ),
+        ));
+        out.push('\n');
     }
     if !out.is_empty() {
         out.push('\n');

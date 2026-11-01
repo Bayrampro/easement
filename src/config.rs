@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::check::RuleId;
+use crate::stdlib::STD;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_norway::{Mapping, Value};
@@ -434,17 +435,13 @@ impl Config {
                 .flatten()
                 .chain(&rule.forbid_external)
                 .map(Listed::name)
-                .find(|n| n.starts_with('$') && *n != crate::stdlib::STD)
+                .find(|n| n.starts_with('$') && *n != STD)
             {
                 bail!(
-                    "rules.{from}: unknown `{name}`; the only macro is `$std`, the standard library"
+                    "rules.{from}: unknown `{name}`; the only `$` name is `$std`, the standard library"
                 );
             }
-            if rule
-                .must_use_external
-                .iter()
-                .any(|l| l.name() == crate::stdlib::STD)
-            {
+            if rule.must_use_external.iter().any(|l| l.name() == STD) {
                 bail!(
                     "rules.{from}.must_use_external: `$std` works only in may_use_external and forbid_external"
                 );
@@ -983,7 +980,7 @@ rules:
             let yaml = format!("version: 1\ncomponents:\n  a: {{ in: a }}\nrules:\n  a: {rule}\n");
             format!("{:#}", parse(&yaml).unwrap_err())
         };
-        assert!(error("{ may_use_external: [$stdlib] }").contains("the only macro is `$std`"));
+        assert!(error("{ may_use_external: [$stdlib] }").contains("the only `$` name is `$std`"));
         assert!(error("{ must_use_external: [$std] }").contains("works only in"));
         assert!(parse("version: 1\ncomponents:\n  a: { in: a }\nrules:\n  a: { forbid_external: [$std] }\n").is_ok());
     }

@@ -2478,3 +2478,25 @@ fn a_violation_names_the_owner_of_the_component_to_ask() {
         .success()
         .stdout(contains("owner: @acme/payments"));
 }
+
+#[test]
+fn std_says_when_it_cannot_tell_a_language() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  ui: { in: Sources/UI }\nrules:\n  ui: { forbid_external: [$std] }\n",
+        ),
+        (
+            "Sources/UI/View.swift",
+            "import Foundation\nstruct View {}\n",
+        ),
+    ]);
+    easement(&root, &["check"]).success().stdout(contains(
+        "`$std` cannot tell the standard library of .swift files",
+    ));
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(report["confidence"], "partial");
+}
