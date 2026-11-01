@@ -32,6 +32,15 @@ lychee = "0.24.2"
 # Installs the agent skills of `mise run skills`.
 "npm:skills" = "1.7.4"
 
+# Where `composer global require` (macOS, Linux) and `dotnet tool install --global` put
+# scip-php and scip-dotnet, which the tests need; the CI workflow shows how to install them.
+[env]
+_.path = [
+  "{{env.HOME}}/.composer/vendor/bin",
+  "{{env.HOME}}/.config/composer/vendor/bin",
+  "{{env.HOME}}/.dotnet/tools",
+]
+
 [tasks.setup]
 description = "Install dependencies, the git hooks and the agent skills"
 depends = ["skills"]
