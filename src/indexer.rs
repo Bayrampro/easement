@@ -358,12 +358,13 @@ pub fn run(
     files: &[String],
     excluded: &[String],
     cache: CacheUse,
+    jobs: Jobs,
     go_tags: &[String],
 ) -> Result<Indexed> {
     let (mut ran, mut cached) = (0, 0);
     let keyed: Vec<String> = files.iter().chain(excluded).cloned().collect();
-    let mut parts = Vec::new();
     let mut wanted: Vec<&String> = Vec::new();
+    let mut groups = Vec::new();
     for language in LANGUAGES {
         wanted.extend(files.iter().filter(|f| language.covers(f)));
         if !files.iter().any(|f| language.covers(f)) {
@@ -372,17 +373,23 @@ pub fn run(
         // Source files with no `go.mod` or `tsconfig.json` above them are not
         // indexed; they are reported as uncovered, or can be `exclude`d.
         let roots = language.roots(files);
-        if roots.is_empty() {
-            continue;
+        if !roots.is_empty() {
+            groups.push((language, roots));
         }
-        for dir in roots {
-            let (documents, from_cache) = index_dir(language, root, &dir, &keyed, cache, go_tags)?;
-            parts.push(documents);
-            if from_cache {
-                cached += 1;
-            } else {
-                ran += 1;
-            }
+    }
+    let results = in_parallel(&groups, jobs.get(), |(language, roots)| {
+        roots
+            .iter()
+            .map(|dir| index_dir(language, root, dir, &keyed, cache, go_tags))
+            .collect::<Result<Vec<_>>>()
+    })?;
+    let mut parts = Vec::new();
+    for (documents, from_cache) in results.into_iter().flatten() {
+        parts.push(documents);
+        if from_cache {
+            cached += 1;
+        } else {
+            ran += 1;
         }
     }
     let documents = if parts.is_empty() {
@@ -402,6 +409,86 @@ pub fn run(
         cached,
         uncovered,
     })
+}
+
+/// How many languages are indexed at once (`--jobs`): one by default, since
+/// scip-java and rust-analyzer can each take gigabytes. The directories of one
+/// language are always indexed one after another: they share its build state
+/// (Maven's repository, the lock of cargo's `target`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Jobs(std::num::NonZero<usize>);
+
+impl Jobs {
+    pub fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
+impl Default for Jobs {
+    fn default() -> Self {
+        Jobs(std::num::NonZero::<usize>::MIN)
+    }
+}
+
+impl std::str::FromStr for Jobs {
+    type Err = String;
+
+    /// A number of languages, or `cpus` for as many as the machine has processors.
+    fn from_str(text: &str) -> Result<Self, String> {
+        if text == "cpus" {
+            return Ok(Jobs(
+                std::thread::available_parallelism().unwrap_or(std::num::NonZero::<usize>::MIN),
+            ));
+        }
+        text.parse()
+            .map(Jobs)
+            .map_err(|_| format!("`{text}` is neither a number of 1 or more nor `cpus`"))
+    }
+}
+
+/// Runs `job` on every group, `at_most` of them at once, and returns the results in
+/// the order of `groups`, or the failure that a run in order would meet first. After
+/// a failure, the groups behind it do not start; the ones before it still finish,
+/// since one of them may fail too and come first.
+fn in_parallel<T: Sync, R: Send, E: Send>(
+    groups: &[T],
+    at_most: usize,
+    job: impl Fn(&T) -> Result<R, E> + Sync,
+) -> Result<Vec<R>, E> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let failed_at = AtomicUsize::new(usize::MAX);
+    let slots: Vec<std::sync::Mutex<Option<Result<R, E>>>> =
+        groups.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..at_most.min(groups.len()) {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::SeqCst);
+                    let Some(group) = groups.get(i) else { break };
+                    if i > failed_at.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    let result = job(group);
+                    if result.is_err() {
+                        failed_at.fetch_min(i, Ordering::SeqCst);
+                    }
+                    // No job runs while a slot is locked, so a lock is never poisoned.
+                    *slots[i].lock().expect("a slot is never poisoned") = Some(result);
+                }
+            });
+        }
+    });
+    let mut results = Vec::with_capacity(groups.len());
+    for slot in slots {
+        // A group is skipped only behind a failure, which this loop returns first.
+        match slot.into_inner().expect("a slot is never poisoned") {
+            Some(Ok(result)) => results.push(result),
+            Some(Err(failure)) => return Err(failure),
+            None => unreachable!("a group was skipped, but no group before it failed"),
+        }
+    }
+    Ok(results)
 }
 
 /// Where indexes are kept between runs: `EASEMENT_CACHE_DIR`, else the user's cache directory.
@@ -804,6 +891,66 @@ fn require_installed(root: &Path, dir: &Path, shown: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    #[test]
+    fn jobs_are_a_number_or_the_cpus() {
+        assert_eq!(Jobs::default().get(), 1);
+        assert_eq!("3".parse::<Jobs>().unwrap().get(), 3);
+        let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        assert_eq!("cpus".parse::<Jobs>().unwrap().get(), cpus);
+        assert!("0".parse::<Jobs>().is_err());
+        assert!("many".parse::<Jobs>().is_err());
+    }
+
+    #[test]
+    fn groups_run_at_most_so_many_at_once_and_answer_in_their_order() {
+        let running = AtomicUsize::new(0);
+        let most = AtomicUsize::new(0);
+        let groups = [30, 0, 0, 0, 0];
+        let results = in_parallel(&groups, 2, |&ms| {
+            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+            most.fetch_max(now, Ordering::SeqCst);
+            // Wait for a second group to run, however late its thread starts; a pool
+            // that runs one group at a time gives up here and fails the test.
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while most.load(Ordering::SeqCst) < 2 && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            // The first group finishes last.
+            std::thread::sleep(Duration::from_millis(ms));
+            running.fetch_sub(1, Ordering::SeqCst);
+            Ok::<_, ()>(ms)
+        });
+        assert_eq!(results, Ok(groups.to_vec()));
+        assert_eq!(most.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn the_failure_reported_is_the_first_in_order() {
+        // The second group fails first, but a run in order meets the first one's failure.
+        let groups = [(30, Err("first")), (0, Err("second")), (0, Ok(()))];
+        let results = in_parallel(&groups, 3, |(ms, result)| {
+            std::thread::sleep(Duration::from_millis(*ms));
+            *result
+        });
+        assert_eq!(results, Err("first"));
+    }
+
+    #[test]
+    fn after_a_failure_the_groups_behind_it_do_not_start() {
+        let started = AtomicUsize::new(0);
+        // The first group still runs to its end: it comes before the failure.
+        let groups = [(30, Ok(())), (0, Err("second")), (0, Ok(())), (0, Ok(()))];
+        let results = in_parallel(&groups, 2, |(ms, result)| {
+            started.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(*ms));
+            *result
+        });
+        assert_eq!(results, Err("second"));
+        assert_eq!(started.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn cache_keys_hash_with_blake3_which_no_build_of_easement_changes() {

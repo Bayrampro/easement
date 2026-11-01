@@ -44,6 +44,10 @@ struct Cli {
     /// NO_COLOR and CLICOLOR_FORCE.
     #[arg(long, global = true, value_enum, default_value_t = ColorChoice::Auto)]
     color: ColorChoice,
+    /// How many languages to index at once: a number, or `cpus` for one per
+    /// processor. Indexers can take gigabytes each, so the default is one.
+    #[arg(long, global = true, value_name = "N|cpus", default_value = "1")]
+    jobs: indexer::Jobs,
     #[command(subcommand)]
     command: Command,
 }
@@ -324,6 +328,7 @@ struct CheckOptions {
     components: Vec<String>,
     paths: Vec<String>,
     index_cache: indexer::CacheUse,
+    jobs: indexer::Jobs,
 }
 
 fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
@@ -394,7 +399,7 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
 /// Runs the check, then again after every change of the project. Never returns
 /// on its own; errors (a broken config mid-edit) are shown and waited out.
 fn watch(options: &CheckOptions) -> Result<bool> {
-    let mut cache = scan::Cache::new(options.index_cache);
+    let mut cache = scan::Cache::new(options.index_cache, options.jobs);
     let mut last = None;
     loop {
         let stamp = Project::open(&options.config)
@@ -416,6 +421,8 @@ fn watch(options: &CheckOptions) -> Result<bool> {
 }
 
 fn run(cli: Cli) -> Result<bool> {
+    let jobs = cli.jobs;
+    let fresh = || scan::Cache::new(indexer::CacheUse::default(), jobs);
     match cli.command {
         Command::Check {
             config,
@@ -443,17 +450,20 @@ fn run(cli: Cli) -> Result<bool> {
                 components: component,
                 paths: scope,
                 index_cache,
+                jobs,
             };
             if watching {
                 watch(&options)
             } else {
-                check(&options, &mut scan::Cache::new(options.index_cache))
+                check(
+                    &options,
+                    &mut scan::Cache::new(options.index_cache, options.jobs),
+                )
             }
         }
         Command::Baseline { config, accept_new } => {
             let project = Project::open(&config)?;
-            let analysis =
-                project.analyze(&mut scan::Cache::default(), &scope::Scope::default())?;
+            let analysis = project.analyze(&mut fresh(), &scope::Scope::default())?;
             let (config_rules, violations): (Vec<_>, Vec<_>) = check::dedupe(analysis.violations)
                 .into_iter()
                 .partition(|v| v.rule.is_config_rule());
@@ -520,8 +530,7 @@ fn run(cli: Cli) -> Result<bool> {
             if paths.is_empty() && diff.is_none() {
                 anyhow::bail!("name the changed files or directories, or pass `--diff <base>`");
             }
-            let analysis =
-                project.analyze(&mut scan::Cache::default(), &scope::Scope::default())?;
+            let analysis = project.analyze(&mut fresh(), &scope::Scope::default())?;
             let named: Vec<String> = paths
                 .iter()
                 .map(|p| explain::root_relative(&project.root, p))
@@ -556,8 +565,7 @@ fn run(cli: Cli) -> Result<bool> {
         }
         Command::Why { from, to, config } => {
             let project = Project::open(&config)?;
-            let analysis =
-                project.analyze(&mut scan::Cache::default(), &scope::Scope::default())?;
+            let analysis = project.analyze(&mut fresh(), &scope::Scope::default())?;
             let graph = impact::Graph {
                 map: &analysis.map,
                 deps: &analysis.deps,
@@ -570,7 +578,7 @@ fn run(cli: Cli) -> Result<bool> {
         }
         Command::Init { force } => {
             let root = std::env::current_dir()?;
-            println!("{}", init::run(&root, force)?);
+            println!("{}", init::run(&root, force, jobs)?);
             Ok(true)
         }
         Command::Explain { path, config } => {
@@ -589,8 +597,7 @@ fn run(cli: Cli) -> Result<bool> {
             if let Some(name) = &focus {
                 project.config.require_component(name)?;
             }
-            let analysis =
-                project.analyze(&mut scan::Cache::default(), &scope::Scope::default())?;
+            let analysis = project.analyze(&mut fresh(), &scope::Scope::default())?;
             print!(
                 "{}",
                 graph::render(
@@ -609,8 +616,7 @@ fn run(cli: Cli) -> Result<bool> {
             check,
         } => {
             let project = Project::open(&config)?;
-            let analysis =
-                project.analyze(&mut scan::Cache::default(), &scope::Scope::default())?;
+            let analysis = project.analyze(&mut fresh(), &scope::Scope::default())?;
             if patch {
                 let text = std::fs::read_to_string(&config)
                     .with_context(|| format!("cannot read {}", config.display()))?;

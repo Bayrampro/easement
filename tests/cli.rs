@@ -1853,6 +1853,35 @@ fn a_change_to_one_language_reuses_the_index_of_the_other() {
 }
 
 #[test]
+fn jobs_index_languages_at_once_with_the_same_report() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  api: { in: api }\n  web: { in: web }\n",
+        ),
+        ("go.mod", "module example.com/shop\n\ngo 1.22\n"),
+        ("api/api.go", "package api\n\nconst Name = \"shop\"\n"),
+        ("web/a.ts", "export const a = 1;\n"),
+    ]);
+    let report = |jobs: &str| {
+        stdout_of(
+            easement(
+                &root,
+                &["check", "--no-cache", "--format", "json", "--jobs", jobs],
+            )
+            .success(),
+        )
+    };
+    let one = report("1");
+    assert!(one.contains("\"indexed\": 2"), "{one}");
+    assert_eq!(report("2"), one);
+    assert_eq!(report("cpus"), one);
+    easement(&root, &["check", "--jobs", "0"])
+        .code(2)
+        .stderr(contains("--jobs"));
+}
+
+#[test]
 fn cache_only_runs_no_indexer_and_exits_3_on_a_miss() {
     let (_tmp, root) = fixture("go");
     let cache = TempDir::new().unwrap();

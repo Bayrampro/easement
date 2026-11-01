@@ -661,6 +661,8 @@ Indexers are slow (a second or two for a small project, ten or more for a big on
 
 `--cache-only` runs no indexer and exits 3 when an index is not cached. A CI job can call it first and set up an indexer's toolchain (the Go module cache, `npm install`) only on a miss; the dependencies an indexer needs are checked only when it runs, since a cached index was written with them in place.
 
+`--jobs N` indexes N languages at once, and `--jobs cpus` one per processor. The default is one: scip-java and rust-analyzer can each take gigabytes. The directories of one language are still indexed one after another, since they share its build state, and the report is the same whatever the number.
+
 ### Indexers
 
 | Language | Indexer | Needs |

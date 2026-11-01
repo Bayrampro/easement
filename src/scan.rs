@@ -37,13 +37,17 @@ pub struct Cache {
     parsed: HashMap<PathBuf, Parsed>,
     /// Whether the indexers' output is read from and kept in the index cache.
     pub index_cache: indexer::CacheUse,
+    /// How many languages are indexed at once.
+    pub jobs: indexer::Jobs,
 }
 
 impl Cache {
-    /// A cache that also keeps the indexers' output between runs as `index_cache` says.
-    pub fn new(index_cache: indexer::CacheUse) -> Self {
+    /// A cache that keeps the indexers' output between runs as `index_cache` says,
+    /// and indexes `jobs` languages at once.
+    pub fn new(index_cache: indexer::CacheUse, jobs: indexer::Jobs) -> Self {
         Self {
             index_cache,
+            jobs,
             ..Self::default()
         }
     }
@@ -174,6 +178,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         &all_files,
         &hidden,
         cache.index_cache,
+        cache.jobs,
         &config.go.tags,
     )?;
     let project: HashSet<&str> = all_files.iter().map(String::as_str).collect();
