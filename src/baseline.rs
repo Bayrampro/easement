@@ -32,6 +32,19 @@ impl Baseline {
         }
     }
 
+    /// Splits the violations that `easement baseline` finds over this
+    /// baseline into those it may record and the new ones it may not: the
+    /// baseline only shrinks unless `accept_new` legalizes new debt.
+    pub fn admit(
+        &self,
+        violations: Vec<Violation>,
+        accept_new: bool,
+    ) -> (Vec<Violation>, Vec<Violation>) {
+        violations
+            .into_iter()
+            .partition(|v| accept_new || self.violations.contains(&v.key()))
+    }
+
     pub fn save(&self, path: &Path) -> Result<()> {
         let body = serde_norway::to_string(self)?;
         std::fs::write(path, format!("{HEADER}{body}"))
@@ -109,6 +122,18 @@ mod tests {
         let verdict = Verdict::judge(found, &current, Some(&baseline));
         assert_eq!(verdict.legalized, 2);
         assert!(verdict.passed());
+    }
+
+    #[test]
+    fn a_baseline_admits_only_the_debt_it_holds() {
+        let baseline = Baseline::from_violations(&[v("f1", "b"), v("f2", "b")]);
+        let (kept, refused) = baseline.admit(vec![v("f1", "b"), v("f3", "c")], false);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].file, "f1");
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].file, "f3");
+        let (kept, refused) = baseline.admit(vec![v("f1", "b"), v("f3", "c")], true);
+        assert_eq!((kept.len(), refused.len()), (2, 0));
     }
 
     #[test]

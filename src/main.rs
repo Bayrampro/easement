@@ -77,10 +77,14 @@ enum Command {
         #[arg(long)]
         cache_only: bool,
     },
-    /// Record current violations as legalized debt in the baseline file.
+    /// Record current violations as legalized debt in the baseline file. Once
+    /// the file exists, it only shrinks: new violations are listed, not written.
     Baseline {
         #[arg(long, short, default_value = config::DEFAULT_CONFIG)]
         config: PathBuf,
+        /// Write new violations too, legalizing new debt. A human decision.
+        #[arg(long)]
+        accept_new: bool,
     },
     /// Write a starting easement.yml from the layout and imports of the project.
     Init {
@@ -395,29 +399,60 @@ fn run(cli: Cli) -> Result<bool> {
                 check(&options, &mut scan::Cache::new(options.index_cache))
             }
         }
-        Command::Baseline { config } => {
+        Command::Baseline { config, accept_new } => {
             let project = Project::open(&config)?;
-            let (config_rules, violations): (Vec<_>, Vec<_>) = check::dedupe(
-                project
-                    .analyze(&mut scan::Cache::default(), &scope::Scope::default())?
-                    .violations,
-            )
-            .into_iter()
-            .partition(|v| v.rule.is_config_rule());
+            let analysis =
+                project.analyze(&mut scan::Cache::default(), &scope::Scope::default())?;
+            let (config_rules, violations): (Vec<_>, Vec<_>) = check::dedupe(analysis.violations)
+                .into_iter()
+                .partition(|v| v.rule.is_config_rule());
             let path = project.baseline_path();
-            Baseline::from_violations(&violations).save(&path)?;
+            let old = Baseline::load(&path)?;
+            let (violations, refused) = match &old {
+                Some(old) => old.admit(violations, accept_new),
+                None => (violations, Vec::new()),
+            };
+            let mut baseline = Baseline::from_violations(&violations);
+            // A file no indexer read may still hold its debt: keep its entries.
+            let unread: Vec<_> = old
+                .iter()
+                .flat_map(|old| &old.violations)
+                .filter(|k| analysis.stats.uncovered.contains(&k.file))
+                .filter(|k| !baseline.violations.contains(k))
+                .cloned()
+                .collect();
+            baseline.violations.extend(unread.iter().cloned());
+            baseline.save(&path)?;
             println!(
                 "easement: {} violation(s) written to {}",
                 violations.len(),
                 path.display()
             );
+            if !unread.is_empty() {
+                println!(
+                    "easement: {} entr(ies) kept for files no indexer covered, so their debt is not known to be paid; `easement check` lists those files",
+                    unread.len()
+                );
+            }
+            for v in &refused {
+                println!("{}:{}: {} [{}]", v.file, v.line, v.message, v.rule.as_str());
+                if let Some(because) = &v.because {
+                    println!("  because: {because}");
+                }
+            }
+            if !refused.is_empty() {
+                println!(
+                    "easement: {} new violation(s) not written: the baseline only shrinks. Fix them, or legalize them with `easement baseline --accept-new` if a human agrees",
+                    refused.len()
+                );
+            }
             if !config_rules.is_empty() {
                 println!(
                     "easement: {} violation(s) of the config left out, the baseline never accepts them; `easement check` lists them",
                     config_rules.len()
                 );
             }
-            Ok(true)
+            Ok(refused.is_empty())
         }
         Command::Init { force } => {
             let root = std::env::current_dir()?;

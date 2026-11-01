@@ -1814,3 +1814,61 @@ fn a_component_of_ignored_files_matches_no_file() {
         .stdout(contains("component `gen` matches no file"))
         .stdout(contains(".gitignore hide do not count"));
 }
+
+#[test]
+fn the_baseline_only_shrinks_unless_new_debt_is_accepted() {
+    let (_tmp, root) = fixture("ts");
+    easement(&root, &["baseline"])
+        .success()
+        .stdout(contains("2 violation(s)"));
+
+    // Pay off one debt and add a new one.
+    let page = root.join("src/ui/legacy.js");
+    let fixed = fs::read_to_string(&page)
+        .unwrap()
+        .replace("const db = require(\"../infra/db\");", "const db = 1;");
+    fs::write(&page, fixed).unwrap();
+    fs::write(
+        root.join("src/domain/leak.ts"),
+        "import { checkout } from \"../app/checkout\";\n",
+    )
+    .unwrap();
+
+    // The paid debt leaves the baseline; the new one is not written.
+    easement(&root, &["baseline"])
+        .code(1)
+        .stdout(contains("1 violation(s) written"))
+        .stdout(contains(
+            "src/domain/leak.ts:1: domain -> app is not allowed",
+        ))
+        .stdout(contains("1 new violation(s) not written"))
+        .stdout(contains("--accept-new"));
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("src/domain/leak.ts:1"))
+        .stdout(contains("Stale baseline entries").not());
+
+    // Legalizing new debt takes the flag.
+    easement(&root, &["baseline", "--accept-new"])
+        .success()
+        .stdout(contains("2 violation(s) written"));
+    easement(&root, &["check"]).success();
+}
+
+#[test]
+fn the_baseline_keeps_the_debt_of_files_no_indexer_read() {
+    let (_tmp, root) = fixture("ts");
+    easement(&root, &["baseline"]).success();
+    // The indexer stops covering the UI, so its debt is not seen, not paid.
+    let tsconfig = fs::read_to_string(root.join("tsconfig.json")).unwrap();
+    fs::write(
+        root.join("tsconfig.json"),
+        tsconfig.replacen('{', "{\n  \"exclude\": [\"src/ui\"],", 1),
+    )
+    .unwrap();
+    easement(&root, &["baseline"])
+        .success()
+        .stdout(contains("kept for files no indexer covered"));
+    let baseline = fs::read_to_string(root.join("easement.baseline.yml")).unwrap();
+    assert!(baseline.contains("src/ui/legacy.js"), "{baseline}");
+}

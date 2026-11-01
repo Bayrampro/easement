@@ -31,7 +31,7 @@ A violation reads like `internal/handlers/books.go:6: handlers -> repository is 
 
 Two cases are cleanup, not exceptions:
 
-- **Stale baseline entries**: a violation recorded in the baseline is gone. When the check reports stale entries and no new violations, run `easement baseline` to drop them; the baseline only shrinks. With new violations in the report, fix those first, or `easement baseline` would legalize them.
+- **Stale baseline entries**: a violation recorded in the baseline is gone. Run `easement baseline` to drop them. It never writes new violations: it lists them and exits 1, so fix those as above. Legalizing new debt with `easement baseline --accept-new` needs a human.
 - **`unused-suppression`**: the excused import is gone, so delete the comment.
 
 An `unmatched` violation is about the config, not the code: an `in` pattern of a component points at no file, usually because the code moved. It needs a change to `easement.yml`, so tell a human which pattern it is and where the code went.

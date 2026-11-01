@@ -39,7 +39,7 @@ Set up easement (https://github.com/mokevnin/easement), an architecture quality 
 1. Install easement the way this project installs its tools: a line in mise.toml if the project uses mise ("github:mokevnin/easement" = "latest"), otherwise Homebrew or the install script from the README.
 2. Run `easement doctor --format json` and install every indexer it reports missing, again the way the project installs tools. Repeat until it exits 0.
 3. Run `easement init`, then `easement check`. If the report says files are not covered by an indexer, fix the cause (a tsconfig include, a missing go.mod) or list them in `uncovered_ok` with a reason.
-4. Study the code and turn the generated config into the intended architecture: remove the allowances that should not exist, give every rule a `because` that tells where the code should go instead, and use `layers`, `public`, `no_cycles` and `tests: auto` where they fit. Do not change application code to make the check pass. Record the existing violations with `easement baseline`.
+4. Study the code and turn the generated config into the intended architecture: remove the allowances that should not exist, give every rule a `because` that tells where the code should go instead, and use `layers`, `public`, `no_cycles` and `tests: auto` where they fit. Do not change application code to make the check pass. When the config is final, record the existing violations with `easement baseline`.
 5. Add the check to CI: the GitHub Action from the README with `diff` on pull requests if the project uses GitHub Actions, otherwise `easement check` in the existing pipeline. If the project has git hooks, run it on pre-push.
 6. Install the easement skill into the project with `npx skills add mokevnin/easement`, for the agents this team uses, and commit the files it writes, so every agent that works here gets it.
 7. Add these rules to the project's agent instructions (AGENTS.md, CLAUDE.md or whatever file the project already uses; create AGENTS.md if there is none):
@@ -114,7 +114,7 @@ The commands you will use most:
 easement init                 # write a starting easement.yml
 easement check                # check the project
 easement check --diff main    # only what this branch adds, see Diff mode
-easement baseline             # accept the current violations, fail on new ones
+easement baseline             # record today's violations; later runs only shrink it
 easement explain <file>       # which component a file is in and what it may do
 easement suggest              # allowances nothing uses, imports nothing allows
 easement doctor               # are the indexers the project needs installed
@@ -486,7 +486,9 @@ Run it on `pre-push` rather than `pre-commit`: the check reads the whole project
 
 - violations in the baseline are legalized;
 - any new violation fails;
-- a baseline entry that no longer occurs also fails, so fixed debt has to be removed from the file with `easement baseline`. The baseline can only shrink.
+- a baseline entry that no longer occurs also fails, so fixed debt has to be removed from the file with `easement baseline`.
+
+Once the file exists, `easement baseline` only shrinks it: it drops the entries that no longer occur and lists the new violations instead of writing them, exiting 1 while there are any. Rerunning it cannot turn a failing gate green. `easement baseline --accept-new` writes the new violations too, for when a human decides to take on the debt. Two ordinary changes need it: a rule made stricter, and a file with baselined debt moved, since the entries are keyed by file. Entries of files no indexer covered are kept, because their debt was not read, not paid.
 
 Entries are keyed by rule, file, target and components, not by line, so unrelated edits do not invalidate them. A cycle is keyed by its components. Every use is a violation of its own, at its own line, so a file that uses a forbidden name three times is reported three times; one baseline entry legalizes all the uses of its key, and a use added next to a legalized one is legalized with it.
 
