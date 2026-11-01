@@ -4,87 +4,176 @@ use std::path::{Path, PathBuf};
 use crate::check::RuleId;
 use crate::stdlib::STD;
 use anyhow::{Context, Result, anyhow, bail};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::Deserialize;
 use serde_norway::{Mapping, Value};
 
 pub const DEFAULT_CONFIG: &str = "easement.yml";
 pub const DEFAULT_BASELINE: &str = "easement.baseline.yml";
 
-#[derive(Debug, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+/// Where editors find the schema that `easement schema` prints.
+const SCHEMA_ID: &str =
+    "https://raw.githubusercontent.com/mokevnin/easement/main/easement.schema.json";
+
+/// The JSON Schema of `easement.yml`, for editors: the config types with their
+/// doc comments as descriptions.
+pub fn schema() -> Schema {
+    let mut settings = schemars::generate::SchemaSettings::draft07();
+    settings
+        .transforms
+        .push(Box::new(schemars::transform::RecursiveTransform(
+            unwrap_lines,
+        )));
+    settings.into_generator().into_root_schema_for::<Config>()
+}
+
+/// A doc comment keeps its line breaks; an editor shows a description as one
+/// paragraph, so only a blank line stays a break.
+fn unwrap_lines(schema: &mut Schema) {
+    if let Some(serde_json::Value::String(text)) = schema.get_mut("description") {
+        *text = text
+            .split("\n\n")
+            .map(|paragraph| paragraph.replace('\n', " "))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+    }
+}
+
+/// What the file holds besides the fields of [`Config`]: `extends`, which is
+/// merged away before the config is read, and the free `x-` keys for anchors. A
+/// file that `extends` another may leave out even `version` and `components`,
+/// so the top level requires nothing.
+fn config_schema_extras(schema: &mut Schema) {
+    schema.insert("$id".into(), SCHEMA_ID.into());
+    schema.insert("title".into(), "easement.yml".into());
+    schema.remove("required");
+    schema.insert(
+        "patternProperties".into(),
+        serde_json::json!({ "^x-": {
+            "description": "Free keys that only hold YAML anchors: `x-ban: &ban {...}`, then `<<: *ban` in a rule."
+        }}),
+    );
+    if let Some(properties) = schema
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        properties.insert(
+            "extends".into(),
+            serde_json::json!({
+                "description": "Config files merged underneath this one, relative to this file. Patterns stay relative to the root of the config being loaded.",
+                "anyOf": [
+                    { "type": "string" },
+                    { "type": "array", "items": { "type": "string" } }
+                ]
+            }),
+        );
+    }
+}
+
+/// `warn` takes the rules about the code, not those about the config.
+fn warn_schema(_: &mut SchemaGenerator) -> Schema {
+    let rules: Vec<&str> = RuleId::ALL
+        .into_iter()
+        .filter(|rule| !rule.is_config_rule())
+        .map(RuleId::as_str)
+        .collect();
+    json_schema!({
+        "type": "array",
+        "items": { "enum": rules }
+    })
+}
+
+/// Configuration of the easement architecture quality gate.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = config_schema_extras)]
 pub struct Config {
+    /// Config format version.
+    #[schemars(extend("const" = 1))]
     pub version: u32,
+    /// Named parts of the system and the paths they cover.
+    #[schemars(extend("minProperties" = 1))]
     pub components: BTreeMap<String, Component>,
+    /// Components every other component may depend on.
     #[serde(default)]
     pub common: Vec<String>,
+    /// Per component: what it may depend on and use.
     #[serde(default)]
     pub rules: BTreeMap<String, Rule>,
+    /// Globs of paths to skip.
     #[serde(default)]
     pub exclude: Vec<String>,
-    /// Globs of files that stay in the graph as targets, so components can own them and
-    /// rules can forbid or allow importing them, but are never checked as the source of
-    /// a dependency (generated code). `exclude` wins over it.
+    /// Globs of files (generated code) that stay in the graph as targets, so components can
+    /// own them and rules can allow or forbid importing them, but are never checked as the
+    /// source of a dependency. `exclude` wins over it.
     #[serde(default)]
     pub target_only: Vec<String>,
+    /// Path of the baseline file, default easement.baseline.yml.
     #[serde(default)]
     pub baseline: Option<PathBuf>,
-    /// Fail on dependency cycles between components: `true` for all of them,
-    /// or a list to limit the check.
+    /// Fail on dependency cycles between components: true for all, or a list of components.
     #[serde(default)]
     pub no_cycles: NoCycles,
-    /// Components from the top layer to the bottom one: a layer may depend on
-    /// any layer below it, never on one above.
+    /// Components from the top layer to the bottom one: a layer may depend on any layer below
+    /// it, never on one above. A list in place of a name holds sibling components of one
+    /// layer, which do not depend on each other; {name, closed: true} is a layer the ones
+    /// above cannot reach past.
     #[serde(default)]
     pub layers: Vec<Layer>,
-    /// Fail on files that belong to no component.
+    /// Fail on checked files that belong to no component, except those matching `unowned`.
     #[serde(default)]
     pub strict: bool,
-    /// Globs of files that may belong to no component in strict mode.
+    /// Globs of files and directories that may belong to no component in strict mode.
     #[serde(default)]
     pub unowned: Vec<String>,
-    /// Source files that no indexer covers and that may stay that way (globs,
-    /// each with the reason): they are left out of the report of uncovered files.
+    /// Source files that no indexer covers and that may stay that way (globs, each with the
+    /// reason). Others are listed in the report as not covered, and the result is marked
+    /// partial.
     #[serde(default)]
     pub uncovered_ok: Vec<Accepted>,
     /// How the Go indexer builds the project.
     #[serde(default)]
     pub go: GoSettings,
-    /// `auto` puts the test files of every language into a component named
-    /// `tests`, which `rules.tests` can restrict; without such a rule tests may
-    /// import anything.
+    /// `auto` puts the test files of every language (`*_test.go`, `*.test.ts`, `test_*.py`,
+    /// `*Test.java`, …) into a component named `tests`, which `rules.tests` can restrict.
+    /// Without such a rule tests may import anything.
     #[serde(default)]
     pub tests: Option<TestsMode>,
-    /// Files the program starts from (`cmd/**`, `src/main.ts`): with it, a
-    /// file of a component that no chain of imports from them reaches is `unused`.
+    /// Files the program starts from (cmd/**, src/main.ts). With it, a checked file of a
+    /// component that no chain of imports from them, from a test or from a file of no
+    /// component reaches fails as unused. Go is judged by package; Kotlin, Swift and Ruby are
+    /// not judged.
     #[serde(default)]
     pub entry: Vec<String>,
-    /// A Markdown file with a Mermaid graph (or a `.mmd` file) of the
-    /// components: a dependency between components it has no arrow for is a
-    /// `diagram` violation.
+    /// A Markdown file with a Mermaid graph or flowchart of the components (or a .mmd file).
+    /// A dependency between components the diagram has no arrow for fails as diagram. Nodes
+    /// match components by id or label.
     #[serde(default)]
     pub diagram: Option<PathBuf>,
-    /// Every external module a file imports has to be a dependency of the
-    /// nearest `package.json`, `go.mod` or `Cargo.toml` above it.
+    /// Every external module a file imports has to be a dependency of the nearest
+    /// package.json, go.mod or Cargo.toml above it, else it fails as undeclared. Other
+    /// languages are not checked.
     #[serde(default)]
     pub manifests: bool,
-    /// Rules whose violations are reported as warnings and do not fail the check.
+    /// Rules whose violations are reported as warnings and do not fail the check. Rules about
+    /// the config, such as unmatched, cannot be listed.
     #[serde(default)]
+    #[schemars(schema_with = "warn_schema")]
     pub warn: Vec<String>,
 }
 
 /// Go files behind a build constraint (`//go:build race`) are indexed, and so
 /// seen, only for the tags the indexer builds with.
-#[derive(Debug, Default, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GoSettings {
+    /// Build tags to index with, for files behind `//go:build`. Files behind other tags are
+    /// not built, so they count as not covered.
     #[serde(default)]
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TestsMode {
     Auto,
@@ -113,19 +202,18 @@ pub const TEST_PATTERNS: &[&str] = &[
 
 /// A name in a rule's list, optionally with a reason of its own that is shown
 /// instead of the reason of the whole rule.
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Listed {
     Plain(String),
     Reasoned(Reasoned),
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Reasoned {
     name: String,
+    /// Why this item is listed; shown instead of the reason of the whole rule.
     #[serde(default)]
     because: Option<String>,
 }
@@ -147,26 +235,24 @@ impl Listed {
 
 /// An `uncovered_ok` entry: a glob, or `name` with one glob or a list of them
 /// that share a reason.
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Accepted {
     Plain(String),
     Reasoned(AcceptedGlobs),
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AcceptedGlobs {
+    /// A glob or a list of globs.
     name: OneOrMany,
-    /// Read by people, not by the check.
+    /// Why the files may stay uncovered. Read by people, not by the check.
     #[serde(default, rename = "because")]
     _because: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(untagged)]
 enum OneOrMany {
     One(String),
@@ -185,8 +271,7 @@ impl Accepted {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum NoCycles {
     #[default]
@@ -205,45 +290,50 @@ impl NoCycles {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
+    /// A glob or a list of globs naming a module: a directory or a file. A named placeholder
+    /// such as <feature> matches one directory like *, and both ends of an import that name
+    /// it must fill it the same way.
     #[serde(rename = "in")]
     pub patterns: Patterns,
-    /// When set, other components may import only these paths of this component.
+    /// When set, other components may import only these paths.
     #[serde(default)]
     pub public: Option<Patterns>,
     /// Why the public API or the importer list exists; shown with their violations.
     #[serde(default)]
     pub because: Option<String>,
-    /// Files matching these patterns do not belong to this component, even
-    /// though `in` matches them.
+    /// Files matching these patterns do not belong to this component, even though `in`
+    /// matches them.
     #[serde(default)]
     pub except: Option<Patterns>,
-    /// Which component wins when several match a file: the higher priority,
-    /// then the longer pattern.
+    /// Which component wins when several match a file: the higher priority, then the longer
+    /// pattern. Default 0.
     #[serde(default)]
     pub priority: i32,
-    /// The directories matched by `in` are instances that must not import each other.
+    /// The directories matched by `in` (each pattern needs a `*`, no `**`) are instances that
+    /// must not import each other.
     #[serde(default)]
     pub isolated: bool,
-    /// When set, other components may use only these names from this component's
-    /// packages (`Scoped`, `Tx`). Needs an adapter that reports symbols (Go).
+    /// When set, other components may use only these names from this component's packages.
+    /// Needs an adapter that reports symbols (Go).
     #[serde(default)]
     pub public_symbols: Option<Vec<String>>,
     /// When set, only these components (and the component itself) may import it.
     #[serde(default)]
     pub allow_importers: Option<Vec<String>>,
-    /// The component may match no file; otherwise an `in` pattern that
-    /// matches nothing is an `unmatched` violation.
+    /// The component may match no file. Otherwise an `in` pattern that matches no file of the
+    /// project fails as `unmatched`. Default false.
     #[serde(default)]
     pub optional: bool,
-    /// Who to ask about the component and its rules: a team, a person.
+    /// Who to ask about the component and its rules: a team or a person. Printed with the
+    /// violations of the component.
     #[serde(default)]
     pub owner: Option<String>,
-    /// Globs of type names that belong in this component (`*Repository`):
-    /// a type so named that another component defines is a `naming` violation.
+    /// Globs of type names that belong in this component (*Repository): a class, struct,
+    /// interface or trait so named that another component defines fails as naming. Types are
+    /// read from the index; Kotlin and Swift are not seen.
     #[serde(default)]
     pub defines: Vec<String>,
 }
@@ -251,11 +341,11 @@ pub struct Component {
 /// One layer of `layers`: a component, sibling components that do not
 /// depend on each other, or a closed component that the layers above it
 /// cannot reach past.
-#[derive(Debug)]
-#[cfg_attr(test, derive(schemars::JsonSchema), serde(untagged))]
+#[derive(Debug, JsonSchema)]
+#[schemars(untagged)]
 pub enum Layer {
     One(String),
-    Siblings(Vec<String>),
+    Siblings(#[schemars(length(min = 2))] Vec<String>),
     Named(NamedLayer),
 }
 
@@ -279,11 +369,11 @@ impl<'de> Deserialize<'de> for Layer {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NamedLayer {
     name: String,
+    /// The layers above may not reach past this one.
     #[serde(default)]
     closed: bool,
 }
@@ -301,12 +391,11 @@ impl Layer {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Patterns {
     One(String),
-    Many(Vec<String>),
+    Many(#[schemars(length(min = 1))] Vec<String>),
 }
 
 impl Patterns {
@@ -318,49 +407,60 @@ impl Patterns {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
+    /// Components this one may depend on. An item may carry its own reason, shown by
+    /// `explain`.
     #[serde(default)]
     pub may_depend_on: Vec<Listed>,
-    /// Components that are never allowed, even if `common` or `layers` would allow them.
+    /// Components that are never allowed, even if common or layers would allow them. An item
+    /// may carry its own reason.
     #[serde(default)]
     pub must_not_depend_on: Vec<Listed>,
-    /// Components the component must not depend on, directly or through any
-    /// chain of imports, even when every hop of the chain is allowed.
+    /// Components this component must not depend on, directly or through any chain of
+    /// imports, even when every hop is allowed. An item may carry its own reason.
     #[serde(default)]
     pub must_not_reach: Vec<Listed>,
-    /// External modules the component may use; unset means no restriction.
+    /// External modules this component may use; unset means no restriction. A pattern covers
+    /// submodules: lodash covers lodash/fp. $std stands for the standard library of the
+    /// importing file's language. An item may carry its own reason.
     #[serde(default)]
     pub may_use_external: Option<Vec<Listed>>,
-    /// External modules the component must not use.
+    /// External modules this component must not use. $std stands for the standard library of
+    /// the importing file's language. An item may carry its own reason.
     #[serde(default)]
     pub forbid_external: Vec<Listed>,
-    /// Names the component must not use, as `package.Name` or `import/path.Name`:
-    /// `ent.Client`, `entgo.io/ent.Client`. Needs an adapter that reports symbols (Go).
+    /// Names this component must not use, as `package.Name` or `import/path.Name`
+    /// (`ent.Client`). Needs an adapter that reports symbols (Go). An item may carry its own
+    /// reason.
     #[serde(default)]
     pub forbid_symbol: Vec<Listed>,
-    /// Components that every directory of this component must import at least once.
+    /// Components that every directory of this component must import at least once. An item
+    /// may carry its own reason.
     #[serde(default)]
     pub must_depend_on: Vec<Listed>,
-    /// External modules that every directory of this component must use.
+    /// External modules that every directory of this component must use; a pattern covers
+    /// submodules. An item may carry its own reason.
     #[serde(default)]
     pub must_use_external: Vec<Listed>,
-    /// File names or globs that every directory of this component must contain.
+    /// File names or globs that every directory of this component must contain. An item may
+    /// carry its own reason.
     #[serde(default)]
     pub requires_file: Vec<Listed>,
-    /// File names or globs that no file of this component may match.
+    /// File names or globs that no file of this component may match. An item may carry its
+    /// own reason.
     #[serde(default)]
     pub forbid_file: Vec<Listed>,
-    /// Regular expressions that some file in every directory of this component
-    /// must match, for dependencies written as comments (`//go:embed`).
+    /// Regular expressions that some file in every directory of this component must match,
+    /// for dependencies written as comments (`//go:embed`, `goverter:converter`). An item may
+    /// carry its own reason.
     #[serde(default)]
     pub requires_directive: Vec<Listed>,
-    /// Most components the component may depend on.
+    /// Most components this one may depend on.
     #[serde(default)]
     pub max_fan_out: Option<usize>,
-    /// Highest instability, `out / (in + out)`, from 0 (stable) to 1.
+    /// Highest instability, out / (in + out), from 0 (stable) to 1.
     #[serde(default)]
     pub max_instability: Option<f64>,
     /// Why the rule exists; shown with its violations.

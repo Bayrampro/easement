@@ -1,19 +1,61 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://raw.githubusercontent.com/mokevnin/easement/main/easement.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "easement.yml",
   "description": "Configuration of the easement architecture quality gate.",
   "type": "object",
-  "additionalProperties": false,
-  "patternProperties": {
-    "^x-": {
-      "description": "Free keys that only hold YAML anchors: `x-ban: &ban {...}`, then `<<: *ban` in a rule."
-    }
-  },
   "properties": {
+    "baseline": {
+      "description": "Path of the baseline file, default easement.baseline.yml.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "common": {
+      "description": "Components every other component may depend on.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "components": {
+      "description": "Named parts of the system and the paths they cover.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/Component"
+      },
+      "minProperties": 1
+    },
+    "diagram": {
+      "description": "A Markdown file with a Mermaid graph or flowchart of the components (or a .mmd file). A dependency between components the diagram has no arrow for fails as diagram. Nodes match components by id or label.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "entry": {
+      "description": "Files the program starts from (cmd/**, src/main.ts). With it, a checked file of a component that no chain of imports from them, from a test or from a file of no component reaches fails as unused. Go is judged by package; Kotlin, Swift and Ruby are not judged.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "exclude": {
+      "description": "Globs of paths to skip.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
     "extends": {
       "description": "Config files merged underneath this one, relative to this file. Patterns stay relative to the root of the config being loaded.",
-      "oneOf": [
+      "anyOf": [
         {
           "type": "string"
         },
@@ -25,86 +67,91 @@
         }
       ]
     },
-    "version": {
-      "const": 1,
-      "description": "Config format version."
-    },
-    "components": {
-      "description": "Named parts of the system and the paths they cover.",
-      "type": "object",
-      "minProperties": 1,
-      "additionalProperties": {
-        "$ref": "#/definitions/component"
-      }
-    },
-    "common": {
-      "description": "Components every other component may depend on.",
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "rules": {
-      "description": "Per component: what it may depend on and use.",
-      "type": "object",
-      "additionalProperties": {
-        "$ref": "#/definitions/rule"
-      }
+    "go": {
+      "description": "How the Go indexer builds the project.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/GoSettings"
+        }
+      ]
     },
     "layers": {
       "description": "Components from the top layer to the bottom one: a layer may depend on any layer below it, never on one above. A list in place of a name holds sibling components of one layer, which do not depend on each other; {name, closed: true} is a layer the ones above cannot reach past.",
       "type": "array",
       "items": {
-        "oneOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "minItems": 2
-          },
-          {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string"
-              },
-              "closed": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "name"
-            ],
-            "additionalProperties": false
-          }
-        ]
+        "$ref": "#/definitions/Layer"
       }
+    },
+    "manifests": {
+      "description": "Every external module a file imports has to be a dependency of the nearest package.json, go.mod or Cargo.toml above it, else it fails as undeclared. Other languages are not checked.",
+      "type": "boolean",
+      "default": false
     },
     "no_cycles": {
       "description": "Fail on dependency cycles between components: true for all, or a list of components.",
-      "oneOf": [
+      "allOf": [
         {
-          "type": "boolean"
-        },
-        {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "$ref": "#/definitions/NoCycles"
         }
       ]
     },
+    "rules": {
+      "description": "Per component: what it may depend on and use.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/Rule"
+      }
+    },
     "strict": {
       "description": "Fail on checked files that belong to no component, except those matching `unowned`.",
-      "type": "boolean"
+      "type": "boolean",
+      "default": false
+    },
+    "target_only": {
+      "description": "Globs of files (generated code) that stay in the graph as targets, so components can own them and rules can allow or forbid importing them, but are never checked as the source of a dependency. `exclude` wins over it.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "tests": {
+      "description": "`auto` puts the test files of every language (`*_test.go`, `*.test.ts`, `test_*.py`, `*Test.java`, …) into a component named `tests`, which `rules.tests` can restrict. Without such a rule tests may import anything.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TestsMode"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "uncovered_ok": {
+      "description": "Source files that no indexer covers and that may stay that way (globs, each with the reason). Others are listed in the report as not covered, and the result is marked partial.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Accepted"
+      }
+    },
+    "unowned": {
+      "description": "Globs of files and directories that may belong to no component in strict mode.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "version": {
+      "description": "Config format version.",
+      "type": "integer",
+      "format": "uint32",
+      "const": 1,
+      "minimum": 0
     },
     "warn": {
       "description": "Rules whose violations are reported as warnings and do not fail the check. Rules about the config, such as unmatched, cannot be listed.",
       "type": "array",
+      "default": [],
       "items": {
         "enum": [
           "dependency",
@@ -127,78 +174,244 @@
           "undeclared"
         ]
       }
+    }
+  },
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x-": {
+      "description": "Free keys that only hold YAML anchors: `x-ban: &ban {...}`, then `<<: *ban` in a rule."
+    }
+  },
+  "definitions": {
+    "Accepted": {
+      "description": "An `uncovered_ok` entry: a glob, or `name` with one glob or a list of them that share a reason.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/AcceptedGlobs"
+        }
+      ]
     },
-    "exclude": {
-      "description": "Globs of paths to skip.",
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "target_only": {
-      "description": "Globs of files (generated code) that stay in the graph as targets, so components can own them and rules can allow or forbid importing them, but are never checked as the source of a dependency. `exclude` wins over it.",
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "baseline": {
-      "description": "Path of the baseline file, default easement.baseline.yml.",
-      "type": "string"
-    },
-    "unowned": {
-      "description": "Globs of files and directories that may belong to no component in strict mode.",
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "entry": {
-      "description": "Files the program starts from (cmd/**, src/main.ts). With it, a checked file of a component that no chain of imports from them, from a test or from a file of no component reaches fails as unused. Go is judged by package; Kotlin, Swift and Ruby are not judged.",
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "diagram": {
-      "description": "A Markdown file with a Mermaid graph or flowchart of the components (or a .mmd file). A dependency between components the diagram has no arrow for fails as diagram. Nodes match components by id or label.",
-      "type": "string"
-    },
-    "manifests": {
-      "description": "Every external module a file imports has to be a dependency of the nearest package.json, go.mod or Cargo.toml above it, else it fails as undeclared. Other languages are not checked.",
-      "type": "boolean"
-    },
-    "go": {
-      "description": "How the Go indexer builds the project.",
+    "AcceptedGlobs": {
       "type": "object",
+      "properties": {
+        "because": {
+          "description": "Why the files may stay uncovered. Read by people, not by the check.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "name": {
+          "description": "A glob or a list of globs.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/OneOrMany"
+            }
+          ]
+        }
+      },
       "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "Component": {
+      "type": "object",
+      "properties": {
+        "allow_importers": {
+          "description": "When set, only these components (and the component itself) may import it.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "because": {
+          "description": "Why the public API or the importer list exists; shown with their violations.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "defines": {
+          "description": "Globs of type names that belong in this component (*Repository): a class, struct, interface or trait so named that another component defines fails as naming. Types are read from the index; Kotlin and Swift are not seen.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "except": {
+          "description": "Files matching these patterns do not belong to this component, even though `in` matches them.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Patterns"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "in": {
+          "description": "A glob or a list of globs naming a module: a directory or a file. A named placeholder such as <feature> matches one directory like *, and both ends of an import that name it must fill it the same way.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Patterns"
+            }
+          ]
+        },
+        "isolated": {
+          "description": "The directories matched by `in` (each pattern needs a `*`, no `**`) are instances that must not import each other.",
+          "type": "boolean",
+          "default": false
+        },
+        "optional": {
+          "description": "The component may match no file. Otherwise an `in` pattern that matches no file of the project fails as `unmatched`. Default false.",
+          "type": "boolean",
+          "default": false
+        },
+        "owner": {
+          "description": "Who to ask about the component and its rules: a team or a person. Printed with the violations of the component.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "priority": {
+          "description": "Which component wins when several match a file: the higher priority, then the longer pattern. Default 0.",
+          "type": "integer",
+          "format": "int32",
+          "default": 0
+        },
+        "public": {
+          "description": "When set, other components may import only these paths.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Patterns"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "public_symbols": {
+          "description": "When set, other components may use only these names from this component's packages. Needs an adapter that reports symbols (Go).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "in"
+      ]
+    },
+    "GoSettings": {
+      "description": "Go files behind a build constraint (`//go:build race`) are indexed, and so seen, only for the tags the indexer builds with.",
+      "type": "object",
       "properties": {
         "tags": {
           "description": "Build tags to index with, for files behind `//go:build`. Files behind other tags are not built, so they count as not covered.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Layer": {
+      "description": "One layer of `layers`: a component, sibling components that do not depend on each other, or a closed component that the layers above it cannot reach past.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2
+        },
+        {
+          "$ref": "#/definitions/NamedLayer"
+        }
+      ]
+    },
+    "Listed": {
+      "description": "A name in a rule's list, optionally with a reason of its own that is shown instead of the reason of the whole rule.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/definitions/Reasoned"
+        }
+      ]
+    },
+    "NamedLayer": {
+      "type": "object",
+      "properties": {
+        "closed": {
+          "description": "The layers above may not reach past this one.",
+          "type": "boolean",
+          "default": false
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "NoCycles": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
           "type": "array",
           "items": {
             "type": "string"
           }
         }
-      }
-    },
-    "uncovered_ok": {
-      "description": "Source files that no indexer covers and that may stay that way (globs, each with the reason). Others are listed in the report as not covered, and the result is marked partial.",
-      "type": "array",
-      "items": {
-        "$ref": "#/definitions/accepted"
-      }
-    },
-    "tests": {
-      "description": "`auto` puts the test files of every language (`*_test.go`, `*.test.ts`, `test_*.py`, `*Test.java`, …) into a component named `tests`, which `rules.tests` can restrict. Without such a rule tests may import anything.",
-      "enum": [
-        "auto"
       ]
-    }
-  },
-  "definitions": {
-    "patterns": {
-      "oneOf": [
+    },
+    "OneOrMany": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "Patterns": {
+      "anyOf": [
         {
           "type": "string"
         },
@@ -211,220 +424,143 @@
         }
       ]
     },
-    "component": {
+    "Reasoned": {
       "type": "object",
+      "properties": {
+        "because": {
+          "description": "Why this item is listed; shown instead of the reason of the whole rule.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "name": {
+          "type": "string"
+        }
+      },
       "additionalProperties": false,
       "required": [
-        "in"
-      ],
-      "properties": {
-        "in": {
-          "description": "A glob or a list of globs naming a module: a directory or a file. A named placeholder such as <feature> matches one directory like *, and both ends of an import that name it must fill it the same way.",
-          "$ref": "#/definitions/patterns"
-        },
-        "public": {
-          "description": "When set, other components may import only these paths.",
-          "$ref": "#/definitions/patterns"
-        },
-        "because": {
-          "description": "Why the public API or the importer list exists; shown with their violations.",
-          "type": "string"
-        },
-        "except": {
-          "description": "Files matching these patterns do not belong to this component, even though `in` matches them.",
-          "$ref": "#/definitions/patterns"
-        },
-        "priority": {
-          "description": "Which component wins when several match a file: the higher priority, then the longer pattern. Default 0.",
-          "type": "integer"
-        },
-        "isolated": {
-          "description": "The directories matched by `in` (each pattern needs a `*`, no `**`) are instances that must not import each other.",
-          "type": "boolean"
-        },
-        "owner": {
-          "description": "Who to ask about the component and its rules: a team or a person. Printed with the violations of the component.",
-          "type": "string"
-        },
-        "optional": {
-          "description": "The component may match no file. Otherwise an `in` pattern that matches no file of the project fails as `unmatched`. Default false.",
-          "type": "boolean"
-        },
-        "allow_importers": {
-          "description": "When set, only these components (and the component itself) may import it.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "public_symbols": {
-          "description": "When set, other components may use only these names from this component's packages. Needs an adapter that reports symbols (Go).",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "defines": {
-          "description": "Globs of type names that belong in this component (*Repository): a class, struct, interface or trait so named that another component defines fails as naming. Types are read from the index; Kotlin and Swift are not seen.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      }
+        "name"
+      ]
     },
-    "rule": {
+    "Rule": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
-        "may_depend_on": {
-          "description": "Components this one may depend on. An item may carry its own reason, shown by `explain`.",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/listed"
-          }
-        },
-        "must_not_depend_on": {
-          "description": "Components that are never allowed, even if common or layers would allow them. An item may carry its own reason.",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/listed"
-          }
-        },
-        "must_not_reach": {
-          "description": "Components this component must not depend on, directly or through any chain of imports, even when every hop is allowed. An item may carry its own reason.",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/listed"
-          }
-        },
-        "may_use_external": {
-          "description": "External modules this component may use; unset means no restriction. A pattern covers submodules: lodash covers lodash/fp. $std stands for the standard library of the importing file's language. An item may carry its own reason.",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/listed"
-          }
+        "because": {
+          "description": "Why the rule exists; shown with its violations.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         },
         "forbid_external": {
           "description": "External modules this component must not use. $std stands for the standard library of the importing file's language. An item may carry its own reason.",
           "type": "array",
           "items": {
-            "$ref": "#/definitions/listed"
-          }
-        },
-        "max_fan_out": {
-          "description": "Most components this one may depend on.",
-          "type": "integer",
-          "minimum": 0
-        },
-        "max_instability": {
-          "description": "Highest instability, out / (in + out), from 0 (stable) to 1.",
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1
-        },
-        "because": {
-          "description": "Why the rule exists; shown with its violations.",
-          "type": "string"
-        },
-        "must_depend_on": {
-          "description": "Components that every directory of this component must import at least once. An item may carry its own reason.",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/listed"
-          }
-        },
-        "must_use_external": {
-          "description": "External modules that every directory of this component must use; a pattern covers submodules. An item may carry its own reason.",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/listed"
-          }
-        },
-        "requires_file": {
-          "description": "File names or globs that every directory of this component must contain. An item may carry its own reason.",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/listed"
+            "$ref": "#/definitions/Listed"
           }
         },
         "forbid_file": {
           "description": "File names or globs that no file of this component may match. An item may carry its own reason.",
           "type": "array",
           "items": {
-            "$ref": "#/definitions/listed"
-          }
-        },
-        "requires_directive": {
-          "description": "Regular expressions that some file in every directory of this component must match, for dependencies written as comments (`//go:embed`, `goverter:converter`). An item may carry its own reason.",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/listed"
+            "$ref": "#/definitions/Listed"
           }
         },
         "forbid_symbol": {
           "description": "Names this component must not use, as `package.Name` or `import/path.Name` (`ent.Client`). Needs an adapter that reports symbols (Go). An item may carry its own reason.",
           "type": "array",
           "items": {
-            "$ref": "#/definitions/listed"
+            "$ref": "#/definitions/Listed"
           }
-        }
-      }
-    },
-    "accepted": {
-      "description": "A glob, or `name` with one glob or a list of them that share a reason.",
-      "oneOf": [
-        {
-          "type": "string"
         },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "name"
+        "max_fan_out": {
+          "description": "Most components this one may depend on.",
+          "type": [
+            "integer",
+            "null"
           ],
-          "properties": {
-            "name": {
-              "oneOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                }
-              ]
-            },
-            "because": {
-              "type": "string"
-            }
-          }
-        }
-      ]
-    },
-    "listed": {
-      "description": "A name, or a name with a reason of its own that is shown instead of the reason of the whole rule.",
-      "oneOf": [
-        {
-          "type": "string"
+          "format": "uint",
+          "default": null,
+          "minimum": 0
         },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "name"
+        "max_instability": {
+          "description": "Highest instability, out / (in + out), from 0 (stable) to 1.",
+          "type": [
+            "number",
+            "null"
           ],
-          "properties": {
-            "name": {
-              "type": "string"
-            },
-            "because": {
-              "type": "string"
-            }
+          "format": "double",
+          "default": null
+        },
+        "may_depend_on": {
+          "description": "Components this one may depend on. An item may carry its own reason, shown by `explain`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Listed"
+          }
+        },
+        "may_use_external": {
+          "description": "External modules this component may use; unset means no restriction. A pattern covers submodules: lodash covers lodash/fp. $std stands for the standard library of the importing file's language. An item may carry its own reason.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/Listed"
+          }
+        },
+        "must_depend_on": {
+          "description": "Components that every directory of this component must import at least once. An item may carry its own reason.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Listed"
+          }
+        },
+        "must_not_depend_on": {
+          "description": "Components that are never allowed, even if common or layers would allow them. An item may carry its own reason.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Listed"
+          }
+        },
+        "must_not_reach": {
+          "description": "Components this component must not depend on, directly or through any chain of imports, even when every hop is allowed. An item may carry its own reason.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Listed"
+          }
+        },
+        "must_use_external": {
+          "description": "External modules that every directory of this component must use; a pattern covers submodules. An item may carry its own reason.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Listed"
+          }
+        },
+        "requires_directive": {
+          "description": "Regular expressions that some file in every directory of this component must match, for dependencies written as comments (`//go:embed`, `goverter:converter`). An item may carry its own reason.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Listed"
+          }
+        },
+        "requires_file": {
+          "description": "File names or globs that every directory of this component must contain. An item may carry its own reason.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Listed"
           }
         }
+      },
+      "additionalProperties": false
+    },
+    "TestsMode": {
+      "type": "string",
+      "enum": [
+        "auto"
       ]
     }
   }

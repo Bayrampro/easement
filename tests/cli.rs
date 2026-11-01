@@ -1040,11 +1040,11 @@ fn schema_lists_exactly_the_config_keys() {
         config_keys("version: 1\nbogus: 1\ncomponents:\n  a: { in: a }\n")
     );
     assert_eq!(
-        keys(&schema["definitions"]["component"]),
+        keys(&schema["definitions"]["Component"]),
         config_keys("version: 1\ncomponents:\n  a: { in: a, bogus: 1 }\n")
     );
     assert_eq!(
-        keys(&schema["definitions"]["rule"]),
+        keys(&schema["definitions"]["Rule"]),
         config_keys("version: 1\ncomponents:\n  a: { in: a }\nrules:\n  a: { bogus: 1 }\n")
     );
 }
@@ -1845,8 +1845,8 @@ fn readme_mentions_every_config_key_of_the_schema() {
         }
     };
     keys(&schema);
-    keys(&schema["definitions"]["component"]);
-    keys(&schema["definitions"]["rule"]);
+    keys(&schema["definitions"]["Component"]);
+    keys(&schema["definitions"]["Rule"]);
     assert!(missing.is_empty(), "README never mentions: {missing:?}");
 }
 
