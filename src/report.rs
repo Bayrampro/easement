@@ -32,7 +32,7 @@ struct DiffInfo<'a> {
     merge_base: &'a str,
 }
 
-/// Why a verdict is only as good as the code the check could read.
+/// The files whose types `defines` could not see.
 fn naming_unseen(stats: &Stats) -> String {
     format!(
         "`defines` cannot see the types of .{} files, which are read without an index, so their names were not checked",
@@ -40,6 +40,7 @@ fn naming_unseen(stats: &Stats) -> String {
     )
 }
 
+/// Why a verdict is only as good as the code the check could read.
 fn confidence_reasons(stats: &Stats, changes: Option<&Changes>) -> Vec<String> {
     let mut reasons = Vec::new();
     if let Some(changes) = changes {

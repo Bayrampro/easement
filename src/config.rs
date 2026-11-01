@@ -574,6 +574,11 @@ impl Config {
                     .map(Patterns::as_vec)
                     .unwrap_or_default(),
             )?;
+            for pattern in &component.defines {
+                globset::Glob::new(pattern).with_context(|| {
+                    format!("bad pattern `{pattern}` in components.{name}.defines")
+                })?;
+            }
             plain(
                 &format!("components.{name}.except"),
                 component

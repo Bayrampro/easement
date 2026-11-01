@@ -275,8 +275,9 @@ impl Project {
                 .paths
                 .iter()
                 .filter(|f| map.component_of(f).is_some())
+                // Types come from an index; an adapter reads imports alone.
+                .filter(|f| !indexer::LANGUAGES.iter().any(|l| l.covers(f)))
                 .filter_map(|f| f.rsplit_once('.').map(|(_, e)| e))
-                .filter(|e| matches!(*e, "kt" | "kts" | "swift"))
                 .map(str::to_string)
                 .collect();
             stats.naming_unseen = unseen.into_iter().collect();

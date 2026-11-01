@@ -891,6 +891,29 @@ mod tests {
     }
 
     #[test]
+    fn a_type_is_the_last_descriptor_ending_in_a_hash() {
+        let last = |symbol: &str| {
+            split(symbol).and_then(|p| {
+                p.descriptors
+                    .last()
+                    .map(|(n, k)| (n.clone(), matches!(k, Kind::Type)))
+            })
+        };
+        assert_eq!(
+            last("scip-go gomod ex.com/m . `ex.com/m/repo`/OrderRepository#"),
+            Some(("OrderRepository".to_string(), true))
+        );
+        assert_eq!(
+            last("semanticdb maven . . m/Outer#Inner#"),
+            Some(("Inner".to_string(), true))
+        );
+        assert_eq!(
+            last("scip-go gomod ex.com/m . `ex.com/m/repo`/OrderRepository#Find()."),
+            Some(("Find".to_string(), false))
+        );
+    }
+
+    #[test]
     fn parses_descriptors() {
         let d = descriptors("src/lib/`index.ts`/Client#Query().").unwrap();
         let names: Vec<_> = d.iter().map(|(n, _)| n.as_str()).collect();

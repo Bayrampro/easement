@@ -462,7 +462,7 @@ components:
     because: storage goes through repositories
 ```
 
-`defines` claims type names for a component: a class, struct, interface or trait whose name matches a glob, defined in another component, fails as `naming` at its definition, with the `because` of the claiming component. A type can be claimed by several components; it has to live in one of them. Types come from the index, so Go, TypeScript, Python, Rust, Java, C#, PHP and Ruby are checked; Kotlin and Swift files are read without one, and the report says their names were not checked. The rule can be suppressed inline.
+`defines` claims type names for a component: a class, struct, interface or trait whose name matches a glob, defined in another component, fails as `naming` at its definition, with the `because` of the claiming component. A type can be claimed by several components; it has to live in one of them. Types come from the index, so Go, TypeScript, Python, Rust, Java, C#, PHP and Ruby are checked; Kotlin and Swift files are read without one, and the report says their names were not checked. In Ruby a module is a type too, and a class reopened in another component counts as defined there. The rule can be suppressed inline.
 
 ### Unused files
 

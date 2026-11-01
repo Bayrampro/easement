@@ -1287,13 +1287,15 @@ pub fn naming(
             continue;
         }
         let (owner, pattern) = owners[0];
+        let places: Vec<&str> = owners.iter().map(|(c, _)| *c).collect();
         found.push(Violation {
             rule: RuleId::Naming,
             file: def.file.clone(),
             line: def.line,
             message: format!(
-                "{} is defined in {home}, but types named like {pattern} belong in {owner}",
-                def.name
+                "{} is defined in {home}, but types named like {pattern} belong in {}",
+                def.name,
+                places.join(" or ")
             ),
             because: config.components[owner].because.clone(),
             from: home.to_string(),
@@ -1366,6 +1368,43 @@ exclude: ["src/gone/**"]
         assert_eq!(config_line(text, "c", "src/c"), 9);
         // A component that comes from `extends` is not declared here.
         assert_eq!(config_line(text, "legacy", "src/gone"), 1);
+    }
+
+    #[test]
+    fn a_type_belongs_in_one_of_the_components_that_claim_its_name() {
+        let config: Config = serde_norway::from_str(
+            "version: 1
+components:
+  web: { in: web }
+  repo: { in: repo, defines: ['*Repository'] }
+  cache: { in: cache, defines: ['*Repository', '*Cache'] }
+",
+        )
+        .unwrap();
+        let map = ComponentMap::new(&config).unwrap();
+        let def = |file: &str, name: &str| crate::scan::TypeDef {
+            file: file.into(),
+            line: 3,
+            name: name.into(),
+        };
+        let found = naming(
+            &config,
+            &map,
+            &[
+                def("web/a.go", "UserRepository"),
+                def("repo/r.go", "OrderRepository"),
+                def("cache/c.go", "OrderRepository"),
+                def("web/b.go", "Page"),
+                def("tools/t.go", "ToolRepository"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].message,
+            "UserRepository is defined in web, but types named like *Repository belong in cache or repo"
+        );
+        assert_eq!((found[0].file.as_str(), found[0].line), ("web/a.go", 3));
     }
 
     #[test]
