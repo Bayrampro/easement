@@ -1,0 +1,7 @@
+[default]
+# release-please links each CHANGELOG entry to its commit by the short hash,
+# which can look like a misspelt word (`963eacf`). Only a hash in such a link
+# is skipped.
+extend-ignore-re = [
+  '\[[0-9a-f]{7,40}\]\(https://github\.com/[^)\s]+/commit/[0-9a-f]{40}\)',
+]
