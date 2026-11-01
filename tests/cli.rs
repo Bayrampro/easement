@@ -960,6 +960,9 @@ fn component_and_scope_narrow_the_report() {
     easement(&root, &["check", "--component", "ghost"])
         .code(2)
         .stderr(contains("unknown component `ghost`"));
+    easement(&root, &["check", "--component", "pgaes"])
+        .code(2)
+        .stderr(contains("unknown component `pgaes`; did you mean `pages`?"));
 }
 
 #[test]
@@ -2356,6 +2359,11 @@ fn why_shows_the_imports_or_the_chain_between_two_components() {
     easement(&root, &["why", "http", "ghost"])
         .code(2)
         .stderr(contains("unknown component `ghost`"));
+    easement(&root, &["why", "http", "dmoain"])
+        .code(2)
+        .stderr(contains(
+            "unknown component `dmoain`; did you mean `domain`?",
+        ));
 }
 
 #[test]
@@ -2368,6 +2376,9 @@ fn graph_focus_keeps_a_component_and_its_neighbours() {
     easement(&root, &["graph", "--focus", "ghost"])
         .code(2)
         .stderr(contains("unknown component `ghost`"));
+    easement(&root, &["graph", "--focus", "dat"])
+        .code(2)
+        .stderr(contains("unknown component `dat`; did you mean `data`?"));
 }
 
 #[test]

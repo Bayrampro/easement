@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
 use crate::components::ComponentMap;
@@ -18,9 +18,7 @@ pub struct Scope {
 impl Scope {
     pub fn new(config: &Config, components: &[String], paths: &[String]) -> Result<Self> {
         for name in components {
-            if !config.components.contains_key(name) {
-                bail!("--component names unknown component `{name}`");
-            }
+            config.require_component(name).context("--component")?;
         }
         let paths = if paths.is_empty() {
             None
@@ -81,6 +79,6 @@ components:
         assert!(!both.contains(&map, "web/a.ts"));
 
         let err = Scope::new(&config, &["ghost".into()], &[]).err().unwrap();
-        assert!(err.to_string().contains("ghost"));
+        assert_eq!(format!("{err:#}"), "--component: unknown component `ghost`");
     }
 }

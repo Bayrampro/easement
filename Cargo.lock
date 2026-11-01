@@ -236,6 +236,7 @@ dependencies = [
  "serde_path_to_error",
  "similar",
  "streaming-iterator",
+ "strsim",
  "tempfile",
  "tree-sitter",
  "tree-sitter-kotlin-ng",

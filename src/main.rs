@@ -572,10 +572,8 @@ fn run(cli: Cli) -> Result<bool> {
             focus,
         } => {
             let project = Project::open(&config)?;
-            if let Some(name) = &focus
-                && !project.config.components.contains_key(name)
-            {
-                anyhow::bail!("unknown component `{name}`");
+            if let Some(name) = &focus {
+                project.config.require_component(name)?;
             }
             let analysis =
                 project.analyze(&mut scan::Cache::default(), &scope::Scope::default())?;

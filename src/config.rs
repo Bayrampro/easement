@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::check::RuleId;
 use crate::stdlib::STD;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use serde_norway::{Mapping, Value};
 
@@ -329,6 +329,18 @@ impl Config {
         Ok(config)
     }
 
+    /// Fails when `name` is no component, naming the one it is likely a typo of.
+    pub fn require_component(&self, name: &str) -> Result<()> {
+        if self.components.contains_key(name) {
+            return Ok(());
+        }
+        Err(unknown_component(
+            name,
+            "",
+            self.components.keys().map(String::as_str),
+        ))
+    }
+
     /// Whether any rule needs the uses of names, not only the imports.
     pub fn uses_symbols(&self) -> bool {
         self.components.values().any(|c| c.public_symbols.is_some())
@@ -400,7 +412,11 @@ impl Config {
         let known: BTreeSet<&str> = self.components.keys().map(String::as_str).collect();
         let check = |name: &str, place: &str| -> Result<()> {
             if !known.contains(name) {
-                bail!("unknown component `{name}` in {place}");
+                return Err(unknown_component(
+                    name,
+                    &format!(" in {place}"),
+                    known.iter().copied(),
+                ));
             }
             Ok(())
         };
@@ -674,6 +690,26 @@ impl Config {
     }
 }
 
+/// The error for `name`, which is no component in `known`: `place` says where it
+/// was found (` in common`, or nothing), and the error names the component
+/// `name` is likely a typo of (a few edits away, a transposition counting as one).
+fn unknown_component<'a>(
+    name: &str,
+    place: &str,
+    known: impl IntoIterator<Item = &'a str>,
+) -> anyhow::Error {
+    let limit = (name.chars().count() / 3).max(1);
+    let closest = known
+        .into_iter()
+        .map(|k| (strsim::damerau_levenshtein(name, k), k))
+        .filter(|(distance, _)| *distance <= limit)
+        .min();
+    match closest {
+        Some((_, k)) => anyhow!("unknown component `{name}`{place}; did you mean `{k}`?"),
+        None => anyhow!("unknown component `{name}`{place}"),
+    }
+}
+
 /// Reads a config file and merges the files it `extends` underneath it.
 ///
 /// `extends` is a path or a list of paths, relative to the file that names them.
@@ -842,6 +878,23 @@ rules:
             err.contains("components.b.publik: unknown field `publik`"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn an_unknown_component_suggests_the_closest_name() {
+        let yaml = |common: &str| {
+            format!(
+                "version: 1\ncomponents:\n  billing: {{ in: b }}\n  shared: {{ in: s }}\ncommon: [{common}]\n"
+            )
+        };
+        let err = parse(&yaml("shraed")).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "unknown component `shraed` in common; did you mean `shared`?"
+        );
+        // Nothing is close enough: no guess.
+        let err = parse(&yaml("payments")).unwrap_err().to_string();
+        assert_eq!(err, "unknown component `payments` in common");
     }
 
     #[test]

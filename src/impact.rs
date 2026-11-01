@@ -167,9 +167,7 @@ pub struct Graph<'a> {
 /// when there is no direct one.
 pub fn why(config: &Config, graph: &Graph, from: &str, to: &str) -> Result<String> {
     for name in [from, to] {
-        if !config.components.contains_key(name) {
-            bail!("unknown component `{name}`");
-        }
+        config.require_component(name)?;
     }
     let rule = config.rules.get(from);
     let verdict = if config.forbids(from, to) {
