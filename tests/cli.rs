@@ -1611,10 +1611,16 @@ rules:
         pairs(&root),
         [("src/app/a.ts".to_string(), "generated".to_string())]
     );
-    // `exclude` hides the file altogether: no import of it is seen, and the
-    // component that owned it matches no file.
+    // `exclude` hides the file altogether: importing it fails as `excluded`,
+    // and the component that owned it matches no file.
     let (_tmp, root) = files(config("exclude"));
-    assert_eq!(pairs(&root), [("easement.yml".to_string(), String::new())]);
+    assert_eq!(
+        pairs(&root),
+        [
+            ("easement.yml".to_string(), String::new()),
+            ("src/app/a.ts".to_string(), String::new())
+        ]
+    );
 }
 
 #[test]
@@ -1909,4 +1915,89 @@ fn a_new_file_in_a_directory_with_baselined_requirement_is_not_new_debt() {
     easement(&root, &["check"])
         .success()
         .stdout(contains("1 legalized"));
+}
+
+#[test]
+fn an_import_of_an_excluded_file_fails() {
+    let config = "version: 1\ncomponents:\n  app: { in: src/app }\nrules:\n  app: { may_depend_on: [] }\nexclude: [src/legacy]\n";
+    // Resolved by an indexer.
+    let (_tmp, root) = project(&[
+        ("easement.yml", config),
+        ("src/legacy/api.ts", "export const api = 1;\n"),
+        (
+            "src/app/a.ts",
+            "import { api } from \"../legacy/api\";\nexport const a = api;\n",
+        ),
+    ]);
+    easement(&root, &["check"]).code(1).stdout(contains(
+        "src/app/a.ts:1: app imports src/legacy/api.ts, which `exclude` hides, so no rule checks it",
+    ));
+    // Resolved by a tree-sitter adapter.
+    let (_tmp, root) = project(&[
+        ("easement.yml", config),
+        ("src/legacy/Api.kt", "package legacy\nclass Api\n"),
+        ("src/app/A.kt", "package app\nimport legacy.Api\nclass A\n"),
+    ]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("src/app/A.kt:2: app imports src/legacy/Api.kt"))
+        .stdout(contains("[excluded]"))
+        .stdout(contains("[dependency]").not());
+    // A deliberate exception is suppressed like any import.
+    fs::write(
+        root.join("src/app/A.kt"),
+        "package app\n// easement:disable-next-line excluded -- legacy client, remove with #1\nimport legacy.Api\nclass A\n",
+    )
+    .unwrap();
+    easement(&root, &["check"]).success();
+}
+
+#[test]
+fn an_excluded_file_is_part_of_the_index_cache_key() {
+    let config = "version: 1\ncomponents:\n  app: { in: src/app }\nrules:\n  app: { may_depend_on: [] }\nexclude: [src/gen]\n";
+    let (_tmp, root) = project(&[
+        ("easement.yml", config),
+        ("src/gen/keep.ts", "export {};\n"),
+        (
+            "src/app/a.ts",
+            "import { g } from \"../gen/g\";\nexport const a = g;\n",
+        ),
+    ]);
+    let cache = TempDir::new().unwrap();
+    easement_cached(&root, &["check"], cache.path()).success();
+    // Code generation writes the file the app imports.
+    fs::write(root.join("src/gen/g.ts"), "export const g = 1;\n").unwrap();
+    easement_cached(&root, &["check"], cache.path())
+        .code(1)
+        .stdout(contains("[excluded]"));
+}
+
+#[test]
+fn excluded_wildcard_imports_and_ignored_files() {
+    // A Kotlin wildcard import resolves to the directory.
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: src/app }\nexclude: ['src/legacy/**']\n",
+        ),
+        ("src/legacy/Api.kt", "package legacy\nclass Api\n"),
+        ("src/app/A.kt", "package app\nimport legacy.*\nclass A\n"),
+    ]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("src/app/A.kt:2: app imports src/legacy"));
+    // A file that .gitignore hides is not read, in any language.
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: src/app }\nexclude: [src/gen]\n",
+        ),
+        (".gitignore", "src/gen/\n"),
+        ("src/gen/g.ts", "export const g = 1;\n"),
+        (
+            "src/app/a.ts",
+            "import { g } from \"../gen/g\";\nexport const a = g;\n",
+        ),
+    ]);
+    easement(&root, &["check"]).success();
 }

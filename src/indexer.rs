@@ -350,8 +350,18 @@ fn environment(language: &Language, go_tags: &[String]) -> Vec<(&'static str, St
     vec![("GOFLAGS", flags)]
 }
 
-pub fn run(root: &Path, files: &[String], cache: CacheUse, go_tags: &[String]) -> Result<Indexed> {
+/// `excluded` are files that `exclude` hides: they are not indexed for
+/// themselves, but the index resolves imports of them, so they are part of
+/// the cache key.
+pub fn run(
+    root: &Path,
+    files: &[String],
+    excluded: &[String],
+    cache: CacheUse,
+    go_tags: &[String],
+) -> Result<Indexed> {
     let (mut ran, mut cached) = (0, 0);
+    let keyed: Vec<String> = files.iter().chain(excluded).cloned().collect();
     let mut parts = Vec::new();
     let mut wanted: Vec<&String> = Vec::new();
     for language in LANGUAGES {
@@ -366,7 +376,7 @@ pub fn run(root: &Path, files: &[String], cache: CacheUse, go_tags: &[String]) -
             continue;
         }
         for dir in roots {
-            let (documents, from_cache) = index_dir(language, root, &dir, files, cache, go_tags)?;
+            let (documents, from_cache) = index_dir(language, root, &dir, &keyed, cache, go_tags)?;
             parts.push(documents);
             if from_cache {
                 cached += 1;

@@ -38,6 +38,8 @@ pub enum RuleId {
     SuppressionReason,
     /// An `in` pattern of a component that matches no file of the project.
     Unmatched,
+    /// An import of a file that `exclude` hides.
+    Excluded,
 }
 
 impl RuleId {
@@ -56,6 +58,7 @@ impl RuleId {
             RuleId::UnusedSuppression => "unused-suppression",
             RuleId::SuppressionReason => "suppression-reason",
             RuleId::Unmatched => "unmatched",
+            RuleId::Excluded => "excluded",
         }
     }
 
@@ -67,12 +70,13 @@ impl RuleId {
     }
 
     /// Rules that an inline comment can suppress.
-    pub const SUPPRESSIBLE: [RuleId; 5] = [
+    pub const SUPPRESSIBLE: [RuleId; 6] = [
         RuleId::Dependency,
         RuleId::Privacy,
         RuleId::External,
         RuleId::Isolation,
         RuleId::Symbol,
+        RuleId::Excluded,
     ];
 
     pub fn suppressible(s: &str) -> Option<Self> {
@@ -249,6 +253,23 @@ pub fn evaluate(
             }
             continue;
         };
+        if map.is_excluded(&target) {
+            found.push(Violation {
+                rule: RuleId::Excluded,
+                evidence: vec![(file.clone(), dep.line)],
+                file,
+                line: dep.line,
+                message: format!(
+                    "{from} imports {target}, which `exclude` hides, so no rule checks it; list it in `target_only` if it is generated, else do not import it"
+                ),
+                because: None,
+                from: from.to_string(),
+                to: String::new(),
+                target,
+                specifier: dep.specifier.clone(),
+            });
+            continue;
+        }
         let Some(to) = map.component_of(&target) else {
             continue;
         };

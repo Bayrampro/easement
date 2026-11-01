@@ -499,7 +499,10 @@ pub struct Facts {
 
 /// One `Dep` per file and module it refers to, at the first line that does:
 /// the import. With `symbols`, also one `SymbolRef` per use of a name.
-pub fn facts(documents: &[Document], symbols: bool) -> Facts {
+///
+/// `excluded` are documents of files that `exclude` hides: never read as
+/// sources, they only resolve the names that no document of `documents` defines.
+pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Facts {
     let mut defined: HashMap<&str, &str> = HashMap::new();
     // Symbols that more than one file defines: a Ruby module reopened in each file under it.
     let mut reopened: HashSet<&str> = HashSet::new();
@@ -514,32 +517,49 @@ pub fn facts(documents: &[Document], symbols: bool) -> Facts {
             }
         }
     }
+    let mut hidden: HashMap<&str, &str> = HashMap::new();
+    for document in excluded {
+        for symbol in &document.definitions {
+            if !defined.contains_key(symbol.as_str()) {
+                let entry = hidden.entry(symbol).or_insert(&document.path);
+                if document.path.as_str() < *entry {
+                    *entry = &document.path;
+                }
+            }
+        }
+    }
     // Packages that define something are the project's own: a reference into
     // one that no definition matches (a relative import in Python) is not external.
     let own: BTreeSet<String> = defined
         .keys()
+        .chain(hidden.keys())
         .filter_map(|symbol| split(symbol).map(|parsed| parsed.owner()))
         .collect();
     // Python names a module by its path from the working directory in its
     // definition (`src.shop.infra`) but as imported in a reference (`shop.infra`,
     // or just `views` for a relative import), so match those by their ending.
-    let mut python_modules: Vec<(String, &str)> = Vec::new();
-    for (symbol, path) in &defined {
-        if let Some(parsed) = split(symbol)
-            && parsed.scheme == "scip-python"
-            && matches!(parsed.referent(), Referent::Module)
-        {
-            python_modules.push((parsed.namespace("."), path));
-        }
-    }
+    let modules_of = |defined: &HashMap<&str, &'_ str>| -> Vec<(String, String)> {
+        defined
+            .iter()
+            .filter_map(|(symbol, path)| {
+                let parsed = split(symbol)?;
+                (parsed.scheme == "scip-python" && matches!(parsed.referent(), Referent::Module))
+                    .then(|| (parsed.namespace("."), path.to_string()))
+            })
+            .collect()
+    };
+    let python_modules = [modules_of(&defined), modules_of(&hidden)];
+    // An excluded module is the answer only when no checked one matches.
     let python_module = |name: &str| -> Option<&str> {
         let ending = format!(".{name}");
-        let mut found = python_modules
-            .iter()
-            .filter(|(module, _)| module == name || module.ends_with(&ending))
-            .map(|(_, path)| *path);
-        let first = found.next()?;
-        found.all(|path| path == first).then_some(first)
+        python_modules.iter().find_map(|modules| {
+            let mut found = modules
+                .iter()
+                .filter(|(module, _)| module == name || module.ends_with(&ending))
+                .map(|(_, path)| path.as_str());
+            let first = found.next()?;
+            found.all(|path| path == first).then_some(first)
+        })
     };
     let mut deps = Vec::new();
     let mut uses = Vec::new();
@@ -598,7 +618,10 @@ pub fn facts(documents: &[Document], symbols: bool) -> Facts {
             let Some(parsed) = split(&symbol) else {
                 continue;
             };
-            let mut internal = defined.get(symbol.as_str()).copied();
+            let mut internal = defined
+                .get(symbol.as_str())
+                .or_else(|| hidden.get(symbol.as_str()))
+                .copied();
             match parsed.referent() {
                 Referent::Module => {
                     if shadowed(&parsed, reference.line) {
@@ -730,7 +753,7 @@ mod tests {
                 ],
             ),
         ];
-        let deps = facts(&docs, false).deps;
+        let deps = facts(&docs, &[], false).deps;
         let found: Vec<_> = deps
             .iter()
             .map(|d| (d.line, d.specifier.as_str()))
@@ -746,7 +769,7 @@ mod tests {
             doc("lib/order.rb", &[order, find], &[]),
             doc("lib/web.rb", &[], &[(5, find)]),
         ];
-        let deps = facts(&docs, false).deps;
+        let deps = facts(&docs, &[], false).deps;
         let found: Vec<_> = deps
             .iter()
             .map(|d| (d.line, d.specifier.as_str()))
@@ -800,7 +823,7 @@ mod tests {
                 ],
             ),
         ];
-        let uses: Vec<_> = facts(&docs, true)
+        let uses: Vec<_> = facts(&docs, &[], true)
             .symbols
             .into_iter()
             .map(|u| {
@@ -855,7 +878,7 @@ mod tests {
                 ),
             ]
         );
-        assert!(facts(&docs, false).symbols.is_empty());
+        assert!(facts(&docs, &[], false).symbols.is_empty());
     }
 
     #[test]
@@ -892,7 +915,7 @@ mod tests {
                 ],
             ),
         ];
-        let facts = facts(&documents, false);
+        let facts = facts(&documents, &[], false);
         let got: Vec<_> = facts
             .deps
             .iter()
@@ -912,6 +935,38 @@ mod tests {
     }
 
     #[test]
+    fn excluded_documents_only_resolve_what_no_source_defines() {
+        let generated = "scip-go gomod example.com/app . `example.com/app/gen`/";
+        let sources = vec![
+            doc("internal/db/db.go", &[DB], &[]),
+            doc("internal/handlers/h.go", &[], &[(3, DB), (4, generated)]),
+        ];
+        // `a_gen` sorts first and also defines DB; it must not win.
+        let excluded = vec![
+            doc("a_gen/db.go", &[DB], &[(1, DB)]),
+            doc("gen/gen.go", &[generated], &[]),
+        ];
+        let got: Vec<_> = facts(&sources, &excluded, false)
+            .deps
+            .iter()
+            .map(|d| (d.file.to_str().unwrap().to_string(), d.target.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "internal/handlers/h.go".to_string(),
+                    Target::Internal(PathBuf::from("gen/gen.go"))
+                ),
+                (
+                    "internal/handlers/h.go".to_string(),
+                    Target::Internal(PathBuf::from("internal/db/db.go"))
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn member_references_are_symbol_uses() {
         let documents = vec![
             doc("internal/db/db.go", &[DB, &format!("{DB}Client#")], &[]),
@@ -924,7 +979,7 @@ mod tests {
                 ],
             ),
         ];
-        let uses = facts(&documents, true).symbols;
+        let uses = facts(&documents, &[], true).symbols;
         assert_eq!(uses.len(), 2);
         assert_eq!(uses[0].name, "Client");
         assert_eq!(uses[0].specifier, "example.com/app/internal/db");
@@ -933,7 +988,7 @@ mod tests {
             Some(Target::Internal(PathBuf::from("internal/db/db.go")))
         );
         assert_eq!(uses[1].target, Some(Target::External("fmt".into())));
-        assert!(facts(&documents, false).symbols.is_empty());
+        assert!(facts(&documents, &[], false).symbols.is_empty());
     }
 
     #[test]
@@ -957,7 +1012,7 @@ mod tests {
                 ],
             ),
         ];
-        let deps = facts(&documents, false).deps;
+        let deps = facts(&documents, &[], false).deps;
         let got: Vec<_> = deps.iter().map(|d| (d.line, d.target.clone())).collect();
         assert_eq!(
             got,
@@ -978,7 +1033,7 @@ mod tests {
             &[],
             &[(1, "scip-typescript npm @types/lodash 4.0.0 `index.d.ts`/")],
         )];
-        let facts = facts(&documents, false);
+        let facts = facts(&documents, &[], false);
         assert_eq!(facts.deps[0].target, Target::External("lodash".into()));
         let deep = split("scip-typescript npm moment 2.0.0 locale/`ru.d.ts`/").unwrap();
         assert_eq!(deep.external_module(), "moment/locale/ru");

@@ -16,6 +16,8 @@ pub struct ComponentMap {
     except: std::collections::HashMap<String, Vec<[GlobMatcher; 3]>>,
     /// Files that may belong to no component in strict mode.
     unowned: GlobSet,
+    /// Files that `exclude` hides.
+    excluded: GlobSet,
     /// Source files that may stay uncovered by an indexer.
     uncovered_ok: GlobSet,
     /// Component -> matchers of its public paths, for components that declare them.
@@ -152,15 +154,6 @@ impl ComponentMap {
                 public.insert(name.clone(), matchers);
             }
         }
-        let mut unowned = GlobSetBuilder::new();
-        for pattern in &config.unowned {
-            let pattern = pattern.trim_end_matches('/');
-            for glob in [pattern.to_string(), format!("{pattern}/**")] {
-                unowned.add(
-                    Glob::new(&glob).with_context(|| format!("bad unowned pattern `{pattern}`"))?,
-                );
-            }
-        }
         let mut uncovered_ok = GlobSetBuilder::new();
         for accepted in &config.uncovered_ok {
             for pattern in accepted.patterns() {
@@ -176,7 +169,8 @@ impl ComponentMap {
         Ok(Self {
             entries,
             except,
-            unowned: unowned.build()?,
+            unowned: crate::scan::glob_set(&config.unowned, "unowned")?,
+            excluded: crate::scan::glob_set(&config.exclude, "exclude")?,
             uncovered_ok: uncovered_ok.build()?,
             public,
             externals,
@@ -201,6 +195,12 @@ impl ComponentMap {
     /// Whether strict mode lets `rel_path` belong to no component.
     pub fn is_unowned(&self, rel_path: &str) -> bool {
         self.unowned.is_match(rel_path)
+    }
+
+    /// Whether `exclude` hides `rel_path`, a file or a directory: a directory
+    /// is hidden when a pattern hides everything below it (`src/legacy/**`).
+    pub fn is_excluded(&self, rel_path: &str) -> bool {
+        self.excluded.is_match(rel_path) || self.excluded.is_match(format!("{rel_path}/-"))
     }
 
     /// Whether `uncovered_ok` accepts that no indexer covers `rel_path`.

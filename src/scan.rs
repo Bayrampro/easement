@@ -98,6 +98,8 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
     let adapters = lang::adapters(root)?;
     let mut paths = Vec::new();
     let mut all_files = Vec::new();
+    // Excluded files the walk sees (not the ones .gitignore hides).
+    let mut excluded = HashSet::new();
     let mut deps = Vec::new();
     let mut suppressions = Vec::new();
     let mut seen = HashSet::new();
@@ -111,6 +113,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
             continue;
         };
         if exclude.is_match(&rel) {
+            excluded.insert(slash(&rel));
             continue;
         }
         all_files.push(slash(&rel));
@@ -159,14 +162,24 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
     }
     cache.parsed.retain(|path, _| seen.contains(path));
 
-    let indexed = indexer::run(root, &all_files, cache.index_cache, &config.go.tags)?;
+    let mut hidden: Vec<String> = excluded.iter().cloned().collect();
+    hidden.sort();
+    let indexed = indexer::run(
+        root,
+        &all_files,
+        &hidden,
+        cache.index_cache,
+        &config.go.tags,
+    )?;
     let project: HashSet<&str> = all_files.iter().map(String::as_str).collect();
-    let documents: Vec<scip::Document> = indexed
+    // Excluded files are never read as sources, but what they define stays
+    // resolvable, so an import of one is seen and fails as `excluded`.
+    let (documents, hidden): (Vec<scip::Document>, Vec<scip::Document>) = indexed
         .documents
         .0
         .into_iter()
-        .filter(|d| project.contains(d.path.as_str()))
-        .collect();
+        .filter(|d| project.contains(d.path.as_str()) || excluded.contains(&d.path))
+        .partition(|d| project.contains(d.path.as_str()));
     for document in documents
         .iter()
         .filter(|d| !target_only.is_match(d.path.as_str()))
@@ -176,7 +189,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
             suppressions.extend(suppress::parse(&document.path, &source));
         }
     }
-    let facts = scip::facts(&documents, config.uses_symbols());
+    let facts = scip::facts(&documents, &hidden, config.uses_symbols());
     let is_source = |file: &Path| {
         let file = slash(file);
         project.contains(file.as_str()) && !target_only.is_match(&file)
@@ -186,6 +199,11 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         .symbols
         .into_iter()
         .filter(|symbol| is_source(&symbol.file))
+        // A use of a name an excluded file defines adds nothing: its import
+        // already fails as `excluded`.
+        .filter(|symbol| {
+            !matches!(&symbol.target, Some(Target::Internal(path)) if exclude.is_match(path))
+        })
         .collect();
     Ok(Scan {
         all_files,
@@ -198,7 +216,8 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
     })
 }
 
-fn glob_set(patterns: &[String], key: &str) -> Result<GlobSet> {
+/// Matches each pattern and everything below it.
+pub fn glob_set(patterns: &[String], key: &str) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for p in patterns {
         let p = p.trim_end_matches('/');
