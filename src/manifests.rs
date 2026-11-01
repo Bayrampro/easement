@@ -5,6 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use regex::Regex;
+
 use crate::check::{RuleId, Violation};
 use crate::components::ComponentMap;
 use crate::config::Config;
@@ -39,7 +41,8 @@ impl Kind {
 
     /// The package an external module belongs to: `lodash` for
     /// `lodash/fp`, `@scope/pkg` for `@scope/pkg/x`, the crate for a Rust
-    /// path. Go modules are matched by prefix instead, so the path stays.
+    /// path (already written with `_`). Go modules are matched by prefix
+    /// instead, so the path stays.
     fn package(self, module: &str) -> String {
         match self {
             Kind::Npm => {
@@ -51,31 +54,34 @@ impl Kind {
                 }
             }
             Kind::Go => module.to_string(),
-            Kind::Cargo => module
-                .split("::")
-                .next()
-                .unwrap_or(module)
-                .replace('-', "_"),
+            Kind::Cargo => module.split("::").next().unwrap_or(module).to_string(),
         }
     }
 }
 
+const NPM_SECTIONS: [&str; 4] = [
+    "dependencies",
+    "devDependencies",
+    "peerDependencies",
+    "optionalDependencies",
+];
+
 /// What a manifest declares: the names of its dependencies, and its own
-/// name, which a file of the package may import too.
-fn declared(kind: Kind, text: &str) -> BTreeSet<String> {
+/// name, which a file of the package may import too. `None` for a manifest
+/// that cannot be read, and for a `package.json` that only marks its
+/// directory (`{"type": "module"}`), which is no package of its own.
+fn declared(kind: Kind, text: &str) -> Option<BTreeSet<String>> {
     let mut names = BTreeSet::new();
     match kind {
         Kind::Npm => {
-            let json: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+            let json: serde_json::Value = serde_json::from_str(text).ok()?;
+            if json["name"].is_null() && NPM_SECTIONS.iter().all(|s| json[s].is_null()) {
+                return None;
+            }
             if let Some(name) = json["name"].as_str() {
                 names.insert(name.to_string());
             }
-            for section in [
-                "dependencies",
-                "devDependencies",
-                "peerDependencies",
-                "optionalDependencies",
-            ] {
+            for section in NPM_SECTIONS {
                 for name in json[section].as_object().into_iter().flat_map(|m| m.keys()) {
                     names.insert(name.clone());
                     // `@types/node` declares the types of `node`, `@types/a__b` of `@a/b`.
@@ -109,7 +115,7 @@ fn declared(kind: Kind, text: &str) -> BTreeSet<String> {
             }
         }
         Kind::Cargo => {
-            let table: toml::Table = toml::from_str(text).unwrap_or_default();
+            let table: toml::Table = toml::from_str(text).ok()?;
             if let Some(name) = table
                 .get("package")
                 .and_then(|p| p.get("name"))
@@ -117,8 +123,9 @@ fn declared(kind: Kind, text: &str) -> BTreeSet<String> {
             {
                 names.insert(name.replace('-', "_"));
             }
+            let keys = ["dependencies", "dev-dependencies", "build-dependencies"];
             let mut sections: Vec<&toml::Value> = Vec::new();
-            for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            for key in keys {
                 sections.extend(table.get(key));
                 sections.extend(table.get("workspace").and_then(|w| w.get(key)));
             }
@@ -128,27 +135,60 @@ fn declared(kind: Kind, text: &str) -> BTreeSet<String> {
                 .into_iter()
                 .flat_map(|t| t.values())
             {
-                for key in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                for key in keys {
                     sections.extend(target.get(key));
                 }
             }
             for section in sections {
-                for name in section.as_table().into_iter().flat_map(|t| t.keys()) {
+                for (name, spec) in section.as_table().into_iter().flatten() {
                     names.insert(name.replace('-', "_"));
+                    // `json = { package = "serde_json" }`: the index names the real crate.
+                    if let Some(real) = spec.get("package").and_then(|p| p.as_str()) {
+                        names.insert(real.replace('-', "_"));
+                    }
                 }
             }
         }
     }
-    names
+    Some(names)
 }
 
-/// Whether a manifest that declares `names` covers the package of `module`.
+/// Whether a manifest that declares `names` covers `package`.
 fn covers(kind: Kind, names: &BTreeSet<String>, package: &str) -> bool {
     match kind {
         Kind::Go => names
             .iter()
             .any(|m| package == m || package.starts_with(&format!("{m}/"))),
         Kind::Npm | Kind::Cargo => names.contains(package),
+    }
+}
+
+/// Whether the source of a file names `package` in an import. The index
+/// names the package that defines a symbol, which differs from the one the
+/// code imports for a re-export (`serde` re-exports `serde_core`), a global
+/// type (`NodeJS.Timeout`) or a Node builtin; only the imported one has to
+/// be declared.
+fn names_in_source(kind: Kind, source: &str, package: &str) -> bool {
+    match kind {
+        Kind::Npm => {
+            let quoted = Regex::new(
+                r#"(?:\bfrom|\bimport|\brequire\s*\(|\bimport\s*\()\s*["']([^"']+)["']"#,
+            )
+            .expect("valid regex");
+            quoted
+                .captures_iter(source)
+                .any(|c| Kind::Npm.package(&c[1]) == package)
+        }
+        Kind::Cargo => {
+            let name = regex::escape(package);
+            Regex::new(&format!(
+                r"(?:^|[^\w:]){name}::|\bextern\s+crate\s+{name}\b"
+            ))
+            .expect("valid regex")
+            .is_match(source)
+        }
+        // A Go import is the package path itself.
+        Kind::Go => true,
     }
 }
 
@@ -173,7 +213,10 @@ pub fn undeclared(
         };
     }
     let known: BTreeSet<&str> = all_files.iter().map(String::as_str).collect();
-    let mut cache: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // Manifest -> what it declares; `None` when it declares no package.
+    let mut manifests: BTreeMap<String, Option<BTreeSet<String>>> = BTreeMap::new();
+    let mut unreadable: BTreeSet<String> = BTreeSet::new();
+    let mut sources: BTreeMap<String, String> = BTreeMap::new();
     let mut violations = Vec::new();
     let mut unjudged = BTreeSet::new();
     let mut orphans = BTreeSet::new();
@@ -189,18 +232,23 @@ pub fn undeclared(
         if crate::stdlib::is_std(&file, module) {
             continue;
         }
-        let Some(manifest) = nearest(&file, kind.file_name(), &known) else {
+        let Some(manifest) =
+            package_manifest(&file, kind, root, &known, &mut manifests, &mut unreadable)
+        else {
             orphans.insert(kind.file_name());
             continue;
         };
-        let names = cache.entry(manifest.clone()).or_insert_with(|| {
-            declared(
-                kind,
-                &std::fs::read_to_string(root.join(&manifest)).unwrap_or_default(),
-            )
-        });
+        let Some(Some(names)) = manifests.get(&manifest) else {
+            continue; // unreadable: reported once below
+        };
         let package = kind.package(module);
         if covers(kind, names, &package) {
+            continue;
+        }
+        let source = sources
+            .entry(file.clone())
+            .or_insert_with(|| std::fs::read_to_string(root.join(&file)).unwrap_or_default());
+        if !names_in_source(kind, source, &package) {
             continue;
         }
         violations.push(Violation {
@@ -226,6 +274,13 @@ pub fn undeclared(
             exts.join(", .")
         ));
     }
+    if !unreadable.is_empty() {
+        let list: Vec<String> = unreadable.into_iter().collect();
+        reasons.push(format!(
+            "{} could not be read, so the imports of the files under it were not checked",
+            list.join(", ")
+        ));
+    }
     if !orphans.is_empty() {
         let names: Vec<&str> = orphans.into_iter().collect();
         reasons.push(format!(
@@ -236,6 +291,42 @@ pub fn undeclared(
     Undeclared {
         violations,
         reasons,
+    }
+}
+
+/// The manifest that governs `file`: the nearest one above it that declares
+/// a package, passing over a `package.json` that only marks its directory.
+/// An unreadable one stops the search and is recorded in `unreadable`.
+fn package_manifest(
+    file: &str,
+    kind: Kind,
+    root: &Path,
+    known: &BTreeSet<&str>,
+    manifests: &mut BTreeMap<String, Option<BTreeSet<String>>>,
+    unreadable: &mut BTreeSet<String>,
+) -> Option<String> {
+    let mut below = file.to_string();
+    loop {
+        let manifest = nearest(&below, kind.file_name(), known)?;
+        let declares = manifests
+            .entry(manifest.clone())
+            .or_insert_with(|| {
+                let text = std::fs::read_to_string(root.join(&manifest)).unwrap_or_default();
+                let names = declared(kind, &text);
+                let marker =
+                    kind == Kind::Npm && serde_json::from_str::<serde_json::Value>(&text).is_ok();
+                if names.is_none() && !marker {
+                    unreadable.insert(manifest.clone());
+                }
+                names
+            })
+            .is_some();
+        if declares || unreadable.contains(&manifest) {
+            return Some(manifest);
+        }
+        // A marker: look above its directory.
+        let dir = manifest.rsplit_once('/').map(|(d, _)| d)?;
+        below = dir.to_string();
     }
 }
 
@@ -277,25 +368,57 @@ mod tests {
         let npm = declared(
             Kind::Npm,
             r#"{"name": "app", "dependencies": {"react": "1"}, "devDependencies": {"@types/node": "1", "@types/babel__core": "1"}}"#,
-        );
+        )
+        .unwrap();
         for name in ["app", "react", "node", "@babel/core"] {
             assert!(npm.contains(name), "{name}");
         }
         let go = declared(
             Kind::Go,
             "module ex.com/m\n\ngo 1.22\n\nrequire github.com/lib/pq v1.10.0\n\nrequire (\n\tgolang.org/x/sync v0.1.0 // indirect\n\tgithub.com/a/b v1.0.0\n)\n",
-        );
+        )
+        .unwrap();
         assert!(covers(Kind::Go, &go, "github.com/lib/pq"));
         assert!(covers(Kind::Go, &go, "golang.org/x/sync/errgroup"));
         assert!(covers(Kind::Go, &go, "ex.com/m/internal/x"));
         assert!(!covers(Kind::Go, &go, "github.com/a/bc"));
         let cargo = declared(
             Kind::Cargo,
-            "[package]\nname = \"my-app\"\n\n[dependencies]\nserde = \"1\"\nserde-json = { version = \"1\" }\n\n[dev-dependencies.insta]\nversion = \"1\"\n\n[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n",
-        );
-        for name in ["my_app", "serde", "serde_json", "insta", "libc"] {
+            "[package]\nname = \"my-app\"\n\n[dependencies]\nserde = \"1\"\nserde-json = { version = \"1\" }\njson5 = { package = \"json-five\", version = \"1\" }\n\n[dev-dependencies.insta]\nversion = \"1\"\n\n[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n",
+        )
+        .unwrap();
+        for name in [
+            "my_app",
+            "serde",
+            "serde_json",
+            "insta",
+            "libc",
+            "json5",
+            "json_five",
+        ] {
             assert!(cargo.contains(name), "{name}");
         }
+    }
+
+    #[test]
+    fn a_marker_or_a_broken_manifest_declares_nothing() {
+        assert!(declared(Kind::Npm, r#"{"type": "module"}"#).is_none());
+        assert!(declared(Kind::Npm, "{ not json").is_none());
+        assert!(declared(Kind::Cargo, "[dependencies\n").is_none());
+    }
+
+    #[test]
+    fn only_a_package_the_source_imports_has_to_be_declared() {
+        let ts =
+            "import { a } from \"pkg/sub\";\nlet t: NodeJS.Timeout;\nimport fs from \"node:fs\";\n";
+        assert!(names_in_source(Kind::Npm, ts, "pkg"));
+        assert!(!names_in_source(Kind::Npm, ts, "node"));
+        assert!(!names_in_source(Kind::Npm, ts, "b"));
+        let rs = "use serde::de::Error;\nextern crate libc;\nfn f() { other::x(); }\n";
+        assert!(names_in_source(Kind::Cargo, rs, "serde"));
+        assert!(names_in_source(Kind::Cargo, rs, "libc"));
+        assert!(!names_in_source(Kind::Cargo, rs, "serde_core"));
+        assert!(!names_in_source(Kind::Cargo, "use my::serde::x;", "serde"));
     }
 
     #[test]
@@ -310,5 +433,29 @@ mod tests {
             Some("package.json")
         );
         assert_eq!(nearest("a.go", "go.mod", &known), None);
+    }
+
+    #[test]
+    fn a_marker_package_json_is_passed_over() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/esm")).unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"name": "app"}"#).unwrap();
+        std::fs::write(
+            dir.path().join("src/esm/package.json"),
+            r#"{"type": "module"}"#,
+        )
+        .unwrap();
+        let known: BTreeSet<&str> = ["package.json", "src/esm/package.json"].into();
+        let (mut manifests, mut unreadable) = (BTreeMap::new(), BTreeSet::new());
+        let found = package_manifest(
+            "src/esm/a.ts",
+            Kind::Npm,
+            dir.path(),
+            &known,
+            &mut manifests,
+            &mut unreadable,
+        );
+        assert_eq!(found.as_deref(), Some("package.json"));
+        assert!(unreadable.is_empty());
     }
 }
