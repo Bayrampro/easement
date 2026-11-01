@@ -2124,3 +2124,17 @@ fn reach_crosses_go_packages() {
         "domain reaches http through util: internal/domain/order.go:3 -> internal/util/retry.go:3 -> internal/http/client.go [reach]",
     ));
 }
+
+#[test]
+fn suggest_never_offers_to_allow_a_forbidden_import() {
+    let (_tmp, root) = reach_project(&[(
+        "src/domain/Order.kt",
+        "package domain\nimport http.Client\nclass Order\n",
+    )]);
+    easement(&root, &["suggest"])
+        .success()
+        .stdout(contains(
+            "Imported but forbidden by must_not_depend_on or must_not_reach (fix the imports):\n  domain: http (1 import(s))",
+        ))
+        .stdout(contains("add to may_depend_on").not());
+}

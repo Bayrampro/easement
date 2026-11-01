@@ -46,22 +46,35 @@ pub fn suggest(
         allowances.unreliable,
     );
 
+    // A forbidden import cannot be allowed: the config would contradict itself.
     let mut missing: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut forbidden: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for ((from, to), count) in &used {
         if !config.allows(from, to) {
-            missing
-                .entry(from)
+            let list = if config.forbids(from, to) {
+                &mut forbidden
+            } else {
+                &mut missing
+            };
+            list.entry(from)
                 .or_default()
                 .push(format!("{to} ({count} import(s))"));
         }
     }
+    let lines = |list: BTreeMap<&str, Vec<String>>| {
+        list.into_iter()
+            .map(|(from, targets)| format!("{from}: {}", targets.join(", ")))
+            .collect()
+    };
     section(
         &mut out,
         "Imported but not allowed (add to may_depend_on, or fix the imports):",
-        missing
-            .into_iter()
-            .map(|(from, targets)| format!("{from}: {}", targets.join(", ")))
-            .collect(),
+        lines(missing),
+    );
+    section(
+        &mut out,
+        "Imported but forbidden by must_not_depend_on or must_not_reach (fix the imports):",
+        lines(forbidden),
     );
 
     section(
