@@ -392,6 +392,27 @@ impl Config {
             for to in rule.must_depend_on.iter().map(Listed::name) {
                 check(to, &format!("rules.{from}.must_depend_on"))?;
             }
+            if let Some(name) = rule
+                .may_use_external
+                .iter()
+                .flatten()
+                .chain(&rule.forbid_external)
+                .map(Listed::name)
+                .find(|n| n.starts_with('$') && *n != crate::stdlib::STD)
+            {
+                bail!(
+                    "rules.{from}: unknown `{name}`; the only macro is `$std`, the standard library"
+                );
+            }
+            if rule
+                .must_use_external
+                .iter()
+                .any(|l| l.name() == crate::stdlib::STD)
+            {
+                bail!(
+                    "rules.{from}.must_use_external: `$std` works only in may_use_external and forbid_external"
+                );
+            }
             for pattern in rule
                 .must_use_external
                 .iter()
@@ -876,6 +897,17 @@ rules:
         assert!(error("{ in: src/a }", "exclude: ['src/<f>']\n").contains("works only in `in`"));
         assert!(error("{ in: src/a, public: 'src/<f>/api' }", "").contains("works only in `in`"));
         assert!(parse("version: 1\ncomponents:\n  a: { in: 'src/<f>', isolated: true }\n").is_ok());
+    }
+
+    #[test]
+    fn checks_std_macros() {
+        let error = |rule: &str| {
+            let yaml = format!("version: 1\ncomponents:\n  a: {{ in: a }}\nrules:\n  a: {rule}\n");
+            format!("{:#}", parse(&yaml).unwrap_err())
+        };
+        assert!(error("{ may_use_external: [$stdlib] }").contains("the only macro is `$std`"));
+        assert!(error("{ must_use_external: [$std] }").contains("works only in"));
+        assert!(parse("version: 1\ncomponents:\n  a: { in: a }\nrules:\n  a: { forbid_external: [$std] }\n").is_ok());
     }
 
     #[test]

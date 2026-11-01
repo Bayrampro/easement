@@ -253,7 +253,7 @@ pub fn evaluate(
             Target::External(module) => {
                 stats.external_deps += usize::from(counted);
                 if let Some(from) = map.component_of(&file)
-                    && let Some(problem) = map.external_problem(from, module)
+                    && let Some(problem) = map.external_problem(from, &file, module)
                 {
                     found.push(Violation {
                         rule: RuleId::External,

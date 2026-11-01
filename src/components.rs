@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use globset::{Glob, GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
 
 use crate::config::Config;
+use crate::stdlib::{STD, is_std};
 
 /// Maps repository-relative paths (files or directories, `/`-separated) to components.
 ///
@@ -29,9 +30,13 @@ pub struct ComponentMap {
 struct Externals {
     /// `None`: any external module may be used.
     allowed: Option<GlobSet>,
+    /// `$std` is in `may_use_external`.
+    allowed_std: bool,
     forbidden: GlobSet,
     /// The reason given with each forbidden pattern, in the order of `forbidden`.
     reasons: Vec<Option<String>>,
+    /// `$std` is in `forbid_external`, with its reason.
+    forbidden_std: Option<Option<String>>,
 }
 
 /// Why a component may not use an external module: what is wrong, and the
@@ -135,24 +140,38 @@ impl ComponentMap {
         let mut externals = std::collections::HashMap::new();
         for (name, rule) in &config.rules {
             if rule.may_use_external.is_some() || !rule.forbid_external.is_empty() {
+                let is_std = |l: &&crate::config::Listed| l.name() == STD;
+                let forbidden: Vec<_> =
+                    rule.forbid_external.iter().filter(|l| !is_std(l)).collect();
                 externals.insert(
                     name.clone(),
                     Externals {
                         allowed: rule
                             .may_use_external
                             .as_deref()
-                            .map(|p| glob_set(name, "may_use_external", p.iter().map(|l| l.name())))
+                            .map(|p| {
+                                glob_set(
+                                    name,
+                                    "may_use_external",
+                                    p.iter().filter(|l| !is_std(l)).map(|l| l.name()),
+                                )
+                            })
                             .transpose()?,
+                        allowed_std: rule.may_use_external.iter().flatten().any(|l| is_std(&l)),
                         forbidden: glob_set(
                             name,
                             "forbid_external",
-                            rule.forbid_external.iter().map(|l| l.name()),
+                            forbidden.iter().map(|l| l.name()),
                         )?,
-                        reasons: rule
-                            .forbid_external
+                        reasons: forbidden
                             .iter()
                             .map(|l| l.because().map(str::to_string))
                             .collect(),
+                        forbidden_std: rule
+                            .forbid_external
+                            .iter()
+                            .find(is_std)
+                            .map(|l| l.because().map(str::to_string)),
                     },
                 );
             }
@@ -244,13 +263,22 @@ impl ComponentMap {
         self.uncovered_ok.is_match(rel_path)
     }
 
-    /// Why `component` may not use the external module `specifier`, if it may not.
+    /// Why `component` may not use the external module `specifier`, imported
+    /// by `file`, if it may not.
     pub fn external_problem(
         &self,
         component: &str,
+        file: &str,
         specifier: &str,
     ) -> Option<ExternalProblem<'_>> {
         let rules = self.externals.get(component)?;
+        let std = || is_std(file, specifier);
+        if let Some(because) = rules.forbidden_std.as_ref().filter(|_| std()) {
+            return Some(ExternalProblem {
+                what: "is forbidden",
+                because: because.as_deref(),
+            });
+        }
         if let Some(index) =
             prefixes(specifier).find_map(|p| rules.forbidden.matches(p).first().copied())
         {
@@ -260,7 +288,10 @@ impl ComponentMap {
             });
         }
         match &rules.allowed {
-            Some(allowed) if !prefixes(specifier).any(|p| allowed.is_match(p)) => {
+            Some(allowed)
+                if !prefixes(specifier).any(|p| allowed.is_match(p))
+                    && !(rules.allowed_std && std()) =>
+            {
                 Some(ExternalProblem {
                     what: "is not in may_use_external",
                     because: None,
@@ -467,14 +498,23 @@ rules:
   domain: { forbid_external: [moment, '@acme/*'] }
   ui: { may_use_external: [react, java.util] }
 ");
-        assert!(m.external_problem("domain", "moment/locale/ru").is_some());
-        assert!(m.external_problem("domain", "@acme/sdk/v2").is_some());
-        assert!(m.external_problem("domain", "lodash").is_none());
-        assert!(m.external_problem("ui", "react-dom").is_some());
-        assert!(m.external_problem("ui", "react/jsx-runtime").is_none());
-        assert!(m.external_problem("ui", "java.util.List").is_none());
-        assert!(m.external_problem("ui", "java.io.File").is_some());
-        assert!(m.external_problem("other", "anything").is_none());
+        assert!(
+            m.external_problem("domain", "x.ts", "moment/locale/ru")
+                .is_some()
+        );
+        assert!(
+            m.external_problem("domain", "x.ts", "@acme/sdk/v2")
+                .is_some()
+        );
+        assert!(m.external_problem("domain", "x.ts", "lodash").is_none());
+        assert!(m.external_problem("ui", "x.ts", "react-dom").is_some());
+        assert!(
+            m.external_problem("ui", "x.ts", "react/jsx-runtime")
+                .is_none()
+        );
+        assert!(m.external_problem("ui", "x.ts", "java.util.List").is_none());
+        assert!(m.external_problem("ui", "x.ts", "java.io.File").is_some());
+        assert!(m.external_problem("other", "x.ts", "anything").is_none());
         assert_eq!(
             prefixes("serde::de::Deserialize").collect::<Vec<_>>(),
             ["serde", "serde::de", "serde::de::Deserialize"]

@@ -15,6 +15,7 @@ mod report;
 mod scan;
 mod scip;
 mod scope;
+mod stdlib;
 mod suggest;
 mod suppress;
 

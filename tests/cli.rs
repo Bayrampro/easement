@@ -2425,3 +2425,32 @@ fn why_reports_what_check_would_say_about_each_import() {
         .success()
         .stdout(contains("a -> a is allowed (same component)"));
 }
+
+#[test]
+fn std_stands_for_the_standard_library_of_the_language() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  core: { in: src/core }\n  ui: { in: src/ui }\nrules:\n  core: { may_use_external: [$std] }\n  ui: { forbid_external: [{ name: $std, because: the UI goes through core }] }\n",
+        ),
+        (
+            "src/core/A.kt",
+            "package core\nimport java.util.UUID\nimport kotlin.math.max\nimport okhttp3.Client\nclass A\n",
+        ),
+        (
+            "src/ui/B.kt",
+            "package ui\nimport java.time.Instant\nclass B\n",
+        ),
+    ]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "src/core/A.kt:4: core -> external okhttp3.Client is not in may_use_external",
+        ))
+        .stdout(contains("src/core/A.kt:2").not())
+        .stdout(contains("src/core/A.kt:3").not())
+        .stdout(contains(
+            "src/ui/B.kt:2: ui -> external java.time.Instant is forbidden",
+        ))
+        .stdout(contains("because: the UI goes through core"));
+}

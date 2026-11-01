@@ -325,7 +325,7 @@ rules:
     may_use_external: [react, lodash]
 ```
 
-`forbid_external` lists modules the component must not use. `may_use_external` is an allow-list: everything else is a violation; without it any external module is fine. A pattern covers submodules, split at `/`, `.`, `::` and `\`: `lodash` covers `lodash/fp`, `@mantine/core` covers `@mantine/core/styles.css`, `java.util` covers `java.util.List`, `serde` covers `serde::Deserialize`. The standard library counts as external in Go, Python, Java and Rust, so an allow-list has to name it. The reason of the matching item is printed with a violation, else the `because` of the rule.
+`forbid_external` lists modules the component must not use. `may_use_external` is an allow-list: everything else is a violation; without it any external module is fine. A pattern covers submodules, split at `/`, `.`, `::` and `\`: `lodash` covers `lodash/fp`, `@mantine/core` covers `@mantine/core/styles.css`, `java.util` covers `java.util.List`, `serde` covers `serde::Deserialize`. The standard library counts as external in Go, Python, Java and Rust, so an allow-list has to name it: `$std` stands for the standard library of the importing file's language, in `may_use_external` (`[$std, lodash]`) and in `forbid_external`. It knows Go (a package path without a domain), Python (`sys.stdlib_module_names`), Java (`java`, `javax`, `jdk`), Kotlin (`kotlin`, `java`, `javax`), Rust (`std`) and C# (`System`); in TypeScript, PHP, Ruby and Swift it matches nothing yet, so name those modules. The reason of the matching item is printed with a violation, else the `because` of the rule.
 
 ### Required imports and files
 
