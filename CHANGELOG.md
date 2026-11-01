@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/mokevnin/easement/compare/v0.4.1...v0.4.2) (2026-11-01)
+
+
+### Features
+
+* report files that no entry reaches as `unused` ([52db364](https://github.com/mokevnin/easement/commit/52db3648de5a2dc2f2f95904fca4880e602cc279))
+
 ## [0.4.1](https://github.com/mokevnin/easement/compare/v0.4.0...v0.4.1) (2026-11-01)
 
 
