@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::check::RuleId;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_norway::{Mapping, Value};
@@ -52,6 +53,9 @@ pub struct Config {
     /// import anything.
     #[serde(default)]
     pub tests: Option<TestsMode>,
+    /// Rules whose violations are reported as warnings and do not fail the check.
+    #[serde(default)]
+    pub warn: Vec<String>,
 }
 
 /// Go files behind a build constraint (`//go:build race`) are indexed, and so
@@ -327,6 +331,25 @@ impl Config {
         if self.components.is_empty() {
             bail!("config declares no components");
         }
+        for name in &self.warn {
+            match RuleId::ALL.into_iter().find(|r| r.as_str() == name) {
+                Some(rule) if rule.is_config_rule() => bail!(
+                    "`{name}` is about the config, so it cannot be a warning: fix the config instead"
+                ),
+                Some(_) => {}
+                None => {
+                    let known: Vec<&str> = RuleId::ALL
+                        .into_iter()
+                        .filter(|r| !r.is_config_rule())
+                        .map(RuleId::as_str)
+                        .collect();
+                    bail!(
+                        "unknown rule `{name}` in warn; one of: {}",
+                        known.join(", ")
+                    );
+                }
+            }
+        }
         for tag in &self.go.tags {
             if tag.is_empty()
                 || !tag
@@ -475,6 +498,11 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// Whether violations of `rule` are warnings rather than failures.
+    pub fn warns(&self, rule: RuleId) -> bool {
+        self.warn.iter().any(|w| w == rule.as_str())
     }
 
     pub fn reason(&self, from: &str) -> Option<&str> {

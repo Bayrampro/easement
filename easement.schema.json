@@ -77,6 +77,11 @@
       "description": "Fail on checked files that belong to no component, except those matching `unowned`.",
       "type": "boolean"
     },
+    "warn": {
+      "description": "Rules whose violations are reported as warnings and do not fail the check. Rules about the config, such as unmatched, cannot be listed.",
+      "type": "array",
+      "items": { "enum": ["dependency", "privacy", "cycle", "external", "metric", "orphan", "isolation", "required", "file", "symbol", "unused-suppression", "suppression-reason", "excluded", "reach"] }
+    },
     "exclude": {
       "description": "Globs of paths to skip.",
       "type": "array",

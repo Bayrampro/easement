@@ -330,11 +330,12 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
     } else {
         Baseline::load(&project.baseline_path())?
     };
-    let mut verdict = Verdict::judge(check::dedupe(judged), &current, baseline.as_ref());
+    let (warnings, judged): (Vec<_>, Vec<_>) = check::dedupe(judged)
+        .into_iter()
+        .partition(|v| project.config.warns(v.rule));
+    let mut verdict = Verdict::judge(judged, warnings, &current, baseline.as_ref());
     verdict.stale.retain(|k| scope.contains(&map, &k.file));
-    verdict
-        .new
-        .sort_by(|a, b| (&a.file, a.line, a.rule).cmp(&(&b.file, b.line, b.rule)));
+    verdict.sort();
     let changes = changes.as_ref();
     match options.format {
         Format::Text => anstream::print!("{}", report::colored(&verdict, &stats, changes)),
@@ -412,6 +413,11 @@ fn run(cli: Cli) -> Result<bool> {
             let (config_rules, violations): (Vec<_>, Vec<_>) = check::dedupe(analysis.violations)
                 .into_iter()
                 .partition(|v| v.rule.is_config_rule());
+            // Warnings never fail the check, so there is nothing to legalize.
+            let violations: Vec<_> = violations
+                .into_iter()
+                .filter(|v| !project.config.warns(v.rule))
+                .collect();
             let path = project.baseline_path();
             let old = Baseline::load(&path)?;
             let (violations, refused) = match &old {
@@ -579,5 +585,28 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SCHEMA;
+    use crate::check::RuleId;
+
+    #[test]
+    fn the_schema_lists_every_rule_warn_takes() {
+        let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
+        let listed: Vec<&str> = schema["properties"]["warn"]["items"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let rules: Vec<&str> = RuleId::ALL
+            .into_iter()
+            .filter(|r| !r.is_config_rule())
+            .map(RuleId::as_str)
+            .collect();
+        assert_eq!(listed, rules);
     }
 }

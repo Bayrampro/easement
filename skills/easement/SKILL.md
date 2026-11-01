@@ -34,6 +34,8 @@ Two cases are cleanup, not exceptions:
 - **Stale baseline entries**: a violation recorded in the baseline is gone. Run `easement baseline` to drop them. It never writes new violations: it lists them and exits 1, so fix those as above. Legalizing new debt with `easement baseline --accept-new` needs a human.
 - **`unused-suppression`**: the excused import is gone, so delete the comment.
 
+Warnings (rules in `warn`) do not fail the check, but they are debt the team tolerates for now: add no new ones, and fix the ones in code you change.
+
 An `excluded` violation means the code imports a file that `exclude` hides, so no rule sees the dependency. Import from a checked component instead; if the file is generated code the project needs, ask a human to move its pattern to `target_only`.
 
 An `unmatched` violation is about the config, not the code: an `in` pattern of a component points at no file, usually because the code moved. It needs a change to `easement.yml`, so tell a human which pattern it is and where the code went.

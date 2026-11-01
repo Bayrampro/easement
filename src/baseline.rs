@@ -63,6 +63,8 @@ impl Baseline {
 pub struct Verdict {
     /// Violations not covered by the baseline.
     pub new: Vec<Violation>,
+    /// Violations of the rules in `warn`: reported, never failing.
+    pub warnings: Vec<Violation>,
     /// Baseline entries that no longer occur: the debt was paid, the baseline must shrink.
     pub stale: Vec<Key>,
     pub legalized: usize,
@@ -74,12 +76,14 @@ impl Verdict {
     /// decide whether a baseline entry is stale.
     pub fn judge(
         violations: Vec<Violation>,
+        warnings: Vec<Violation>,
         current: &BTreeSet<Key>,
         baseline: Option<&Baseline>,
     ) -> Self {
         let Some(baseline) = baseline else {
             return Self {
                 new: violations,
+                warnings,
                 stale: Vec::new(),
                 legalized: 0,
             };
@@ -90,8 +94,23 @@ impl Verdict {
             .partition(|v| !v.rule.is_config_rule() && baseline.violations.contains(&v.key()));
         Self {
             new,
+            warnings,
             stale,
             legalized: legal.len(),
+        }
+    }
+
+    /// Every reported violation with its level: `error` for the ones that
+    /// fail, then `warning` for the rules in `warn`.
+    pub fn reported(&self) -> impl Iterator<Item = (&'static str, &Violation)> {
+        std::iter::repeat("error")
+            .zip(&self.new)
+            .chain(std::iter::repeat("warning").zip(&self.warnings))
+    }
+
+    pub fn sort(&mut self) {
+        for list in [&mut self.new, &mut self.warnings] {
+            list.sort_by(|a, b| (&a.file, a.line, a.rule).cmp(&(&b.file, b.line, b.rule)));
         }
     }
 
@@ -126,7 +145,7 @@ mod tests {
         let baseline = Baseline::from_violations(&[v("f1", "b")]);
         let found = vec![v("f1", "b"), second];
         let current = found.iter().map(Violation::key).collect();
-        let verdict = Verdict::judge(found, &current, Some(&baseline));
+        let verdict = Verdict::judge(found, Vec::new(), &current, Some(&baseline));
         assert_eq!(verdict.legalized, 2);
         assert!(verdict.passed());
     }
@@ -165,7 +184,7 @@ mod tests {
         let baseline = Baseline::from_violations(&[v("f1", "b"), v("f2", "b")]);
         let found = vec![v("f1", "b"), v("f3", "c")];
         let current = found.iter().map(Violation::key).collect();
-        let verdict = Verdict::judge(found, &current, Some(&baseline));
+        let verdict = Verdict::judge(found, Vec::new(), &current, Some(&baseline));
         assert_eq!(verdict.legalized, 1);
         assert_eq!(verdict.new.len(), 1);
         assert_eq!(verdict.new[0].file, "f3");

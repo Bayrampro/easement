@@ -2189,3 +2189,108 @@ fn a_named_placeholder_keeps_dependencies_within_one_slice() {
             "src/features/billing/ui/Pay.kt:3: ui -> ui: <feature> differs (billing imports orders: src/features/orders/ui/View.kt) [isolation]",
         ));
 }
+
+/// `reach_project` with the rule `reach` reported as a warning.
+fn warned_reach_project() -> (TempDir, PathBuf) {
+    let (tmp, root) = reach_project(&[]);
+    warn_on_reach(&root);
+    (tmp, root)
+}
+
+fn warn_on_reach(root: &Path) {
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        format!("{config}warn: [reach]\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_rule_listed_in_warn_reports_without_failing() {
+    let (_tmp, root) = warned_reach_project();
+    easement(&root, &["check"])
+        .success()
+        .stdout(contains("Warnings (rules in `warn`; do not add more):"))
+        .stdout(contains("domain reaches http through util"))
+        .stdout(contains(
+            "easement passed: 0 violation(s), 0 stale, 0 legalized, 1 warning(s)",
+        ));
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(report["violations"].as_array().unwrap().len(), 0);
+    assert_eq!(report["warnings"][0]["rule"], "reach");
+    easement(&root, &["check", "--format", "github"])
+        .success()
+        .stdout(contains(
+            "::warning file=src/domain/Order.kt,line=2,title=easement reach::",
+        ));
+    let sarif = stdout_of(easement(&root, &["check", "--format", "sarif"]).success());
+    assert!(sarif.contains("\"level\": \"warning\""), "{sarif}");
+    // The baseline records only what fails.
+    easement(&root, &["baseline"])
+        .success()
+        .stdout(contains("0 violation(s) written"));
+}
+
+#[test]
+fn moving_a_baselined_rule_into_warn_leaves_no_stale_entries() {
+    let (_tmp, root) = reach_project(&[]);
+    easement(&root, &["baseline"]).success();
+    warn_on_reach(&root);
+    easement(&root, &["check"])
+        .success()
+        .stdout(contains("0 stale"));
+}
+
+#[test]
+fn warn_takes_only_rules_that_can_be_tolerated() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  a: { in: a }\nwarn: [bogus]\n",
+        ),
+        ("a/A.kt", "package a\n"),
+    ]);
+    easement(&root, &["check"])
+        .code(2)
+        .stderr(contains("unknown rule `bogus` in warn"))
+        .stderr(contains("dependency"))
+        .stderr(contains("unmatched").not());
+    fs::write(
+        root.join("easement.yml"),
+        "version: 1\ncomponents:\n  a: { in: a }\nwarn: [unmatched]\n",
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(2)
+        .stderr(contains("`unmatched` is about the config"));
+}
+
+#[test]
+fn warnings_are_sorted_and_warn_is_inherited_through_extends() {
+    let (_tmp, root) = project(&[
+        (
+            "base.yml",
+            "version: 1\ncomponents:\n  a: { in: src/a }\n  b: { in: src/b }\nwarn: [dependency]\n",
+        ),
+        ("easement.yml", "extends: base.yml\n"),
+        ("src/a/Z.kt", "package a\nimport b.B\nclass Z\n"),
+        (
+            "src/a/A.kt",
+            "package a\n\nimport b.B\nimport b.C\nclass A\n",
+        ),
+        ("src/b/B.kt", "package b\nclass B\n"),
+        ("src/b/C.kt", "package b\nclass C\n"),
+    ]);
+    let out = stdout_of(easement(&root, &["check"]).success());
+    let a3 = out.find("src/a/A.kt:3").unwrap();
+    let a4 = out.find("src/a/A.kt:4").unwrap();
+    let z2 = out.find("src/a/Z.kt:2").unwrap();
+    assert!(a3 < a4 && a4 < z2, "{out}");
+    // A `warn` of its own replaces the inherited one.
+    fs::write(root.join("easement.yml"), "extends: base.yml\nwarn: []\n").unwrap();
+    easement(&root, &["check"]).code(1);
+}

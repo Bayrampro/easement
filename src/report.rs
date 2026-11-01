@@ -10,6 +10,8 @@ use crate::diff::Changes;
 struct JsonReport<'a> {
     passed: bool,
     violations: &'a [Violation],
+    /// Violations of the rules in `warn`, which do not fail the check.
+    warnings: &'a [Violation],
     stale: &'a [Key],
     legalized: usize,
     /// `full`, or `partial` when `passed` rests on code the check could not read.
@@ -55,6 +57,7 @@ pub fn json(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>) -> Stri
     let report = JsonReport {
         passed: verdict.passed(),
         violations: &verdict.new,
+        warnings: &verdict.warnings,
         stale: &verdict.stale,
         legalized: verdict.legalized,
         confidence: if reasons.is_empty() {
@@ -101,6 +104,21 @@ pub fn colored(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>) -> S
     render(verdict, stats, changes, true)
 }
 
+/// `file:line: message [rule]`, and the reason under it when there is one.
+fn violation_lines(v: &Violation, tag: Style, color: bool) -> String {
+    let mut out = format!(
+        "{}: {} {}\n",
+        paint(color, BOLD, &format!("{}:{}", v.file, v.line)),
+        v.message,
+        paint(color, tag, &format!("[{}]", v.rule.as_str()))
+    );
+    if let Some(because) = &v.because {
+        out.push_str(&paint(color, DIM, &format!("  because: {because}")));
+        out.push('\n');
+    }
+    out
+}
+
 fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bool) -> String {
     let mut out = String::new();
     if let Some(c) = changes {
@@ -111,15 +129,20 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
         ));
     }
     for v in &verdict.new {
-        out.push_str(&format!(
-            "{}: {} {}\n",
-            paint(color, BOLD, &format!("{}:{}", v.file, v.line)),
-            v.message,
-            paint(color, RED, &format!("[{}]", v.rule.as_str()))
-        ));
-        if let Some(because) = &v.because {
-            out.push_str(&paint(color, DIM, &format!("  because: {because}")));
+        out.push_str(&violation_lines(v, RED, color));
+    }
+    if !verdict.warnings.is_empty() {
+        if !out.is_empty() {
             out.push('\n');
+        }
+        out.push_str(&paint(
+            color,
+            YELLOW,
+            "Warnings (rules in `warn`; do not add more):",
+        ));
+        out.push('\n');
+        for v in &verdict.warnings {
+            out.push_str(&violation_lines(v, YELLOW, color));
         }
     }
     if !verdict.stale.is_empty() {
@@ -174,8 +197,13 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
     } else {
         paint(color, RED, "failed")
     };
+    let warnings = if verdict.warnings.is_empty() {
+        String::new()
+    } else {
+        format!(", {} warning(s)", verdict.warnings.len())
+    };
     out.push_str(&format!(
-        "easement {status}: {} violation(s), {} stale, {} legalized; {} files, {} internal deps",
+        "easement {status}: {} violation(s), {} stale, {} legalized{warnings}; {} files, {} internal deps",
         verdict.new.len(),
         verdict.stale.len(),
         verdict.legalized,
@@ -226,7 +254,12 @@ fn stale_message(k: &Key) -> String {
 
 /// SARIF 2.1.0, the format GitHub Code Scanning ingests.
 pub fn sarif(verdict: &Verdict) -> String {
-    let mut ids: Vec<&str> = verdict.new.iter().map(|v| v.rule.as_str()).collect();
+    let mut ids: Vec<&str> = verdict
+        .new
+        .iter()
+        .chain(&verdict.warnings)
+        .map(|v| v.rule.as_str())
+        .collect();
     if !verdict.stale.is_empty() {
         ids.push(STALE);
     }
@@ -237,16 +270,15 @@ pub fn sarif(verdict: &Verdict) -> String {
         .map(|id| json!({ "id": id, "shortDescription": { "text": format!("easement {id}") } }))
         .collect();
     let mut results: Vec<_> = verdict
-        .new
-        .iter()
-        .map(|v| {
+        .reported()
+        .map(|(level, v)| {
             let text = match &v.because {
                 Some(because) => format!("{} (because: {because})", v.message),
                 None => v.message.clone(),
             };
             json!({
                 "ruleId": v.rule.as_str(),
-                "level": "error",
+                "level": level,
                 "message": { "text": text },
                 "locations": [{
                     "physicalLocation": {
@@ -293,13 +325,13 @@ fn escape_property(text: &str) -> String {
 /// GitHub Actions workflow commands: annotations on the changed files.
 pub fn github(verdict: &Verdict, stats: &Stats) -> String {
     let mut out = String::new();
-    for v in &verdict.new {
+    for (level, v) in verdict.reported() {
         let text = match &v.because {
             Some(because) => format!("{} (because: {because})", v.message),
             None => v.message.clone(),
         };
         out.push_str(&format!(
-            "::error file={},line={},title={}::{}\n",
+            "::{level} file={},line={},title={}::{}\n",
             escape_property(&v.file),
             v.line,
             escape_property(&format!("easement {}", v.rule.as_str())),
@@ -399,6 +431,7 @@ mod tests {
                 specifier: "../b".into(),
                 evidence: Vec::new(),
             }],
+            warnings: vec![],
             stale: vec![Key {
                 rule: RuleId::Metric,
                 file: "f".into(),
@@ -448,6 +481,7 @@ mod tests {
         assert!(xml.contains("&lt;x&gt;"));
         let clean = junit(&Verdict {
             new: vec![],
+            warnings: vec![],
             stale: vec![],
             legalized: 0,
         });

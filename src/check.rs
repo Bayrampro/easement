@@ -72,6 +72,25 @@ impl RuleId {
         self == RuleId::Unmatched
     }
 
+    /// Every rule, in the order of the declaration.
+    pub const ALL: [RuleId; 15] = [
+        RuleId::Dependency,
+        RuleId::Privacy,
+        RuleId::Cycle,
+        RuleId::External,
+        RuleId::Metric,
+        RuleId::Orphan,
+        RuleId::Isolation,
+        RuleId::Required,
+        RuleId::File,
+        RuleId::Symbol,
+        RuleId::UnusedSuppression,
+        RuleId::SuppressionReason,
+        RuleId::Unmatched,
+        RuleId::Excluded,
+        RuleId::Reach,
+    ];
+
     /// Rules that an inline comment can suppress.
     pub const SUPPRESSIBLE: [RuleId; 6] = [
         RuleId::Dependency,
