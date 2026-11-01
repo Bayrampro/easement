@@ -44,6 +44,8 @@ pub enum RuleId {
     Reach,
     /// A file of a component that no chain of imports from an `entry` reaches.
     Unused,
+    /// A type whose name a component's `defines` claims, defined elsewhere.
+    Naming,
 }
 
 impl RuleId {
@@ -65,6 +67,7 @@ impl RuleId {
             RuleId::Excluded => "excluded",
             RuleId::Reach => "reach",
             RuleId::Unused => "unused",
+            RuleId::Naming => "naming",
         }
     }
 
@@ -76,7 +79,7 @@ impl RuleId {
     }
 
     /// Every rule, in the order of the declaration.
-    pub const ALL: [RuleId; 16] = [
+    pub const ALL: [RuleId; 17] = [
         RuleId::Dependency,
         RuleId::Privacy,
         RuleId::Cycle,
@@ -93,16 +96,18 @@ impl RuleId {
         RuleId::Excluded,
         RuleId::Reach,
         RuleId::Unused,
+        RuleId::Naming,
     ];
 
     /// Rules that an inline comment can suppress.
-    pub const SUPPRESSIBLE: [RuleId; 6] = [
+    pub const SUPPRESSIBLE: [RuleId; 7] = [
         RuleId::Dependency,
         RuleId::Privacy,
         RuleId::External,
         RuleId::Isolation,
         RuleId::Symbol,
         RuleId::Excluded,
+        RuleId::Naming,
     ];
 
     pub fn suppressible(s: &str) -> Option<Self> {
@@ -204,6 +209,10 @@ pub struct Stats {
     /// name only.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub std_unknown: Vec<String>,
+    /// Extensions of checked component files whose types `defines` cannot
+    /// see: they are read with tree-sitter, which reports no definitions.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub naming_unseen: Vec<String>,
     /// Why `unused` took some files as used without judging them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unused_partial: Vec<String>,
@@ -1235,6 +1244,62 @@ fn holds(line: &str, pattern: &str) -> bool {
             .unwrap_or(rest);
         !line[..i].ends_with(in_path) && !rest.starts_with(in_path)
     })
+}
+
+/// Every type of a component whose name the `defines` of other components
+/// claim, and not its own: `OrderRepository` in `web` when `repository`
+/// defines `*Repository`.
+pub fn naming(
+    config: &Config,
+    map: &ComponentMap,
+    types: &[crate::scan::TypeDef],
+) -> Result<Vec<Violation>, anyhow::Error> {
+    let mut claims = Vec::new();
+    for (name, component) in config
+        .components
+        .iter()
+        .filter(|(_, c)| !c.defines.is_empty())
+    {
+        for pattern in &component.defines {
+            let glob = globset::Glob::new(pattern)
+                .map_err(|e| {
+                    anyhow::anyhow!("bad pattern `{pattern}` in components.{name}.defines: {e}")
+                })?
+                .compile_matcher();
+            claims.push((name.as_str(), pattern.as_str(), glob));
+        }
+    }
+    let mut found = Vec::new();
+    for def in types {
+        let Some(home) = map.component_of(&def.file) else {
+            continue;
+        };
+        let owners: Vec<(&str, &str)> = claims
+            .iter()
+            .filter(|(_, _, glob)| glob.is_match(&def.name))
+            .map(|(c, p, _)| (*c, *p))
+            .collect();
+        if owners.is_empty() || owners.iter().any(|(c, _)| *c == home) {
+            continue;
+        }
+        let (owner, pattern) = owners[0];
+        found.push(Violation {
+            rule: RuleId::Naming,
+            file: def.file.clone(),
+            line: def.line,
+            message: format!(
+                "{} is defined in {home}, but types named like {pattern} belong in {owner}",
+                def.name
+            ),
+            because: config.components[owner].because.clone(),
+            from: home.to_string(),
+            to: owner.to_string(),
+            target: def.name.clone(),
+            specifier: String::new(),
+            evidence: vec![(def.file.clone(), def.line)],
+        });
+    }
+    Ok(found)
 }
 
 /// One violation per use: the same key at the same line once, every other line

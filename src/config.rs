@@ -233,6 +233,10 @@ pub struct Component {
     /// Who to ask about the component and its rules: a team, a person.
     #[serde(default)]
     pub owner: Option<String>,
+    /// Globs of type names that belong in this component (`*Repository`):
+    /// a type so named that another component defines is a `naming` violation.
+    #[serde(default)]
+    pub defines: Vec<String>,
 }
 
 /// One layer of `layers`: a component, sibling components that do not
@@ -406,6 +410,7 @@ impl Config {
                 // A project may have no tests yet.
                 optional: true,
                 owner: None,
+                defines: Vec::new(),
             },
         );
         Ok(self)

@@ -209,6 +209,7 @@ Every violation carries a rule id, used in the JSON report, the baseline and sup
 | `excluded` | a component imports a file that `exclude` hides |
 | `reach` | a component reaches one its `must_not_reach` names through a chain of imports |
 | `unused` | with `entry`, a file of a component that no chain of imports from an entry reaches |
+| `naming` | a component defines a type whose name another component's `defines` claims |
 
 ### Public API
 
@@ -433,6 +434,18 @@ unowned: [ent, cmd, tools]
 ```
 
 Unlike `exclude`, files in `unowned` are still read, so components can depend on them. `exclude` hides files from the check altogether.
+
+### Names of types
+
+```yaml
+components:
+  repository:
+    in: src/repository
+    defines: ["*Repository", "*Repo"]
+    because: storage goes through repositories
+```
+
+`defines` claims type names for a component: a class, struct, interface or trait whose name matches a glob, defined in another component, fails as `naming` at its definition, with the `because` of the claiming component. A type can be claimed by several components; it has to live in one of them. Types come from the index, so Go, TypeScript, Python, Rust, Java, C#, PHP and Ruby are checked; Kotlin and Swift files are read without one, and the report says their names were not checked. The rule can be suppressed inline.
 
 ### Unused files
 

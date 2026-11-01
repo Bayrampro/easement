@@ -695,6 +695,56 @@ fn unused_follows_csharp_and_php_namespaces() {
 }
 
 #[test]
+fn a_type_named_for_another_component_is_a_naming_violation() {
+    let config = "version: 1\ncomponents:\n  web: { in: src/web }\n  repository: { in: src/repository, defines: ['*Repository'], because: storage goes through repositories }\n";
+    let (_tmp, root) = project(&[
+        ("easement.yml", config),
+        (
+            "src/repository/orders.ts",
+            "export class OrderRepository {}\n",
+        ),
+        (
+            "src/web/page.ts",
+            "export const page = 1;\n\nexport class UserRepository {}\n",
+        ),
+    ]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "src/web/page.ts:3: UserRepository is defined in web, but types named like *Repository belong in repository [naming]",
+        ))
+        .stdout(contains("because: storage goes through repositories"))
+        .stdout(contains("orders.ts").not());
+    let (_tmp, root) = project(&[
+        ("go.mod", "module ex.com/m\n\ngo 1.22\n"),
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  web: { in: web }\n  repository: { in: repository, defines: ['*Repository'] }\n",
+        ),
+        (
+            "repository/r.go",
+            "package repository\n\ntype OrderRepository struct{}\n",
+        ),
+        ("web/h.go", "package web\n\ntype UserRepository struct{}\n"),
+    ]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("web/h.go:3: UserRepository is defined in web"));
+    // Kotlin and Swift types are not seen: a clean verdict says so.
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  web: { in: src/web }\n  repository: { in: src/repository, defines: ['*Repository'] }\n",
+        ),
+        ("src/web/A.kt", "package web\nclass UserRepository\n"),
+        ("src/repository/B.kt", "package repository\nclass B\n"),
+    ]);
+    easement(&root, &["check"])
+        .success()
+        .stdout(contains("`defines` cannot see the types of .kt files"));
+}
+
+#[test]
 fn layers_forbidden_externals_metrics_and_strict() {
     let (_tmp, root) = fixture("policy");
     let out = easement(&root, &["check", "--format", "json"])

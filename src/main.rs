@@ -224,6 +224,7 @@ impl Project {
         let (mut violations, edges, mut stats) =
             check::evaluate(&self.config, &map, scope, &scan.deps);
         violations.extend(check::symbols(&self.config, &map, &scan.symbols));
+        violations.extend(check::naming(&self.config, &map, &scan.types)?);
         let (mut violations, suppressed) = suppress::apply(violations, &scan.suppressions);
         violations.extend(check::unmatched(
             &self.config,
@@ -262,6 +263,22 @@ impl Project {
             uncovered: &scan.uncovered,
         })?;
         violations.extend(unused.violations);
+        if self
+            .config
+            .components
+            .values()
+            .any(|c| !c.defines.is_empty())
+        {
+            let unseen: std::collections::BTreeSet<String> = scan
+                .paths
+                .iter()
+                .filter(|f| map.component_of(f).is_some())
+                .filter_map(|f| f.rsplit_once('.').map(|(_, e)| e))
+                .filter(|e| matches!(*e, "kt" | "kts" | "swift"))
+                .map(str::to_string)
+                .collect();
+            stats.naming_unseen = unseen.into_iter().collect();
+        }
         stats.unused_partial = unused.reasons;
         stats.files = scan
             .paths

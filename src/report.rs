@@ -33,6 +33,13 @@ struct DiffInfo<'a> {
 }
 
 /// Why a verdict is only as good as the code the check could read.
+fn naming_unseen(stats: &Stats) -> String {
+    format!(
+        "`defines` cannot see the types of .{} files, which are read without an index, so their names were not checked",
+        stats.naming_unseen.join(", .")
+    )
+}
+
 fn confidence_reasons(stats: &Stats, changes: Option<&Changes>) -> Vec<String> {
     let mut reasons = Vec::new();
     if let Some(changes) = changes {
@@ -48,6 +55,9 @@ fn confidence_reasons(stats: &Stats, changes: Option<&Changes>) -> Vec<String> {
         ));
     }
     reasons.extend(stats.unused_partial.iter().cloned());
+    if !stats.naming_unseen.is_empty() {
+        reasons.push(naming_unseen(stats));
+    }
     if !stats.std_unknown.is_empty() {
         reasons.push(format!(
             "`$std` cannot tell the standard library of .{} files, so their standard imports count as other modules; name those modules instead",
@@ -214,6 +224,13 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
                 stats.uncovered.len() - UNCOVERED_SHOWN
             ));
         }
+    }
+    if !stats.naming_unseen.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&paint(color, YELLOW, &naming_unseen(stats)));
+        out.push('\n');
     }
     if !stats.unused_partial.is_empty() {
         if !out.is_empty() {

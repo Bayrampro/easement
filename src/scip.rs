@@ -39,6 +39,9 @@ pub struct Document {
     pub references: Vec<Reference>,
     /// Symbols this file defines.
     pub definitions: Vec<String>,
+    /// The types this file defines (classes, structs, interfaces, traits),
+    /// by name and 1-based line.
+    pub types: Vec<(String, usize)>,
 }
 
 /// The documents of one or more indexes, merged.
@@ -75,6 +78,11 @@ pub fn parse(bytes: &[u8], base: &Path) -> Result<Vec<Document>> {
                 continue;
             }
             if occurrence.symbol_roles & DEFINITION != 0 {
+                if let Some(parsed_symbol) = split(&occurrence.symbol)
+                    && let Some((name, Kind::Type)) = parsed_symbol.descriptors.last()
+                {
+                    parsed.types.push((name.clone(), line_of(occurrence) + 1));
+                }
                 parsed.definitions.push(occurrence.symbol.clone());
             } else {
                 parsed.references.push(Reference {
@@ -723,6 +731,7 @@ mod tests {
         Document {
             path: path.to_string(),
             definitions: defs.iter().map(|s| s.to_string()).collect(),
+            types: Vec::new(),
             references: refs
                 .iter()
                 .map(|(line, symbol)| Reference {

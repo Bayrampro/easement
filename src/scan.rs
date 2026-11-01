@@ -53,6 +53,14 @@ impl Cache {
     }
 }
 
+/// A type a file defines: a class, a struct, an interface, a trait.
+#[derive(Debug, Clone)]
+pub struct TypeDef {
+    pub file: String,
+    pub line: usize,
+    pub name: String,
+}
+
 pub struct Scan {
     /// Every file that is not excluded, source or not, relative to the root with `/` separators.
     pub all_files: Vec<String>,
@@ -65,6 +73,8 @@ pub struct Scan {
     /// The `target_only` and excluded files the walk saw.
     pub unread: Vec<String>,
     pub symbols: Vec<SymbolRef>,
+    /// The types checked files define, from the index.
+    pub types: Vec<TypeDef>,
     pub suppressions: Vec<Suppression>,
     /// Source files of an indexed language that the indexer did not cover,
     /// for example files outside every `tsconfig.json`.
@@ -199,6 +209,17 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
             suppressions.extend(suppress::parse(&document.path, &source));
         }
     }
+    let types: Vec<TypeDef> = documents
+        .iter()
+        .filter(|d| !target_only.is_match(d.path.as_str()))
+        .flat_map(|d| {
+            d.types.iter().map(|(name, line)| TypeDef {
+                file: d.path.clone(),
+                line: *line,
+                name: name.clone(),
+            })
+        })
+        .collect();
     let facts = scip::facts(&documents, &hidden, config.uses_symbols());
     let is_source = |file: &Path| {
         let file = slash(file);
@@ -233,6 +254,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         deps,
         unread_deps,
         unread,
+        types,
         symbols,
         suppressions,
         uncovered: indexed.uncovered,
