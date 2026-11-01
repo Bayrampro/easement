@@ -116,6 +116,8 @@ easement check                # check the project
 easement check --diff main    # only what this branch adds, see Diff mode
 easement baseline             # record today's violations; later runs only shrink it
 easement explain <file>       # which component a file is in and what it may do
+easement why <a> <b>          # the imports, or the chain, behind a -> b
+easement impact --diff main   # every file that depends on what this branch changed
 easement suggest              # allowances nothing uses, imports nothing allows
 easement doctor               # are the indexers the project needs installed
 ```
@@ -138,6 +140,14 @@ An entry next to files no indexer covered is listed apart as unreliable, because
 
 - `--patch` prints the removals as a patch: `easement suggest --patch | git apply`. It edits the text of `easement.yml`, so comments and `because` reasons stay, and it never touches an entry next to unindexed files. An entry it cannot place (a rule that comes from `extends` or an alias, a list written over several lines) is named on stderr to remove by hand.
 - `--check` prints the same report and exits 1 while an unused entry is left that `--patch` would remove, so a CI step keeps the allowances from piling up.
+
+### impact and why
+
+`easement impact <paths>` lists every file that depends on the given files or directories, directly or through others, grouped by component: what a change can break and which tests to run. `--diff <base>` adds the files changed since the merge-base, and `--format json` gives `changed` and `dependents`. When files were not covered by an indexer, `confidence` is `partial`, because dependents through them are missing.
+
+`easement why <a> <b>` says whether the config allows `a -> b` and why, then lists the imports behind it with file and line, or, when there is none, the shortest chain of imports from `a` to `b`.
+
+`easement graph --focus <component>` draws only that component and the ones it shares an arrow with.
 
 ### doctor
 

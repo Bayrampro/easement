@@ -542,25 +542,13 @@ pub fn reaches(
         else {
             continue;
         };
-        let through: BTreeSet<&str> = hops[1..]
-            .iter()
-            .map(|(f, _)| of(f).unwrap_or("no component"))
-            .collect();
-        let chain: Vec<String> = hops
-            .iter()
-            .map(|(f, l)| format!("{f}:{l}"))
-            .chain(std::iter::once(last.to_string()))
-            .collect();
+        let (through, chain) = describe_chain(&hops, last, of);
         let (file, line) = hops[0].clone();
         found.push(Violation {
             rule: RuleId::Reach,
             file,
             line,
-            message: format!(
-                "{from} reaches {to_name} through {}: {}",
-                through.into_iter().collect::<Vec<_>>().join(", "),
-                chain.join(" -> ")
-            ),
+            message: format!("{from} reaches {to_name} through {through}: {chain}"),
             because: to
                 .because()
                 .or_else(|| config.reason(from))
@@ -575,9 +563,34 @@ pub fn reaches(
     found
 }
 
+/// What a file of no component is called in reports.
+pub const NO_COMPONENT: &str = "no component";
+
+/// A chain from [`shortest_chain`] for a reader: the components of its hops,
+/// `util, no component`, and the chain itself, `a.kt:2 -> b.kt:3 -> c.kt`.
+pub fn describe_chain<'a>(
+    hops: &[(String, usize)],
+    last: &str,
+    of: impl Fn(&str) -> Option<&'a str>,
+) -> (String, String) {
+    let through: BTreeSet<&str> = hops[1..]
+        .iter()
+        .map(|(f, _)| of(f).unwrap_or(NO_COMPONENT))
+        .collect();
+    let chain: Vec<String> = hops
+        .iter()
+        .map(|(f, l)| format!("{f}:{l}"))
+        .chain(std::iter::once(last.to_string()))
+        .collect();
+    (
+        through.into_iter().collect::<Vec<_>>().join(", "),
+        chain.join(" -> "),
+    )
+}
+
 /// Every file -> the files it imports, with the line of the import. An
 /// import of a package directory is one of each file directly in it.
-fn file_graph(deps: &[Dep], files: &[String]) -> BTreeMap<String, BTreeSet<(String, usize)>> {
+pub fn file_graph(deps: &[Dep], files: &[String]) -> BTreeMap<String, BTreeSet<(String, usize)>> {
     let mut in_dir: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for file in files {
         let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
@@ -607,7 +620,7 @@ fn file_graph(deps: &[Dep], files: &[String]) -> BTreeMap<String, BTreeSet<(Stri
 /// a file `is_end` accepts: each hop with the line of its import, and the
 /// file it ends in. Every start is searched at once, so no start's longer
 /// chain hides another's shorter one.
-fn shortest_chain<'a>(
+pub fn shortest_chain<'a>(
     graph: &'a BTreeMap<String, BTreeSet<(String, usize)>>,
     starts: impl Iterator<Item = &'a str>,
     is_hop: impl Fn(&str) -> bool,

@@ -13,6 +13,8 @@ If the project has no `easement.yml`, easement is not set up yet: follow "Set up
 
 Run `easement explain <path>` for the file or directory you are about to add or change. It prints the component the path belongs to, what that component may depend on and why. Put new code where the imports it needs are allowed.
 
+`easement why <a> <b>` shows the imports, or the chain of imports, behind a dependency between two components.
+
 ## After changing code
 
 Run `easement check`. It exits 0 when the code matches the config, 1 on violations and 2 on an error.
@@ -20,6 +22,7 @@ Run `easement check`. It exits 0 when the code matches the config, 1 on violatio
 - On a branch, `easement check --diff <base>` judges only the lines you added. Run the full `easement check` too when `easement.yml` or the baseline changed, because a rule change touches no import line.
 - `--format json` gives the same report as data. When `confidence` is `partial`, a pass covers only the code an indexer read: say so, and name the files in `stats.uncovered`.
 - On exit 2, read the message. For a missing indexer or missing dependencies, run `easement doctor`.
+- `easement impact --diff <base>` lists every file that depends on your change: run the tests among them. When it says `Partial`, files no indexer read or files the change deletes may hide more.
 
 ## When the check fails
 

@@ -11,6 +11,8 @@ pub struct Changes {
     pub base: String,
     pub merge_base: String,
     files: HashMap<String, Lines>,
+    /// Files the change deletes.
+    pub deleted: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -66,10 +68,17 @@ impl Changes {
 
     fn parse(diff: &str) -> Self {
         let mut files: HashMap<String, Lines> = HashMap::new();
+        let mut deleted = Vec::new();
+        let mut old: Option<String> = None;
         let mut current: Option<String> = None;
         for line in diff.lines() {
-            if let Some(path) = line.strip_prefix("+++ ") {
+            if let Some(path) = line.strip_prefix("--- ") {
+                old = (path != "/dev/null").then(|| path.trim_matches('"').to_string());
+            } else if let Some(path) = line.strip_prefix("+++ ") {
                 current = (path != "/dev/null").then(|| path.trim_matches('"').to_string());
+                if current.is_none() {
+                    deleted.extend(old.take());
+                }
             } else if line.starts_with("@@")
                 && let (Some(path), Some(range)) = (&current, added_range(line))
                 && let Lines::Ranges(ranges) = files
@@ -81,8 +90,14 @@ impl Changes {
         }
         Self {
             files,
+            deleted,
             ..Self::default()
         }
+    }
+
+    /// Every file the change touches.
+    pub fn files(&self) -> impl Iterator<Item = &str> {
+        self.files.keys().map(String::as_str)
     }
 
     pub fn contains(&self, file: &str, line: usize) -> bool {
@@ -125,6 +140,21 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_deleted_files() {
+        let diff = "\
+--- src/gone.ts
++++ /dev/null
+@@ -1,2 +0,0 @@
+--- src/kept.ts
++++ src/kept.ts
+@@ -1 +1,2 @@
+";
+        let changes = Changes::parse(diff);
+        assert_eq!(changes.deleted, ["src/gone.ts"]);
+        assert!(changes.contains("src/kept.ts", 1));
+    }
 
     #[test]
     fn parses_hunks() {

@@ -2294,3 +2294,134 @@ fn warnings_are_sorted_and_warn_is_inherited_through_extends() {
     fs::write(root.join("easement.yml"), "extends: base.yml\nwarn: []\n").unwrap();
     easement(&root, &["check"]).code(1);
 }
+
+#[test]
+fn impact_lists_what_depends_on_a_change() {
+    let (_tmp, root) = reach_project(&[]);
+    easement(&root, &["impact", "src/http/Client.kt"])
+        .success()
+        .stdout(contains("Changed: 1 file(s) in http"))
+        .stdout(contains("Depend on them: 2 file(s) in domain, util"))
+        .stdout(contains("  domain: src/domain/Order.kt"))
+        .stdout(contains("  util: src/util/Retry.kt"));
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["impact", "src/util", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(report["changed"], serde_json::json!(["src/util/Retry.kt"]));
+    assert_eq!(report["dependents"][0]["file"], "src/domain/Order.kt");
+    assert_eq!(report["dependents"][0]["component"], "domain");
+    assert_eq!(report["confidence"], "full");
+
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "init"]);
+    fs::write(
+        root.join("src/util/Retry.kt"),
+        "package util\nimport http.Client\nclass Retry2\n",
+    )
+    .unwrap();
+    easement(&root, &["impact", "--diff", "main"])
+        .success()
+        .stdout(contains("Changed: 1 file(s) in util"))
+        .stdout(contains("  domain: src/domain/Order.kt"));
+    easement(&root, &["impact"])
+        .code(2)
+        .stderr(contains("--diff"));
+}
+
+#[test]
+fn why_shows_the_imports_or_the_chain_between_two_components() {
+    let (_tmp, root) = reach_project(&[]);
+    easement(&root, &["why", "util", "http"])
+        .success()
+        .stdout(contains("util -> http is allowed (may_depend_on)"))
+        .stdout(contains(
+            "1 import(s):\n  src/util/Retry.kt:2 imports src/http/Client.kt\n",
+        ));
+    easement(&root, &["why", "domain", "http"])
+        .success()
+        .stdout(contains(
+            "domain -> http is forbidden (must_not_reach): the domain knows no transport",
+        ))
+        .stdout(contains(
+            "domain imports nothing of http directly; it reaches http through util:",
+        ))
+        .stdout(contains(
+            "  src/domain/Order.kt:2 -> src/util/Retry.kt:2 -> src/http/Client.kt",
+        ));
+    easement(&root, &["why", "http", "domain"])
+        .success()
+        .stdout(contains("http does not depend on domain"));
+    easement(&root, &["why", "http", "ghost"])
+        .code(2)
+        .stderr(contains("unknown component `ghost`"));
+}
+
+#[test]
+fn graph_focus_keeps_a_component_and_its_neighbours() {
+    let (_tmp, root) = slices_project(&[]);
+    let out = stdout_of(easement(&root, &["graph", "--focus", "data"]).success());
+    assert!(out.contains("\"ui\""), "{out}");
+    assert!(out.contains("\"data\""), "{out}");
+    assert!(!out.contains("\"app\""), "{out}");
+    easement(&root, &["graph", "--focus", "ghost"])
+        .code(2)
+        .stderr(contains("unknown component `ghost`"));
+}
+
+#[test]
+fn impact_and_why_say_when_an_answer_may_be_short() {
+    let (_tmp, root) = fixture("uncovered");
+    fs::write(
+        root.join("easement.yml"),
+        "version: 1\ncomponents:\n  app: { in: app }\n  tools: { in: tools }\n",
+    )
+    .unwrap();
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["impact", "app", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(report["confidence"], "partial");
+    easement(&root, &["why", "tools", "app"])
+        .success()
+        .stdout(contains("tools does not depend on app"))
+        .stdout(contains("source files were not covered by an indexer"));
+
+    // A deleted file: what imported it is gone from the code.
+    let (_tmp, root) = reach_project(&[]);
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "init"]);
+    fs::remove_file(root.join("src/http/Client.kt")).unwrap();
+    easement(&root, &["impact", "--diff", "main"])
+        .success()
+        .stdout(contains("Changed: 0 file(s)\n"))
+        .stdout(contains("Deleted: src/http/Client.kt"))
+        .stdout(contains("Partial: 1 deleted file(s)"));
+}
+
+#[test]
+fn why_reports_what_check_would_say_about_each_import() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  a: { in: src/a }\n  b: { in: src/b, allow_importers: [c] }\n  c: { in: src/c }\nrules:\n  a: { may_depend_on: [b] }\n",
+        ),
+        ("src/a/A.kt", "package a\nimport b.*\nclass A\n"),
+        ("src/b/B.kt", "package b\nclass B\n"),
+        ("src/b/C.kt", "package b\nclass C\n"),
+        ("src/c/C.kt", "package c\nclass C\n"),
+    ]);
+    easement(&root, &["why", "a", "b"])
+        .success()
+        .stdout(contains(
+            "a -> b is allowed (may_depend_on)\n  but b may be imported only from c",
+        ))
+        .stdout(contains(
+            "1 import(s):\n  src/a/A.kt:2 imports src/b/B.kt, src/b/C.kt [violates: dependency]",
+        ));
+    easement(&root, &["why", "a", "a"])
+        .success()
+        .stdout(contains("a -> a is allowed (same component)"));
+}

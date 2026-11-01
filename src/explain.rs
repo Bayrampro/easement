@@ -59,14 +59,7 @@ pub fn explain(config: &Config, map: &ComponentMap, rel: &str) -> Result<String>
             } else {
                 to.clone()
             });
-        } else if config.allows(name, to) {
-            let why = if rule.is_some_and(|r| r.may_depend_on.iter().any(|c| c.name() == to)) {
-                "may_depend_on"
-            } else if config.common.contains(to) {
-                "common"
-            } else {
-                "layers"
-            };
+        } else if let Some(why) = config.allow_source(name, to) {
             let because = config
                 .allow_reason(name, to)
                 .map(|b| format!(": {b}"))

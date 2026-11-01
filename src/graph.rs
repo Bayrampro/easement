@@ -38,25 +38,39 @@ fn arrows(edges: &[Edge], violations: &[Violation]) -> BTreeMap<(String, String)
 }
 
 /// The component graph with its violations in red, ready for a README or a pull request.
+/// With `focus`, only that component and the ones it shares an arrow with.
 pub fn render(
     format: GraphFormat,
     config: &Config,
     edges: &[Edge],
     violations: &[Violation],
+    focus: Option<&str>,
 ) -> String {
-    let arrows = arrows(edges, violations);
+    let mut arrows = arrows(edges, violations);
+    if let Some(focus) = focus {
+        arrows.retain(|(from, to), _| from == focus || to == focus);
+    }
+    let nodes: Vec<&str> = config
+        .components
+        .keys()
+        .map(String::as_str)
+        .filter(|name| {
+            focus.is_none_or(|focus| {
+                *name == focus || arrows.keys().any(|(f, t)| f == name || t == name)
+            })
+        })
+        .collect();
     match format {
-        GraphFormat::Mermaid => mermaid(config, &arrows),
-        GraphFormat::Dot => dot(config, &arrows),
+        GraphFormat::Mermaid => mermaid(&nodes, &arrows),
+        GraphFormat::Dot => dot(&nodes, &arrows),
     }
 }
 
-fn mermaid(config: &Config, arrows: &BTreeMap<(String, String), Arrow>) -> String {
-    let ids: BTreeMap<&str, String> = config
-        .components
-        .keys()
+fn mermaid(nodes: &[&str], arrows: &BTreeMap<(String, String), Arrow>) -> String {
+    let ids: BTreeMap<&str, String> = nodes
+        .iter()
         .enumerate()
-        .map(|(i, name)| (name.as_str(), format!("c{i}")))
+        .map(|(i, name)| (*name, format!("c{i}")))
         .collect();
     let mut out = String::from("graph LR\n");
     for (name, id) in &ids {
@@ -81,10 +95,10 @@ fn mermaid(config: &Config, arrows: &BTreeMap<(String, String), Arrow>) -> Strin
     out
 }
 
-fn dot(config: &Config, arrows: &BTreeMap<(String, String), Arrow>) -> String {
+fn dot(nodes: &[&str], arrows: &BTreeMap<(String, String), Arrow>) -> String {
     let quote = |s: &str| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""));
     let mut out = String::from("digraph easement {\n  rankdir=LR;\n  node [shape=box];\n");
-    for name in config.components.keys() {
+    for name in nodes {
         out.push_str(&format!("  {};\n", quote(name)));
     }
     for ((from, to), arrow) in arrows {
@@ -107,6 +121,16 @@ fn dot(config: &Config, arrows: &BTreeMap<(String, String), Arrow>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_keeps_a_component_and_its_neighbours() {
+        let (config, edges, violations) = fixture();
+        let dot = render(GraphFormat::Dot, &config, &edges, &violations, Some("b"));
+        assert!(dot.contains("\"a\" -> \"b\""));
+        assert!(!dot.contains("lone"));
+        let alone = render(GraphFormat::Dot, &config, &edges, &violations, Some("lone"));
+        assert!(alone.contains("\"lone\";") && !alone.contains("->"));
+    }
 
     fn fixture() -> (Config, Vec<Edge>, Vec<Violation>) {
         let config: Config = serde_norway::from_str(
@@ -143,7 +167,7 @@ components:
     #[test]
     fn mermaid_marks_violations() {
         let (config, edges, violations) = fixture();
-        let out = render(GraphFormat::Mermaid, &config, &edges, &violations);
+        let out = render(GraphFormat::Mermaid, &config, &edges, &violations, None);
         assert_eq!(
             out,
             "graph LR\n  c0[\"a\"]\n  c1[\"b\"]\n  c2[\"lone\"]\n  c0 -->|2| c1\n  c1 -.->|1 ✗| c0\n  linkStyle 1 stroke:#d00,stroke-width:2px,color:#d00\n"
@@ -153,7 +177,7 @@ components:
     #[test]
     fn dot_marks_violations() {
         let (config, edges, violations) = fixture();
-        let out = render(GraphFormat::Dot, &config, &edges, &violations);
+        let out = render(GraphFormat::Dot, &config, &edges, &violations, None);
         assert!(out.contains("\"a\" -> \"b\" [label=\"2\"];"));
         assert!(
             out.contains("\"b\" -> \"a\" [label=\"1\", color=red, fontcolor=red, style=dashed];")

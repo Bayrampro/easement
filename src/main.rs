@@ -6,6 +6,7 @@ mod diff;
 mod doctor;
 mod explain;
 mod graph;
+mod impact;
 mod indexer;
 mod init;
 mod lang;
@@ -105,6 +106,30 @@ enum Command {
         config: PathBuf,
         #[arg(long, value_enum, default_value_t = graph::GraphFormat::Mermaid)]
         format: graph::GraphFormat,
+        /// Draw only this component and the ones it shares an arrow with.
+        #[arg(long)]
+        focus: Option<String>,
+    },
+    /// List every file that depends on the given files, directly or through
+    /// others: what a change can break, and which tests to run.
+    Impact {
+        /// Files or directories, relative to the working directory or to the config.
+        paths: Vec<PathBuf>,
+        /// Take the files changed since the merge-base with this branch too.
+        #[arg(long, value_name = "BASE")]
+        diff: Option<String>,
+        #[arg(long, short, default_value = config::DEFAULT_CONFIG)]
+        config: PathBuf,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+    /// Show why one component depends on another: whether the config allows it,
+    /// and the imports behind it, or the shortest chain of imports.
+    Why {
+        from: String,
+        to: String,
+        #[arg(long, short, default_value = config::DEFAULT_CONFIG)]
+        config: PathBuf,
     },
     /// Say what the current dependency graph suggests for the config: allowances
     /// nothing uses, imports nothing allows, instances that could be isolated.
@@ -126,8 +151,8 @@ enum Command {
     Doctor {
         #[arg(long, short, default_value = config::DEFAULT_CONFIG)]
         config: PathBuf,
-        #[arg(long, value_enum, default_value_t = DoctorFormat::Text)]
-        format: DoctorFormat,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
     /// Print the JSON Schema of easement.yml.
     Schema,
@@ -138,7 +163,7 @@ enum Command {
 const SCHEMA: &str = include_str!("../easement.schema.json");
 
 #[derive(Clone, Copy, ValueEnum)]
-enum DoctorFormat {
+enum OutputFormat {
     Text,
     Json,
 }
@@ -233,6 +258,7 @@ impl Project {
             .collect();
         Ok(Analysis {
             violations,
+            all_files: scan.all_files,
             edges,
             deps: scan.deps,
             files: scan.paths,
@@ -266,6 +292,8 @@ impl Project {
 
 struct Analysis {
     violations: Vec<check::Violation>,
+    /// Every file that is not excluded, source or not.
+    all_files: Vec<String>,
     edges: Vec<check::Edge>,
     deps: Vec<scan::Dep>,
     files: Vec<String>,
@@ -466,6 +494,64 @@ fn run(cli: Cli) -> Result<bool> {
             }
             Ok(refused.is_empty())
         }
+        Command::Impact {
+            paths,
+            diff,
+            config,
+            format,
+        } => {
+            let project = Project::open(&config)?;
+            if paths.is_empty() && diff.is_none() {
+                anyhow::bail!("name the changed files or directories, or pass `--diff <base>`");
+            }
+            let analysis =
+                project.analyze(&mut scan::Cache::default(), &scope::Scope::default())?;
+            let named: Vec<String> = paths
+                .iter()
+                .map(|p| explain::root_relative(&project.root, p))
+                .collect();
+            let mut changed = impact::files_under(&named, &analysis.all_files)?;
+            let mut deleted = Vec::new();
+            if let Some(base) = &diff {
+                let changes = diff::Changes::collect(&project.root, base)?;
+                let known: std::collections::HashSet<&str> =
+                    analysis.all_files.iter().map(String::as_str).collect();
+                changed.extend(
+                    changes
+                        .files()
+                        .filter(|f| known.contains(f))
+                        .map(str::to_string),
+                );
+                deleted = changes.deleted;
+            }
+            let result = impact::impact(
+                &analysis.map,
+                &analysis.deps,
+                &analysis.all_files,
+                changed,
+                deleted,
+                &analysis.stats.uncovered,
+            );
+            match format {
+                OutputFormat::Text => print!("{}", impact::render(&result, &analysis.map)),
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
+            }
+            Ok(true)
+        }
+        Command::Why { from, to, config } => {
+            let project = Project::open(&config)?;
+            let analysis =
+                project.analyze(&mut scan::Cache::default(), &scope::Scope::default())?;
+            let graph = impact::Graph {
+                map: &analysis.map,
+                deps: &analysis.deps,
+                files: &analysis.all_files,
+                violations: &analysis.violations,
+                uncovered: &analysis.stats.uncovered,
+            };
+            print!("{}", impact::why(&project.config, &graph, &from, &to)?);
+            Ok(true)
+        }
         Command::Init { force } => {
             let root = std::env::current_dir()?;
             println!("{}", init::run(&root, force)?);
@@ -478,8 +564,17 @@ fn run(cli: Cli) -> Result<bool> {
             print!("{}", explain::explain(&project.config, &map, &rel)?);
             Ok(true)
         }
-        Command::Graph { config, format } => {
+        Command::Graph {
+            config,
+            format,
+            focus,
+        } => {
             let project = Project::open(&config)?;
+            if let Some(name) = &focus
+                && !project.config.components.contains_key(name)
+            {
+                anyhow::bail!("unknown component `{name}`");
+            }
             let analysis =
                 project.analyze(&mut scan::Cache::default(), &scope::Scope::default())?;
             print!(
@@ -488,7 +583,8 @@ fn run(cli: Cli) -> Result<bool> {
                     format,
                     &project.config,
                     &analysis.edges,
-                    &analysis.violations
+                    &analysis.violations,
+                    focus.as_deref(),
                 )
             );
             Ok(true)
@@ -544,8 +640,8 @@ fn run(cli: Cli) -> Result<bool> {
             print!(
                 "{}",
                 match format {
-                    DoctorFormat::Text => doctor::text(&diagnoses),
-                    DoctorFormat::Json => doctor::json(&diagnoses),
+                    OutputFormat::Text => doctor::text(&diagnoses),
+                    OutputFormat::Json => doctor::json(&diagnoses),
                 }
             );
             Ok(doctor::ok(&diagnoses))

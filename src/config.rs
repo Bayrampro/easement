@@ -551,6 +551,33 @@ impl Config {
                         .is_some_and(|r| r.may_depend_on.iter().any(|c| c.name() == to)))
     }
 
+    /// What lets `from` depend on `to`, when something does and nothing
+    /// forbids it: `same component`, `tests: auto`, `may_depend_on`,
+    /// `common` or `layers`.
+    pub fn allow_source(&self, from: &str, to: &str) -> Option<&'static str> {
+        if from == to {
+            return Some("same component");
+        }
+        if self.forbids(from, to) {
+            return None;
+        }
+        if self.tests.is_some() && from == TESTS && !self.rules.contains_key(TESTS) {
+            Some("tests: auto")
+        } else if self
+            .rules
+            .get(from)
+            .is_some_and(|r| r.may_depend_on.iter().any(|c| c.name() == to))
+        {
+            Some("may_depend_on")
+        } else if self.common.iter().any(|c| c == to) {
+            Some("common")
+        } else if self.above(from, to) {
+            Some("layers")
+        } else {
+            None
+        }
+    }
+
     /// Whether `from` is a higher layer than `to`.
     fn above(&self, from: &str, to: &str) -> bool {
         let at = |name: &str| self.layers.iter().position(|l| l == name);
