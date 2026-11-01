@@ -2,6 +2,7 @@ mod baseline;
 mod check;
 mod components;
 mod config;
+mod diagram;
 mod diff;
 mod doctor;
 mod explain;
@@ -234,6 +235,7 @@ impl Project {
             &std::fs::read_to_string(&self.config_path).unwrap_or_default(),
         ));
         violations.extend(check::cycles(&self.config, &edges));
+        violations.extend(diagram::check(&self.config, &self.root, &edges)?);
         violations.extend(check::reaches(
             &self.config,
             &map,
@@ -659,7 +661,8 @@ fn run(cli: Cli) -> Result<bool> {
                     &analysis.edges,
                     &analysis.deps,
                     &analysis.files,
-                    &analysis.stats.uncovered
+                    &analysis.stats.uncovered,
+                    &diagram::unused_arrows(&project.config, &project.root, &analysis.edges)?,
                 )
             );
             let unused = suggest::removable(

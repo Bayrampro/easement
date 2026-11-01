@@ -745,6 +745,37 @@ fn a_type_named_for_another_component_is_a_naming_violation() {
 }
 
 #[test]
+fn a_dependency_the_diagram_does_not_draw_fails() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ndiagram: ARCHITECTURE.md\ncomponents:\n  web: { in: src/web }\n  service: { in: src/service }\n  repository: { in: src/repository }\nrules:\n  web: { may_depend_on: [service, repository] }\n  service: { may_depend_on: [repository] }\n",
+        ),
+        (
+            "ARCHITECTURE.md",
+            "# Architecture\n\n```mermaid\nflowchart LR\n  ui[web] --> service --> repository\n  service --> db[(Postgres)]\n```\n",
+        ),
+        (
+            "src/web/Page.kt",
+            "package web\nimport service.S\nimport repository.R\nclass Page\n",
+        ),
+        ("src/service/S.kt", "package service\nclass S\n"),
+        ("src/repository/R.kt", "package repository\nclass R\n"),
+    ]);
+    easement(&root, &["check"]).code(1).stdout(contains(
+        "src/web/Page.kt:3: web -> repository is not in the diagram ARCHITECTURE.md (1 import(s)); draw the arrow, or drop the dependency [diagram]",
+    ));
+    // `service -> repository` is drawn, but no import stands for it.
+    easement(&root, &["suggest"]).success().stdout(contains(
+        "Arrows of the diagram that no import stands for (drop them, or the dependency is still to come):\n  service -> repository",
+    ));
+    fs::write(root.join("ARCHITECTURE.md"), "no graph\n").unwrap();
+    easement(&root, &["check"])
+        .code(2)
+        .stderr(contains("no Mermaid `graph` or `flowchart`"));
+}
+
+#[test]
 fn layers_forbidden_externals_metrics_and_strict() {
     let (_tmp, root) = fixture("policy");
     let out = easement(&root, &["check", "--format", "json"])

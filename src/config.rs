@@ -59,6 +59,11 @@ pub struct Config {
     /// file of a component that no chain of imports from them reaches is `unused`.
     #[serde(default)]
     pub entry: Vec<String>,
+    /// A Markdown file with a Mermaid graph (or a `.mmd` file) of the
+    /// components: a dependency between components it has no arrow for is a
+    /// `diagram` violation.
+    #[serde(default)]
+    pub diagram: Option<PathBuf>,
     /// Rules whose violations are reported as warnings and do not fail the check.
     #[serde(default)]
     pub warn: Vec<String>,

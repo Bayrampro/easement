@@ -210,6 +210,7 @@ Every violation carries a rule id, used in the JSON report, the baseline and sup
 | `reach` | a component reaches one its `must_not_reach` names through a chain of imports |
 | `unused` | with `entry`, a file of a component that no chain of imports from an entry reaches |
 | `naming` | a component defines a type whose name another component's `defines` claims |
+| `diagram` | a dependency between components has no arrow in the `diagram` |
 
 ### Public API
 
@@ -434,6 +435,22 @@ unowned: [ent, cmd, tools]
 ```
 
 Unlike `exclude`, files in `unowned` are still read, so components can depend on them. `exclude` hides files from the check altogether.
+
+### The diagram is the rule
+
+```yaml
+diagram: ARCHITECTURE.md
+```
+
+````markdown
+```mermaid
+flowchart LR
+  web --> service --> repository
+  repository --> db[(storage)]
+```
+````
+
+`diagram` points at a Markdown file with a Mermaid `graph` or `flowchart` (or at a bare `.mmd` file). A node is a component when its id or its label is the component's name; other nodes (users, external systems) are left alone. A dependency between components that the diagram has no arrow for fails as `diagram`, once per pair, at its first import: either the code grew a dependency the picture does not show, or the picture is out of date. `easement suggest` lists the arrows no import stands for. The baseline keys a missing arrow by its two components.
 
 ### Names of types
 

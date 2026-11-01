@@ -46,6 +46,8 @@ pub enum RuleId {
     Unused,
     /// A type whose name a component's `defines` claims, defined elsewhere.
     Naming,
+    /// A dependency between components that the `diagram` has no arrow for.
+    Diagram,
 }
 
 impl RuleId {
@@ -68,6 +70,7 @@ impl RuleId {
             RuleId::Reach => "reach",
             RuleId::Unused => "unused",
             RuleId::Naming => "naming",
+            RuleId::Diagram => "diagram",
         }
     }
 
@@ -79,7 +82,7 @@ impl RuleId {
     }
 
     /// Every rule, in the order of the declaration.
-    pub const ALL: [RuleId; 17] = [
+    pub const ALL: [RuleId; 18] = [
         RuleId::Dependency,
         RuleId::Privacy,
         RuleId::Cycle,
@@ -97,6 +100,7 @@ impl RuleId {
         RuleId::Reach,
         RuleId::Unused,
         RuleId::Naming,
+        RuleId::Diagram,
     ];
 
     /// Rules that an inline comment can suppress.
@@ -168,7 +172,7 @@ impl Key {
     /// first then does not turn old debt into new.
     pub fn canonical(mut self) -> Self {
         match self.rule {
-            RuleId::Cycle | RuleId::Metric => self.file.clear(),
+            RuleId::Cycle | RuleId::Metric | RuleId::Diagram => self.file.clear(),
             // Which file of the reached component the chain ends in changes as
             // freely as where it starts.
             RuleId::Reach => {

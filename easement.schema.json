@@ -122,7 +122,8 @@
           "excluded",
           "reach",
           "unused",
-          "naming"
+          "naming",
+          "diagram"
         ]
       }
     },
@@ -157,6 +158,10 @@
       "items": {
         "type": "string"
       }
+    },
+    "diagram": {
+      "description": "A Markdown file with a Mermaid graph or flowchart of the components (or a .mmd file). A dependency between components the diagram has no arrow for fails as diagram. Nodes match components by id or label.",
+      "type": "string"
     },
     "go": {
       "description": "How the Go indexer builds the project.",

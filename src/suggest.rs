@@ -15,6 +15,7 @@ pub fn suggest(
     deps: &[Dep],
     files: &[String],
     uncovered: &[String],
+    stale_arrows: &[(String, String)],
 ) -> String {
     // Files no indexer saw have no edges: a missing import next to them proves nothing.
     let mut unindexed: BTreeMap<&str, usize> = BTreeMap::new();
@@ -76,6 +77,15 @@ pub fn suggest(
         &mut out,
         "Imported but forbidden by the config (fix the imports):",
         lines(forbidden),
+    );
+
+    section(
+        &mut out,
+        "Arrows of the diagram that no import stands for (drop them, or the dependency is still to come):",
+        stale_arrows
+            .iter()
+            .map(|(from, to)| format!("{from} -> {to}"))
+            .collect(),
     );
 
     section(
@@ -279,14 +289,14 @@ rules:
             "src/pages/b/z.ts".to_string(),
             "src/pages/c/leaf.ts".to_string(),
         ];
-        let out = suggest(&config, &map, &edges, &deps, &files, &[]);
+        let out = suggest(&config, &map, &edges, &deps, &files, &[], &[]);
         assert!(out.contains("  web -> data\n"), "{out}");
         assert!(!out.contains("web -> core"), "{out}");
         assert!(out.contains("  core: data (1 import(s))\n"), "{out}");
         assert!(out.contains("  pages (`src/pages/*`): a, b, c\n"), "{out}");
 
         let crossing = [dep("src/pages/a/x.ts", "src/pages/b/y.ts")];
-        assert!(!suggest(&config, &map, &edges, &crossing, &files, &[]).contains("pages"));
+        assert!(!suggest(&config, &map, &edges, &crossing, &files, &[], &[]).contains("pages"));
     }
 
     #[test]
@@ -305,14 +315,14 @@ rules:
         let map = ComponentMap::new(&config).unwrap();
         let edges = [edge("web", "core")];
         let uncovered = ["src/generated/index.ts".to_string()];
-        let out = suggest(&config, &map, &edges, &[], &[], &uncovered);
+        let out = suggest(&config, &map, &edges, &[], &[], &uncovered, &[]);
         assert!(
             out.contains("  web -> generated (not indexed: 1 file(s) of generated)\n"),
             "{out}"
         );
         // It is not offered as a plain removal.
         assert!(!out.contains("  web -> generated\n"), "{out}");
-        let clean = suggest(&config, &map, &edges, &[], &[], &[]);
+        let clean = suggest(&config, &map, &edges, &[], &[], &[], &[]);
         assert!(clean.contains("  web -> generated\n"), "{clean}");
     }
 
@@ -330,7 +340,7 @@ components:
             "src/routes/a/x.ts".to_string(),
             "src/routes/b/y.ts".to_string(),
         ];
-        let out = suggest(&config, &map, &[], &[], &files, &[]);
+        let out = suggest(&config, &map, &[], &[], &files, &[], &[]);
         assert!(!out.contains("isolated"), "{out}");
     }
 
@@ -349,7 +359,7 @@ components:
             "src/pages/b/y.ts".to_string(),
         ];
         let uncovered = ["src/pages/c/z.ts".to_string()];
-        let out = suggest(&config, &map, &[], &[], &files, &uncovered);
+        let out = suggest(&config, &map, &[], &[], &files, &uncovered, &[]);
         assert!(out.contains("[unreliable: 1 file(s) not indexed]"), "{out}");
     }
 }
