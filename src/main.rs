@@ -708,6 +708,7 @@ fn main() -> ExitCode {
 mod tests {
     use super::SCHEMA;
     use crate::check::RuleId;
+    use std::collections::BTreeSet;
 
     #[test]
     fn the_schema_lists_every_rule_warn_takes() {
@@ -727,7 +728,8 @@ mod tests {
     }
 
     /// The schema is written by hand, for the descriptions editors show; the
-    /// fields come from the config types, so a field the schema misses fails here.
+    /// fields, the forms each takes and what is required come from the config
+    /// types, so whatever the schema misses of them fails here.
     #[test]
     fn the_schema_has_every_field_of_the_config() {
         let schema: serde_json::Value = serde_json::from_str(SCHEMA).unwrap();
@@ -755,12 +757,25 @@ mod tests {
                 .unwrap_or_else(|| panic!("no object among {one_of}"))
                 .clone()
         };
+        let same_forms =
+            |generated_object: &serde_json::Value, written: &serde_json::Value, what: &str| {
+                for key in keys(generated_object) {
+                    assert_eq!(
+                        shape(&schema, &written["properties"][&key]),
+                        shape(&generated, &generated_object["properties"][&key]),
+                        "the forms of {what}.{key}"
+                    );
+                }
+            };
         let defs = &generated["definitions"];
         let mut root = keys(&generated);
         // `extends` is merged away before the config is read into its type.
         root.push("extends".into());
         root.sort();
         assert_eq!(keys(&schema), root, "the top level");
+        // The top level requires nothing: a file that `extends` another may leave
+        // out even `version` and `components`.
+        same_forms(&generated, &schema, "the top level");
         for (generated, written, what) in [
             (
                 &defs["GoSettings"],
@@ -794,10 +809,53 @@ mod tests {
             ),
         ] {
             assert_eq!(keys(&written), keys(generated), "{what}");
+            same_forms(generated, &written, what);
+            assert_eq!(
+                written["required"], generated["required"],
+                "what {what} requires"
+            );
         }
         assert_eq!(
             schema["properties"]["tests"]["enum"], defs["TestsMode"]["enum"],
             "the values of tests"
         );
+    }
+
+    /// What a field of a schema takes, `$ref`s resolved against `root`: the kinds of
+    /// value, a list or a map with what it holds. An object stands for its fields,
+    /// which are compared on their own; `null` is left out, since an optional field
+    /// is written by leaving it out.
+    fn shape(root: &serde_json::Value, field: &serde_json::Value) -> BTreeSet<String> {
+        use serde_json::Value;
+        if let Some(name) = field
+            .get("$ref")
+            .and_then(Value::as_str)
+            .and_then(|r| r.strip_prefix("#/definitions/"))
+        {
+            return shape(root, &root["definitions"][name]);
+        }
+        for combined in ["oneOf", "anyOf", "allOf"] {
+            if let Some(forms) = field.get(combined).and_then(Value::as_array) {
+                return forms.iter().flat_map(|f| shape(root, f)).collect();
+            }
+        }
+        let kinds: Vec<&str> = match &field["type"] {
+            Value::String(kind) => vec![kind],
+            Value::Array(kinds) => kinds.iter().filter_map(Value::as_str).collect(),
+            _ if field.get("const").is_some_and(Value::is_u64) => vec!["integer"],
+            _ if field.get("enum").is_some() => vec!["string"],
+            _ => panic!("no type in {field}"),
+        };
+        kinds
+            .into_iter()
+            .filter(|&kind| kind != "null")
+            .map(|kind| match kind {
+                "array" => format!("list of {:?}", shape(root, &field["items"])),
+                "object" if field["additionalProperties"].is_object() => {
+                    format!("map of {:?}", shape(root, &field["additionalProperties"]))
+                }
+                _ => kind.to_string(),
+            })
+            .collect()
     }
 }
