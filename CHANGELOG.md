@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.4.0](https://github.com/mokevnin/easement/compare/v0.3.7...v0.4.0) (2026-11-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* a checked file that imports an excluded file now fails with an `excluded` violation. Generated code the project imports belongs in `target_only`, not `exclude`.
+* `easement baseline` over an existing baseline no longer records new violations; it lists them and exits 1. Pass `--accept-new` to legalize them.
+* a config with a component that matches no file, which used to pass, now fails with an `unmatched` violation. This includes a component whose files are all hidden by `exclude` or `.gitignore`. Such a component fails every `easement check`, `--diff` included, until its pattern is fixed or it is marked `optional: true`.
+
+### Features
+
+* add `$std` for the standard library in external module rules ([d06a495](https://github.com/mokevnin/easement/commit/d06a495c41aa08b6f59588c364fa7960fcb7b37f))
+* add `impact`, `why` and `graph --focus` for planning a change ([ea02ea5](https://github.com/mokevnin/easement/commit/ea02ea576367f678a6c7ed5b30db66ef5101865a))
+* add `must_not_reach` to forbid a dependency through any chain ([963eacf](https://github.com/mokevnin/easement/commit/963eacf9c3e3711ac9e8fb2ce8eec5ab5d49ca8b))
+* add sibling and closed layers ([c4bff86](https://github.com/mokevnin/easement/commit/c4bff861721f7b58e056c6f72dafd98f7dede7dc))
+* fail on a component pattern that matches no file ([cf4a776](https://github.com/mokevnin/easement/commit/cf4a776176ac8379bdda3d52502217403ec0be32))
+* fail on an import of a file that `exclude` hides ([c099eb6](https://github.com/mokevnin/easement/commit/c099eb6e34bfc4bd870cbbd2b804d3f49ffe6497))
+* keep imports within one slice with named placeholders ([5ddfd18](https://github.com/mokevnin/easement/commit/5ddfd1892222df47ba1ee0f8687ff8823a22b143))
+* let `$std` cover old Python and the JDK, and say when it cannot judge ([2846b44](https://github.com/mokevnin/easement/commit/2846b4453dd7ff1bc6aabe56b5051eb735aafef0))
+* let `easement baseline` only shrink an existing baseline ([f20a4d7](https://github.com/mokevnin/easement/commit/f20a4d76097fc78e74b0145afca4e30cee88116e))
+* name an owner for a component to ask about its rules ([2fdc23b](https://github.com/mokevnin/easement/commit/2fdc23b66e20aa6f9b73462eea4f3d6355c67a38))
+* report the rules in `warn` as warnings that do not fail ([40e4791](https://github.com/mokevnin/easement/commit/40e47914d372bcbc299ff80e731416c097698d4d))
+* say which layer stops a dependency, and show owners in more places ([42b801a](https://github.com/mokevnin/easement/commit/42b801a27bee3e8ed21c1ea1998d0b32fb64f4af))
+
+
+### Bug Fixes
+
+* key cycle, limit and requirement baseline entries by what they are about ([acf2f81](https://github.com/mokevnin/easement/commit/acf2f81cd9c18d10da6ba2794cac696209a9e559))
+* never suggest allowing an import that the config forbids ([e445de2](https://github.com/mokevnin/easement/commit/e445de2fcb176211413c2abb1cf36d24ab59b5b1))
+
 ## [0.3.7](https://github.com/mokevnin/easement/compare/v0.3.6...v0.3.7) (2026-10-30)
 
 
