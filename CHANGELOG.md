@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.1](https://github.com/mokevnin/easement/compare/v0.4.0...v0.4.1) (2026-11-01)
+
+
+### Features
+
+* name the path to the field in a config error ([e29c46f](https://github.com/mokevnin/easement/commit/e29c46f0a2ca2fe650e99fd04745c40b71bb6b90))
+* suggest the component a mistyped name is likely meant to be ([a9f92b7](https://github.com/mokevnin/easement/commit/a9f92b7072a094f4e30e1ec350124a007223383e))
+
+
+### Bug Fixes
+
+* key the index cache by BLAKE3 instead of `DefaultHasher` ([cd77bcd](https://github.com/mokevnin/easement/commit/cd77bcd870b939ef5576caf619fb4a545fcc2385))
+
 ## [0.4.0](https://github.com/mokevnin/easement/compare/v0.3.7...v0.4.0) (2026-11-01)
 
 
