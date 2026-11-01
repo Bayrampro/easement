@@ -1,0 +1,12 @@
+---
+source: tests/cli.rs
+assertion_line: 1271
+expression: "stdout_of(run(&[\"doctor\"]).code(1))"
+---
+go: scip-go not found; install it with `mise use -g go:github.com/scip-code/scip-go/cmd/scip-go`
+
+For your mise.toml (pin a version to keep runs reproducible):
+[tools]
+"go:github.com/scip-code/scip-go/cmd/scip-go" = "latest"
+
+easement doctor: something is missing

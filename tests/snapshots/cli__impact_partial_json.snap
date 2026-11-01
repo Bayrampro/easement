@@ -1,0 +1,16 @@
+---
+source: tests/cli.rs
+assertion_line: 2408
+expression: report
+---
+{
+  "changed": [
+    "app/go.mod",
+    "app/main.go"
+  ],
+  "confidence": "partial",
+  "confidence_reasons": [
+    "2 source files were not covered by an indexer, so imports in them are missing; `easement check` lists them"
+  ],
+  "dependents": []
+}

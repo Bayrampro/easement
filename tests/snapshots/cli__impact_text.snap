@@ -1,0 +1,9 @@
+---
+source: tests/cli.rs
+assertion_line: 2321
+expression: "stdout_of(easement(&root, &[\"impact\", \"src/http/Client.kt\"]).success())"
+---
+Changed: 1 file(s) in http
+Depend on them: 2 file(s) in domain, util
+  domain: src/domain/Order.kt
+  util: src/util/Retry.kt

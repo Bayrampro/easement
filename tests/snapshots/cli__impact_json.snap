@@ -1,0 +1,18 @@
+---
+source: tests/cli.rs
+assertion_line: 2329
+expression: report
+---
+{
+  "changed": [
+    "src/util/Retry.kt"
+  ],
+  "confidence": "full",
+  "confidence_reasons": [],
+  "dependents": [
+    {
+      "component": "domain",
+      "file": "src/domain/Order.kt"
+    }
+  ]
+}

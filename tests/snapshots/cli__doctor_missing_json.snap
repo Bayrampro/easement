@@ -1,0 +1,18 @@
+---
+source: tests/cli.rs
+assertion_line: 1274
+expression: report
+---
+{
+  "languages": [
+    {
+      "binary": "scip-go",
+      "found": false,
+      "install": "mise use -g go:github.com/scip-code/scip-go/cmd/scip-go",
+      "language": "go",
+      "mise": "go:github.com/scip-code/scip-go/cmd/scip-go",
+      "problems": []
+    }
+  ],
+  "ok": false
+}

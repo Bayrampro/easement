@@ -1268,20 +1268,10 @@ fn doctor_names_a_missing_indexer_and_how_to_install_it() {
             .args(args)
             .assert()
     };
-    run(&["doctor"])
-        .code(1)
-        .stdout(contains("go: scip-go not found"))
-        .stdout(contains(
-            "mise use -g go:github.com/scip-code/scip-go/cmd/scip-go",
-        ))
-        .stdout(contains("[tools]"))
-        .stdout(contains(
-            "\"go:github.com/scip-code/scip-go/cmd/scip-go\" = \"latest\"",
-        ));
+    insta::assert_snapshot!("doctor_missing_text", stdout_of(run(&["doctor"]).code(1)));
     let report: serde_json::Value =
         serde_json::from_str(&stdout_of(run(&["doctor", "--format", "json"]).code(1))).unwrap();
-    assert_eq!(report["ok"], false);
-    assert_eq!(report["languages"][0]["found"], false);
+    insta::assert_json_snapshot!("doctor_missing_json", report);
 }
 
 #[test]
@@ -2318,20 +2308,15 @@ fn warnings_are_sorted_and_warn_is_inherited_through_extends() {
 #[test]
 fn impact_lists_what_depends_on_a_change() {
     let (_tmp, root) = reach_project(&[]);
-    easement(&root, &["impact", "src/http/Client.kt"])
-        .success()
-        .stdout(contains("Changed: 1 file(s) in http"))
-        .stdout(contains("Depend on them: 2 file(s) in domain, util"))
-        .stdout(contains("  domain: src/domain/Order.kt"))
-        .stdout(contains("  util: src/util/Retry.kt"));
+    insta::assert_snapshot!(
+        "impact_text",
+        stdout_of(easement(&root, &["impact", "src/http/Client.kt"]).success())
+    );
     let report: serde_json::Value = serde_json::from_str(&stdout_of(
         easement(&root, &["impact", "src/util", "--format", "json"]).success(),
     ))
     .unwrap();
-    assert_eq!(report["changed"], serde_json::json!(["src/util/Retry.kt"]));
-    assert_eq!(report["dependents"][0]["file"], "src/domain/Order.kt");
-    assert_eq!(report["dependents"][0]["component"], "domain");
-    assert_eq!(report["confidence"], "full");
+    insta::assert_json_snapshot!("impact_json", report);
 
     git(&root, &["init", "-q", "-b", "main"]);
     git(&root, &["add", "."]);
@@ -2410,7 +2395,7 @@ fn impact_and_why_say_when_an_answer_may_be_short() {
         easement(&root, &["impact", "app", "--format", "json"]).success(),
     ))
     .unwrap();
-    assert_eq!(report["confidence"], "partial");
+    insta::assert_json_snapshot!("impact_partial_json", report);
     easement(&root, &["why", "tools", "app"])
         .success()
         .stdout(contains("tools does not depend on app"))
