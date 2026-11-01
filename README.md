@@ -188,7 +188,7 @@ Every violation carries a rule id, used in the JSON report, the baseline and sup
 | `external` | a component uses an external module its rule does not allow |
 | `metric` | a component exceeds `max_fan_out` or `max_instability` |
 | `orphan` | with `strict: true`, a checked file belongs to no component |
-| `isolation` | an instance of an `isolated` component imports another instance |
+| `isolation` | an instance of an `isolated` component imports another instance, or an import crosses slices of a named placeholder |
 | `required` | a directory of a component lacks an import, a file or a directive its rule requires |
 | `file` | a component holds a file its `forbid_file` rule forbids |
 | `symbol` | a component uses a name its `forbid_symbol` rule forbids, or one outside the `public_symbols` of another component |
@@ -220,7 +220,27 @@ components:
     because: pages ship as separate bundles
 ```
 
-Each directory that `src/pages/*` matches is an instance, and instances of an `isolated` component must not import each other: `src/pages/contacts` cannot import `src/pages/segments`. A file `contacts.tsx` and a directory `contacts/` are the same instance. Every `in` pattern of an isolated component needs a `*` to tell the instances apart, and no `**`. Violations are the `isolation` rule and can be suppressed inline; `because` of the component is printed with them.
+Each directory that `src/pages/*` matches is an instance, and instances of an `isolated` component must not import each other: `src/pages/contacts` cannot import `src/pages/segments`. A file `contacts.tsx` and a directory `contacts/` are the same instance. Every `in` pattern of an isolated component needs a `*` or a [placeholder](#slices) to tell the instances apart, and no `**`. Violations are the `isolation` rule and can be suppressed inline; `because` of the component is printed with them.
+
+### Slices
+
+```yaml
+components:
+  ui:   { in: "src/features/<feature>/ui" }
+  data: { in: "src/features/<feature>/data" }
+  api:  { in: "src/features/*/api" }
+
+rules:
+  ui: { may_depend_on: [data, api] }
+```
+
+A named placeholder such as `<feature>` matches one directory, like `*`, and remembers which. When both ends of an import name the same placeholder, they have to fill it the same way: `src/features/orders/ui` may use `src/features/orders/data` but not `src/features/billing/data`, nor the `ui` of another feature. Write `*` where any slice will do: every `ui` may use the `api` of any feature. A file `orders.kt` and a directory `orders/` are the same slice.
+
+```text
+src/features/billing/ui/Pay.kt:2: ui -> data: <feature> differs (billing imports orders: src/features/orders/data/Repo.kt) [isolation]
+```
+
+A placeholder is a whole path segment of `a-z` and `_`; a pattern may hold several, each name once, none after `**`. Placeholders work only in `in`. Violations are the `isolation` rule and can be suppressed inline.
 
 ### Who may import a component
 

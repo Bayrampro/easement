@@ -304,6 +304,8 @@ pub fn evaluate(
                     target,
                     specifier: dep.specifier.clone(),
                 });
+            } else if let Some(v) = slice_violation(config, map, from, to, &file, &target, dep) {
+                found.push(v);
             }
             continue;
         }
@@ -347,6 +349,9 @@ pub fn evaluate(
                 config.components[to].because.as_deref(),
             )
         } else {
+            if let Some(v) = slice_violation(config, map, from, to, &file, &target, dep) {
+                found.push(v);
+            }
             continue;
         };
         found.push(Violation {
@@ -364,6 +369,39 @@ pub fn evaluate(
     }
     stats.unmapped_files = unmapped.len();
     (found, edges, stats)
+}
+
+/// An import between two slices: both ends name the same placeholder in
+/// their `in` patterns (`src/features/<feature>/ui`) and fill it differently.
+fn slice_violation(
+    config: &Config,
+    map: &ComponentMap,
+    from: &str,
+    to: &str,
+    file: &str,
+    target: &str,
+    dep: &Dep,
+) -> Option<Violation> {
+    let theirs = map.captures_of(target);
+    let (name, here, there) = map.captures_of(file).into_iter().find_map(|(name, here)| {
+        let (_, there) = theirs.iter().find(|(n, _)| *n == name)?;
+        (here != *there).then(|| (name, here, there.clone()))
+    })?;
+    Some(Violation {
+        rule: RuleId::Isolation,
+        evidence: vec![(file.to_string(), dep.line)],
+        file: file.to_string(),
+        line: dep.line,
+        message: format!("{from} -> {to}: <{name}> differs ({here} imports {there}: {target})"),
+        because: config.components[to]
+            .because
+            .clone()
+            .or_else(|| config.reason(from).map(str::to_string)),
+        from: from.to_string(),
+        to: to.to_string(),
+        target: target.to_string(),
+        specifier: dep.specifier.clone(),
+    })
 }
 
 /// Component dependencies, as `a -> b`, whose every import sits on a line

@@ -2138,3 +2138,54 @@ fn suggest_never_offers_to_allow_a_forbidden_import() {
         ))
         .stdout(contains("add to may_depend_on").not());
 }
+
+/// Vertical slices: a feature's UI may use its own data and any feature's API.
+fn slices_project(extra: &[(&str, &str)]) -> (TempDir, PathBuf) {
+    let mut files = vec![
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  ui: { in: 'src/features/<feature>/ui' }\n  data: { in: 'src/features/<feature>/data' }\n  api: { in: 'src/features/*/api' }\n  app: { in: src/app }\nrules:\n  ui: { may_depend_on: [data, api] }\n  app: { may_depend_on: [ui] }\n",
+        ),
+        (
+            "src/features/orders/ui/View.kt",
+            "package features.orders.ui\nimport features.orders.data.Repo\nimport features.billing.api.Api\nclass View\n",
+        ),
+        (
+            "src/features/orders/data/Repo.kt",
+            "package features.orders.data\nclass Repo\n",
+        ),
+        (
+            "src/features/billing/api/Api.kt",
+            "package features.billing.api\nclass Api\n",
+        ),
+        (
+            "src/features/billing/data/Ledger.kt",
+            "package features.billing.data\nclass Ledger\n",
+        ),
+        (
+            "src/app/Main.kt",
+            "package app\nimport features.orders.ui.View\nclass Main\n",
+        ),
+    ];
+    files.extend_from_slice(extra);
+    project(&files)
+}
+
+#[test]
+fn a_named_placeholder_keeps_dependencies_within_one_slice() {
+    let (_tmp, root) = slices_project(&[]);
+    easement(&root, &["check"]).success();
+
+    let (_tmp, root) = slices_project(&[(
+        "src/features/billing/ui/Pay.kt",
+        "package features.billing.ui\nimport features.orders.data.Repo\nimport features.orders.ui.View\nclass Pay\n",
+    )]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "src/features/billing/ui/Pay.kt:2: ui -> data: <feature> differs (billing imports orders: src/features/orders/data/Repo.kt) [isolation]",
+        ))
+        .stdout(contains(
+            "src/features/billing/ui/Pay.kt:3: ui -> ui: <feature> differs (billing imports orders: src/features/orders/ui/View.kt) [isolation]",
+        ));
+}

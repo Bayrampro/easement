@@ -83,9 +83,43 @@ fn module_matchers(component: &str, pattern: &str) -> Result<[GlobMatcher; 3]> {
     ])
 }
 
+/// The glob of an `in` pattern, where a named placeholder (`<feature>`)
+/// matches like `*`, and the placeholder names by segment index.
+pub fn glob_and_placeholders(pattern: &str) -> Result<(String, Vec<(usize, String)>)> {
+    let mut glob = Vec::new();
+    let mut names: Vec<(usize, String)> = Vec::new();
+    let mut deep = false;
+    for (i, segment) in pattern.trim_end_matches('/').split('/').enumerate() {
+        if !segment.contains(['<', '>']) {
+            deep |= segment.contains("**");
+            glob.push(segment.to_string());
+            continue;
+        }
+        let name = segment
+            .strip_prefix('<')
+            .and_then(|s| s.strip_suffix('>'))
+            .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+            .with_context(|| {
+                format!("`{segment}` in `{pattern}`: a placeholder is a whole segment like `<feature>`, of a-z and _")
+            })?;
+        if deep {
+            anyhow::bail!("`<{name}>` in `{pattern}` comes after `**`, so it has no fixed place");
+        }
+        if names.iter().any(|(_, n)| n == name) {
+            anyhow::bail!("`<{name}>` appears twice in `{pattern}`");
+        }
+        names.push((i, name.to_string()));
+        glob.push("*".to_string());
+    }
+    Ok((glob.join("/"), names))
+}
+
 struct Entry {
     component: String,
+    /// The pattern as written, placeholders included.
     pattern: String,
+    /// Named placeholders of the pattern by segment index.
+    captures: Vec<(usize, String)>,
     pattern_len: usize,
     /// Number of `/`-separated parts of the pattern: where an instance of an isolated component ends.
     parts: usize,
@@ -127,14 +161,16 @@ impl ComponentMap {
         for (name, component) in &config.components {
             for pattern in component.patterns.as_vec() {
                 let trimmed = pattern.trim_end_matches('/');
+                let (glob, captures) = glob_and_placeholders(trimmed)?;
                 entries.push(Entry {
                     component: name.clone(),
                     pattern: trimmed.to_string(),
-                    pattern_len: trimmed.len(),
-                    parts: trimmed.split('/').count(),
+                    captures,
+                    pattern_len: glob.len(),
+                    parts: glob.split('/').count(),
                     priority: component.priority,
                     isolated: component.isolated,
-                    matchers: module_matchers(name, pattern)?,
+                    matchers: module_matchers(name, &glob)?,
                 });
             }
             if let Some(patterns) = &component.except {
@@ -281,6 +317,31 @@ impl ComponentMap {
             .max_by_key(|e| (e.priority, e.pattern_len))
     }
 
+    /// The values the named placeholders of `rel_path`'s pattern take:
+    /// `feature` is `orders` for `src/features/orders/ui/View.kt` under
+    /// `src/features/<feature>/ui`. A file `orders.kt` and a directory
+    /// `orders/` take the same value; a path that ends above a placeholder
+    /// takes none.
+    pub fn captures_of(&self, rel_path: &str) -> Vec<(&str, String)> {
+        let Some(entry) = self.matching(rel_path) else {
+            return Vec::new();
+        };
+        let segments: Vec<&str> = rel_path.split('/').collect();
+        entry
+            .captures
+            .iter()
+            .filter_map(|(i, name)| {
+                let segment = segments.get(*i)?;
+                let value = if *i + 1 == segments.len() {
+                    without_extension(segment)
+                } else {
+                    segment
+                };
+                Some((name.as_str(), value.to_string()))
+            })
+            .collect()
+    }
+
     /// For a path in an isolated component: the instance it belongs to, such
     /// as `src/pages/contacts` for `src/pages/*`. A file `contacts.tsx` and a
     /// directory `contacts/` are the same instance.
@@ -289,15 +350,30 @@ impl ComponentMap {
         let segments: Vec<&str> = rel_path.split('/').collect();
         let n = entry.parts.min(segments.len());
         let instance = segments[..n].join("/");
-        if segments.len() == n
-            && let Some((stem, ext)) = instance.rsplit_once('.')
-            && !stem.ends_with('/')
-            && !ext.is_empty()
-            && ext.chars().all(|c| c.is_ascii_alphabetic())
-        {
-            return Some(stem.to_string());
+        if segments.len() == n {
+            let last = segments[n - 1];
+            let stem = without_extension(last);
+            return Some(format!(
+                "{}{stem}",
+                &instance[..instance.len() - last.len()]
+            ));
         }
         Some(instance)
+    }
+}
+
+/// A file name without its extension (`contacts.tsx` is `contacts`), so a
+/// file and a directory of one name are the same module.
+fn without_extension(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((stem, ext))
+            if !stem.is_empty()
+                && !ext.is_empty()
+                && ext.chars().all(|c| c.is_ascii_alphabetic()) =>
+        {
+            stem
+        }
+        _ => name,
     }
 }
 
@@ -320,6 +396,29 @@ components:
 ");
         let files = ["src/app/cli.py".to_string(), "src/pages/a/x.ts".to_string()];
         assert_eq!(m.unmatched_patterns(&files), vec![("ghost", "src/gone")]);
+    }
+
+    #[test]
+    fn placeholders_capture_and_do_not_win_on_length() {
+        let m = map("version: 1
+components:
+  slice: { in: 'src/features/<feature>' }
+  ui: { in: 'src/features/<feature>/ui' }
+  wild: { in: 'src/apps/*' }
+  named: { in: 'src/apps/<app>' }
+");
+        assert_eq!(
+            m.captures_of("src/features/orders/ui/View.kt"),
+            vec![("feature", "orders".to_string())]
+        );
+        // A file and a directory of one name are one slice.
+        assert_eq!(
+            m.captures_of("src/features/orders.kt"),
+            vec![("feature", "orders".to_string())]
+        );
+        assert!(m.captures_of("src/features").is_empty());
+        // `<app>` is longer as text than `*`, but the patterns are equal.
+        assert_eq!(m.component_of("src/apps/a/x.ts"), Some("wild"));
     }
 
     #[test]

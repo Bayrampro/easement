@@ -153,7 +153,7 @@
       ],
       "properties": {
         "in": {
-          "description": "A glob or a list of globs naming a module: a directory or a file.",
+          "description": "A glob or a list of globs naming a module: a directory or a file. A named placeholder such as <feature> matches one directory like *, and both ends of an import that name it must fill it the same way.",
           "$ref": "#/definitions/patterns"
         },
         "public": {

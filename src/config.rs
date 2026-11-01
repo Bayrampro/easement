@@ -396,10 +396,50 @@ impl Config {
                 bail!("rules.{from}.max_instability must be between 0 and 1");
             }
         }
+        // Named placeholders belong to `in` patterns only.
+        let plain = |place: &str, patterns: Vec<&str>| -> Result<()> {
+            if let Some(p) = patterns.iter().find(|p| p.contains('<')) {
+                bail!("`{p}` in {place}: a placeholder like `<feature>` works only in `in`");
+            }
+            Ok(())
+        };
+        plain("exclude", self.exclude.iter().map(String::as_str).collect())?;
+        plain(
+            "target_only",
+            self.target_only.iter().map(String::as_str).collect(),
+        )?;
+        plain("unowned", self.unowned.iter().map(String::as_str).collect())?;
+        plain(
+            "uncovered_ok",
+            self.uncovered_ok
+                .iter()
+                .flat_map(Accepted::patterns)
+                .collect(),
+        )?;
         for (name, component) in &self.components {
             if component.patterns.as_vec().is_empty() {
                 bail!("component `{name}` has no `in` patterns");
             }
+            for pattern in component.patterns.as_vec() {
+                crate::components::glob_and_placeholders(pattern)
+                    .with_context(|| format!("components.{name}.in"))?;
+            }
+            plain(
+                &format!("components.{name}.public"),
+                component
+                    .public
+                    .as_ref()
+                    .map(Patterns::as_vec)
+                    .unwrap_or_default(),
+            )?;
+            plain(
+                &format!("components.{name}.except"),
+                component
+                    .except
+                    .as_ref()
+                    .map(Patterns::as_vec)
+                    .unwrap_or_default(),
+            )?;
             if component
                 .public
                 .as_ref()
@@ -415,10 +455,10 @@ impl Config {
                     .patterns
                     .as_vec()
                     .iter()
-                    .any(|p| p.contains("**") || !p.contains('*'))
+                    .any(|p| p.contains("**") || !(p.contains('*') || p.contains('<')))
             {
                 bail!(
-                    "component `{name}` is isolated, so every `in` pattern needs a `*` to tell the instances apart and no `**`"
+                    "component `{name}` is isolated, so every `in` pattern needs a `*` or a placeholder like `<page>` to tell the instances apart, and no `**`"
                 );
             }
         }
@@ -766,6 +806,21 @@ rules:
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn checks_placeholders() {
+        let error = |component: &str, extra: &str| {
+            let yaml = format!("version: 1\ncomponents:\n  a: {component}\n{extra}");
+            format!("{:#}", parse(&yaml).unwrap_err())
+        };
+        assert!(error("{ in: 'src/x<f>/ui' }", "").contains("whole segment"));
+        assert!(error("{ in: 'src/<F>/ui' }", "").contains("whole segment"));
+        assert!(error("{ in: 'src/**/<f>' }", "").contains("after `**`"));
+        assert!(error("{ in: 'src/<f>/<f>' }", "").contains("twice"));
+        assert!(error("{ in: src/a }", "exclude: ['src/<f>']\n").contains("works only in `in`"));
+        assert!(error("{ in: src/a, public: 'src/<f>/api' }", "").contains("works only in `in`"));
+        assert!(parse("version: 1\ncomponents:\n  a: { in: 'src/<f>', isolated: true }\n").is_ok());
     }
 
     #[test]
