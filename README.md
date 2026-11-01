@@ -649,7 +649,7 @@ Where `easement` differs:
 
 Where the others are stronger:
 
-- **Depth.** `easement` sees imports and the symbols used through them (Go and TypeScript), but it has no rules about classes, methods, annotations, naming or call chains (ArchUnit, arch-go).
+- **Depth.** `easement` sees imports and the symbols used through them (Go, TypeScript, Python, Rust and Ruby), but it has no rules about classes, methods, annotations, naming or call chains (ArchUnit, arch-go).
 - **Kotlin and Swift.** They are read with tree-sitter, not a compiler, so what a build system would resolve there is approximated.
 
 Using both is reasonable: keep a language-specific tool for the deep rules of one codebase and let `easement` hold the boundaries between components and languages.
@@ -664,6 +664,20 @@ Using both is reasonable: keep a language-specific tool for the deep rules of on
 - [Deptrac](https://github.com/deptrac/deptrac): layers and allowed dependencies for PHP.
 - [arch-go](https://github.com/arch-go/arch-go): architecture checks for Go.
 - [depguard](https://github.com/OpenPeeDeeP/depguard): import allow and deny lists for Go.
+- [go-arch-lint](https://github.com/fe3dback/go-arch-lint): components and allowed dependencies for Go in one YAML file.
+- [ArchUnitNET](https://github.com/TNG/ArchUnitNET): ArchUnit's rules for .NET.
+- [NetArchTest](https://github.com/BenMorris/NetArchTest): architecture rules as tests for .NET.
+- [ArchUnitTS](https://github.com/LukasNiessen/ArchUnitTS): architecture rules as tests for TypeScript.
+- [eslint-plugin-boundaries](https://github.com/javierbrea/eslint-plugin-boundaries): element types and allowed imports for JavaScript and TypeScript, as ESLint rules.
+- [Sheriff](https://github.com/softarc-consulting/sheriff): module boundaries and dependency rules for TypeScript.
+- [Tach](https://github.com/tach-org/tach): module boundaries, layers and public interfaces for Python.
+- [PyTestArch](https://github.com/zyskarch/pytestarch): architecture rules as tests for Python.
+- [PHPArkitect](https://github.com/phparkitect/arkitect): architecture rules for PHP.
+- [PHPat](https://github.com/carlosas/phpat): architecture rules for PHP as PHPStan rules.
+- [Packwerk](https://github.com/Shopify/packwerk): package boundaries for Ruby.
+- [Konsist](https://github.com/LemonAppDev/konsist): architecture and structure tests for Kotlin.
+- [Harmonize](https://github.com/perrystreetsoftware/Harmonize): architecture rules as tests for Swift.
+- [cargo-pup](https://github.com/DataDog/cargo-pup): architectural lints for Rust.
 
 `easement` puts one component model, one config and one baseline over all of them.
 
