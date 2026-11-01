@@ -18,58 +18,224 @@ pub fn arrows(text: &str, components: &BTreeSet<&str>) -> Result<BTreeSet<(Strin
     if blocks.is_empty() {
         bail!("no Mermaid `graph` or `flowchart` in it");
     }
-    let mut labels: BTreeMap<String, String> = BTreeMap::new();
-    let mut raw = Vec::new();
+    // Labels by block: an id may name different things in two graphs.
+    let mut drawn = BTreeSet::new();
     for block in &blocks {
-        for line in block.lines().map(str::trim) {
-            if line.is_empty()
-                || line.starts_with("%%")
-                || line.starts_with("graph")
-                || line.starts_with("flowchart")
-                || line.starts_with("subgraph")
-                || line == "end"
-                || line.starts_with("classDef")
-                || line.starts_with("class ")
-                || line.starts_with("style")
-                || line.starts_with("linkStyle")
-            {
+        let mut labels: BTreeMap<String, String> = BTreeMap::new();
+        let mut raw = Vec::new();
+        for statement in block.lines().flat_map(|l| l.split(';')).map(str::trim) {
+            let keyword = statement.split_whitespace().next().unwrap_or_default();
+            if statement.is_empty() || statement.starts_with("%%") || KEYWORDS.contains(&keyword) {
                 continue;
             }
-            let nodes: Vec<(String, Option<String>)> =
-                split_chain(line).iter().map(|n| node(n)).collect();
-            for (id, label) in &nodes {
+            let (groups, links) = parse_statement(statement);
+            for (id, label) in groups.iter().flatten() {
                 if let Some(label) = label {
                     labels.insert(id.clone(), label.clone());
                 }
             }
-            for pair in nodes.windows(2) {
-                raw.push((pair[0].0.clone(), pair[1].0.clone()));
+            for (i, link) in links.iter().enumerate() {
+                for (a, _) in &groups[i] {
+                    for (b, _) in &groups[i + 1] {
+                        match link {
+                            Link::Forward => raw.push((a.clone(), b.clone())),
+                            Link::Both => {
+                                raw.push((a.clone(), b.clone()));
+                                raw.push((b.clone(), a.clone()));
+                            }
+                            Link::Plain => {}
+                        }
+                    }
+                }
+            }
+        }
+        let name = |id: &str| -> Option<String> {
+            if components.contains(id) {
+                return Some(id.to_string());
+            }
+            labels
+                .get(id)
+                .filter(|l| components.contains(l.as_str()))
+                .cloned()
+        };
+        drawn.extend(
+            raw.into_iter()
+                .filter_map(|(a, b)| Some((name(&a)?, name(&b)?))),
+        );
+    }
+    Ok(drawn)
+}
+
+/// Statements of a graph that declare no nodes or arrows.
+const KEYWORDS: &[&str] = &[
+    "graph",
+    "flowchart",
+    "subgraph",
+    "end",
+    "direction",
+    "classDef",
+    "class",
+    "style",
+    "linkStyle",
+    "click",
+    "accTitle",
+    "accDescr",
+];
+
+/// How two node groups are linked: an arrow, an arrow both ways
+/// (`<-->`, `o--o`), or a line with no direction (`---`, `-.-`, `~~~`).
+#[derive(Debug, PartialEq)]
+enum Link {
+    Forward,
+    Both,
+    Plain,
+}
+
+/// A node as written: its id and the label it carries, if any.
+type Node = (String, Option<String>);
+
+/// A statement split at its links: the node groups (`a & b`) and the links
+/// between them, one fewer.
+fn parse_statement(text: &str) -> (Vec<Vec<Node>>, Vec<Link>) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut groups = Vec::new();
+    let mut links = Vec::new();
+    let mut last = 0;
+    let mut i = 0;
+    while i < chars.len() {
+        match link_at(&chars, i) {
+            Some((link, after)) => {
+                groups.push(group(&chars[last..i].iter().collect::<String>()));
+                links.push(link);
+                last = after;
+                i = after;
+            }
+            None => i += 1,
+        }
+    }
+    groups.push(group(&chars[last..].iter().collect::<String>()));
+    // A statement with no link declares nodes only.
+    if groups.iter().any(Vec::is_empty) && !links.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    (groups, links)
+}
+
+fn is_line(c: char) -> bool {
+    matches!(c, '-' | '=' | '.' | '~')
+}
+
+/// The link that starts at `i`, if one does, and where it ends (after its
+/// `|label|`): `-->`, `---`, `-.->`, `==>`, `--o`, `--x`, `<-->`, `~~~`,
+/// and the ones that carry their text inside, `-- text -->`.
+fn link_at(chars: &[char], i: usize) -> Option<(Link, usize)> {
+    let at_word = i == 0 || chars[i - 1].is_whitespace() || chars[i - 1] == '@';
+    let mut j = i;
+    let head = match chars[i] {
+        '<' => true,
+        'o' | 'x' if at_word && chars.get(i + 1).is_some_and(|c| is_line(*c)) => true,
+        _ => false,
+    };
+    if head {
+        j += 1;
+    }
+    let run_start = j;
+    while j < chars.len() && is_line(chars[j]) {
+        j += 1;
+    }
+    let run: String = chars[run_start..j].iter().collect();
+    let dashes = run.chars().filter(|c| matches!(c, '-' | '=' | '~')).count();
+    if dashes < 2 && !(run.contains('.') && dashes >= 1) {
+        return None;
+    }
+    // Inside a node id, a single run like `web-app` never gets here, but
+    // `a--b` with no spaces is still a line.
+    let mut tail = chars
+        .get(j)
+        .filter(|c| matches!(c, '>' | 'o' | 'x'))
+        .filter(|c| {
+            **c == '>'
+                || chars
+                    .get(j + 1)
+                    .is_none_or(|n| n.is_whitespace() || *n == '|')
+        })
+        .is_some();
+    if tail {
+        j += 1;
+    } else if matches!(run.as_str(), "--" | "==" | "-.")
+        && chars.get(j).is_some_and(|c| c.is_whitespace())
+    {
+        // `-- text -->`: the text runs to the link that closes it.
+        let mut k = j;
+        while k < chars.len() {
+            if is_line(chars[k]) {
+                let close_start = k;
+                while k < chars.len() && is_line(chars[k]) {
+                    k += 1;
+                }
+                if k - close_start >= 2
+                    && chars.get(k).is_some_and(|c| matches!(c, '>' | 'o' | 'x'))
+                {
+                    j = k + 1;
+                    tail = true;
+                    break;
+                }
+            } else {
+                k += 1;
             }
         }
     }
-    let name = |id: &str| -> Option<String> {
-        if components.contains(id) {
-            return Some(id.to_string());
+    if run.contains('~') {
+        tail = false;
+    }
+    // An arrow's label: `-->|uses|`.
+    let mut end = j;
+    while end < chars.len() && chars[end].is_whitespace() {
+        end += 1;
+    }
+    if chars.get(end) == Some(&'|') {
+        end += 1;
+        while end < chars.len() && chars[end] != '|' {
+            end += 1;
         }
-        labels
-            .get(id)
-            .filter(|l| components.contains(l.as_str()))
-            .cloned()
+        j = (end + 1).min(chars.len());
+    }
+    let link = match (head, tail) {
+        (true, true) => Link::Both,
+        (false, true) => Link::Forward,
+        _ => Link::Plain,
     };
-    Ok(raw
-        .into_iter()
-        .filter_map(|(a, b)| Some((name(&a)?, name(&b)?)))
-        .collect())
+    Some((link, j))
+}
+
+/// The nodes of a group, `a & b[Label]`, each as id and label.
+fn group(text: &str) -> Vec<Node> {
+    text.split('&')
+        .map(|n| node(n.trim()))
+        .filter(|(id, _)| !id.is_empty())
+        .collect()
 }
 
 /// The bodies of the Mermaid graphs: the fenced ```` ```mermaid ```` blocks of
 /// a Markdown text, or the whole text when it is a graph itself.
 fn mermaid_blocks(text: &str) -> Vec<String> {
     let is_graph = |body: &str| {
-        body.lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty() && !l.starts_with("%%"))
-            .is_some_and(|l| l.starts_with("graph") || l.starts_with("flowchart"))
+        let mut lines = body.lines().map(str::trim).filter(|l| !l.is_empty());
+        let mut first = lines.next();
+        // Frontmatter (`---` … `---`) and `%%` directives come first.
+        if first == Some("---") {
+            first = lines.by_ref().skip_while(|l| *l != "---").nth(1);
+        }
+        while first.is_some_and(|l| l.starts_with("%%")) {
+            first = lines.next();
+        }
+        first.is_some_and(|l| {
+            let word = l
+                .split(|c: char| c.is_whitespace() || c == ';')
+                .next()
+                .unwrap_or_default();
+            word == "graph" || word == "flowchart"
+        })
     };
     if is_graph(text) {
         return vec![text.to_string()];
@@ -96,50 +262,17 @@ fn mermaid_blocks(text: &str) -> Vec<String> {
     blocks
 }
 
-/// The nodes of a line, split at its arrows: `a --> b -.->|x| c` gives
-/// `a`, `b`, `c`. A line with no arrow is one node (a declaration).
-fn split_chain(line: &str) -> Vec<String> {
-    let line = line.trim_end_matches(';');
-    let mut parts = Vec::new();
-    let mut rest = line;
-    while let Some((at, len)) = find_arrow(rest) {
-        parts.push(rest[..at].trim().to_string());
-        rest = &rest[at + len..];
-        // An arrow's label: `-->|uses|`.
-        if let Some(after) = rest.trim_start().strip_prefix('|') {
-            rest = after.split_once('|').map_or("", |(_, r)| r);
-        }
-    }
-    parts.push(rest.trim().to_string());
-    parts.retain(|p| !p.is_empty());
-    parts
-}
-
-/// The first arrow in `text`: its start and length. Arrows are runs of
-/// `-`, `.` and `=` ending in `>`, such as `-->`, `-.->` and `==>`.
-fn find_arrow(text: &str) -> Option<(usize, usize)> {
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if matches!(bytes[i], b'-' | b'=') {
-            let start = i;
-            while i < bytes.len() && matches!(bytes[i], b'-' | b'.' | b'=') {
-                i += 1;
-            }
-            if i < bytes.len() && bytes[i] == b'>' && i - start >= 2 {
-                return Some((start, i + 1 - start));
-            }
-        } else {
-            i += 1;
-        }
-    }
-    None
-}
-
 /// A node as written: its id and, if any, the label in brackets:
-/// `web[Web UI]`, `db[(Postgres)]`, `api`.
-fn node(text: &str) -> (String, Option<String>) {
+/// `web[Web UI]`, `db[(Postgres)]`, `api:::hot`, `e1@{ shape: rect }`.
+fn node(text: &str) -> Node {
     let text = text.trim();
+    // An edge id written before the link: `a e1@--> b`.
+    let text = match text.rsplit_once(char::is_whitespace) {
+        Some((before, id)) if id.ends_with('@') => before.trim(),
+        _ => text,
+    };
+    let text = text.split(":::").next().unwrap_or(text);
+    let text = text.split("@{").next().unwrap_or(text).trim();
     match text.find(['[', '(', '{', '>']) {
         Some(at) => {
             let id = text[..at].trim().to_string();
@@ -170,7 +303,7 @@ pub fn check(config: &Config, root: &Path, edges: &[Edge]) -> Result<Vec<Violati
     let drawn =
         arrows(&text, &components).with_context(|| format!("diagram {}", path.display()))?;
     let mut missing: BTreeMap<(&str, &str), Vec<&Edge>> = BTreeMap::new();
-    for edge in edges {
+    for edge in edges.iter().filter(|e| drawn_needed(config, e)) {
         if !drawn.contains(&(edge.from.clone(), edge.to.clone())) {
             missing
                 .entry((&edge.from, &edge.to))
@@ -203,6 +336,14 @@ pub fn check(config: &Config, root: &Path, edges: &[Edge]) -> Result<Vec<Violati
         .collect())
 }
 
+/// Whether a dependency has to be drawn: not the imports of the `tests`
+/// that `tests: auto` makes, and not those of `common` components, which
+/// every component may use.
+fn drawn_needed(config: &Config, edge: &Edge) -> bool {
+    let tests = config.tests.is_some() && edge.from == crate::config::TESTS;
+    !tests && !config.common.contains(&edge.to)
+}
+
 /// The arrows of the diagram that no import stands for: pictures of
 /// dependencies the code does not have.
 pub fn unused_arrows(
@@ -230,26 +371,83 @@ pub fn unused_arrows(
 mod tests {
     use super::*;
 
+    fn drawn(text: &str) -> BTreeSet<(String, String)> {
+        let components: BTreeSet<&str> = [
+            "web",
+            "service",
+            "repository",
+            "db",
+            "graphql",
+            "styles",
+            "jobs",
+        ]
+        .into();
+        arrows(text, &components).unwrap()
+    }
+
+    fn pairs(list: &[(&str, &str)]) -> BTreeSet<(String, String)> {
+        list.iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
+    }
+
     #[test]
     fn reads_the_arrows_between_components() {
-        let components: BTreeSet<&str> = ["web", "service", "repository", "db"].into();
-        let text = "# Architecture\n\n```mermaid\nflowchart LR\n  %% a comment\n  ui[web] --> service -.->|uses| repository\n  repository ==> pg[(db)]\n  service --> Users\n  subgraph core\n    service\n  end\n```\n\nText.\n";
-        let got = arrows(text, &components).unwrap();
-        let want: BTreeSet<(String, String)> = [
-            ("web", "service"),
-            ("service", "repository"),
-            ("repository", "db"),
-        ]
-        .into_iter()
-        .map(|(a, b)| (a.to_string(), b.to_string()))
-        .collect();
-        assert_eq!(got, want);
-        assert!(arrows("no graph here", &components).is_err());
+        let text = "# Architecture\n\n```mermaid\nflowchart LR\n  %% a comment\n  ui[web] --> service -.->|uses| repository\n  repository ==> pg[(db)]\n  service --> Users\n  subgraph core [Core]\n    service\n  end\n```\n\nText.\n";
         assert_eq!(
-            arrows("graph TD\n  web --> service\n", &components)
-                .unwrap()
-                .len(),
-            1
+            drawn(text),
+            pairs(&[
+                ("web", "service"),
+                ("service", "repository"),
+                ("repository", "db")
+            ])
         );
+        assert!(arrows("no graph here", &BTreeSet::new()).is_err());
+    }
+
+    #[test]
+    fn reads_every_kind_of_link() {
+        for (line, want) in [
+            ("graphql --> service", vec![("graphql", "service")]),
+            ("styles --> web", vec![("styles", "web")]),
+            (
+                "web --> service & jobs",
+                vec![("web", "service"), ("web", "jobs")],
+            ),
+            (
+                "web & jobs --> service",
+                vec![("web", "service"), ("jobs", "service")],
+            ),
+            ("web -- calls --> service", vec![("web", "service")]),
+            ("web -. maybe .-> service", vec![("web", "service")]),
+            ("web == hard ==> service", vec![("web", "service")]),
+            ("web --o service", vec![("web", "service")]),
+            ("web --x service", vec![("web", "service")]),
+            (
+                "web <--> service",
+                vec![("web", "service"), ("service", "web")],
+            ),
+            ("web e1@--> service", vec![("web", "service")]),
+            ("web:::hot --> service", vec![("web", "service")]),
+            (
+                "web --> service; service --> repository",
+                vec![("web", "service"), ("service", "repository")],
+            ),
+            ("web --- service", vec![]),
+            ("web -.- service", vec![]),
+            ("web ~~~ service", vec![]),
+        ] {
+            assert_eq!(
+                drawn(&format!("graph TD\n  {line}\n")),
+                pairs(&want),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_graph_may_open_with_frontmatter() {
+        let text = "```mermaid\n---\ntitle: Shop\n---\nflowchart LR\n  web --> service\n```\n";
+        assert_eq!(drawn(text), pairs(&[("web", "service")]));
     }
 }

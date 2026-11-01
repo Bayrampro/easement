@@ -84,7 +84,18 @@ pub fn suggest(
         "Arrows of the diagram that no import stands for (drop them, or the dependency is still to come):",
         stale_arrows
             .iter()
-            .map(|(from, to)| format!("{from} -> {to}"))
+            .map(|(from, to)| {
+                // An import of it may sit in a file no indexer read.
+                let unread: usize = [from, to]
+                    .iter()
+                    .filter_map(|c| unindexed.get(c.as_str()))
+                    .sum();
+                if unread == 0 {
+                    format!("{from} -> {to}")
+                } else {
+                    format!("{from} -> {to} (unreliable: {unread} file(s) not indexed)")
+                }
+            })
             .collect(),
     );
 
