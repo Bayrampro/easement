@@ -17,6 +17,9 @@ pub fn is_std(file: &str, module: &str) -> bool {
         "kt" | "kts" => first(&['.']) == "kotlin" || jdk(module),
         "rs" => ["std", "proc_macro"].contains(&first(&[':'])),
         "cs" => first(&['.']) == "System",
+        // A class of no namespace is PHP's own: `DateTime`, `PDO`, `Exception`.
+        "php" => !module.contains('\\'),
+        "swift" => SWIFT.contains(&first(&['.'])),
         _ => false,
     }
 }
@@ -26,9 +29,60 @@ pub fn knows(file: &str) -> bool {
     let ext = file.rsplit_once('.').map_or("", |(_, ext)| ext);
     matches!(
         ext,
-        "go" | "py" | "pyi" | "java" | "kt" | "kts" | "rs" | "cs"
+        "go" | "py" | "pyi" | "java" | "kt" | "kts" | "rs" | "cs" | "php" | "swift"
     )
 }
+
+/// The modules of the Swift toolchain and Apple's SDKs that a Swift file imports.
+const SWIFT: &[&str] = &[
+    "AVFoundation",
+    "Accelerate",
+    "AppKit",
+    "Combine",
+    "Contacts",
+    "CoreBluetooth",
+    "CoreData",
+    "CoreFoundation",
+    "CoreGraphics",
+    "CoreImage",
+    "CoreLocation",
+    "CoreML",
+    "CoreMotion",
+    "CoreText",
+    "CryptoKit",
+    "Darwin",
+    "Dispatch",
+    "Foundation",
+    "FoundationNetworking",
+    "Glibc",
+    "MapKit",
+    "Metal",
+    "Network",
+    "Observation",
+    "OSLog",
+    "Photos",
+    "QuartzCore",
+    "RegexBuilder",
+    "SafariServices",
+    "SceneKit",
+    "Security",
+    "SpriteKit",
+    "StoreKit",
+    "Swift",
+    "SwiftData",
+    "SwiftUI",
+    "Synchronization",
+    "SystemConfiguration",
+    "Testing",
+    "UIKit",
+    "UniformTypeIdentifiers",
+    "UserNotifications",
+    "WebKit",
+    "WidgetKit",
+    "XCTest",
+    "os",
+    "simd",
+];
 
 /// The packages of the JDK: `java.util`, `javax.crypto`, `org.w3c.dom`.
 fn jdk(module: &str) -> bool {
@@ -406,6 +460,8 @@ mod tests {
         assert!(is_std("A.java", "org.w3c.dom.Node"));
         assert!(!is_std("A.java", "org.apache.commons.Lang"));
         assert!(knows("a.go") && !knows("a.ts"));
+        assert!(is_std("V.swift", "Foundation") && !is_std("V.swift", "Alamofire"));
+        assert!(is_std("a.php", "DateTime") && !is_std("a.php", "Illuminate\\Support\\Str"));
     }
 
     #[test]

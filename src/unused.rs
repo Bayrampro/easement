@@ -13,10 +13,10 @@ use crate::components::ComponentMap;
 use crate::config::{Config, TEST_PATTERNS, TESTS};
 use crate::scan::{Dep, glob_set};
 
-/// The languages the rule judges, each checked against its indexer: the
-/// index reports a use of another file wherever it happens. C# and PHP have
-/// no indexer here to check against, Ruby loads by convention, and Kotlin
-/// and Swift are read by imports alone.
+/// The languages the rule judges, each checked against its indexer (C# and
+/// PHP by the CI tests): the index reports a use of another file wherever
+/// it happens. Ruby loads by convention, and Kotlin and Swift are read by
+/// imports alone.
 const FAMILIES: &[(&str, &[&str])] = &[
     ("go", &["go"]),
     (
@@ -26,6 +26,8 @@ const FAMILIES: &[(&str, &[&str])] = &[
     ("py", &["py"]),
     ("rs", &["rs"]),
     ("java", &["java"]),
+    ("cs", &["cs"]),
+    ("php", &["php"]),
 ];
 
 /// Files a toolchain or a convention runs without an import.

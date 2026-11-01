@@ -147,7 +147,7 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
     for v in &verdict.new {
         out.push_str(&violation_lines(
             v,
-            verdict.owners.get(&v.from).map(String::as_str),
+            verdict.owner_of(v).as_deref(),
             RED,
             color,
         ));
@@ -165,7 +165,7 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
         for v in &verdict.warnings {
             out.push_str(&violation_lines(
                 v,
-                verdict.owners.get(&v.from).map(String::as_str),
+                verdict.owner_of(v).as_deref(),
                 YELLOW,
                 color,
             ));
@@ -379,7 +379,7 @@ pub fn github(verdict: &Verdict, stats: &Stats) -> String {
             Some(because) => format!("{} (because: {because})", v.message),
             None => v.message.clone(),
         };
-        if let Some(owner) = verdict.owners.get(&v.from) {
+        if let Some(owner) = verdict.owner_of(v) {
             text.push_str(&format!(" (owner: {owner})"));
         }
         out.push_str(&format!(

@@ -151,7 +151,7 @@
       }
     },
     "entry": {
-      "description": "Files the program starts from (cmd/**, src/main.ts). With it, a checked file of a component that no chain of imports from them, from a test or from a file of no component reaches fails as unused. Go is judged by package; Kotlin, Swift, Ruby, C# and PHP are not judged.",
+      "description": "Files the program starts from (cmd/**, src/main.ts). With it, a checked file of a component that no chain of imports from them, from a test or from a file of no component reaches fails as unused. Go is judged by package; Kotlin, Swift and Ruby are not judged.",
       "type": "array",
       "items": {
         "type": "string"

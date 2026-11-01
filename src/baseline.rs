@@ -112,6 +112,19 @@ impl Verdict {
             .chain(std::iter::repeat("warning").zip(&self.warnings))
     }
 
+    /// Who to ask about `v`: the owner of its `from`, or of each component of
+    /// a cycle (`from` is `a,b`).
+    pub fn owner_of(&self, v: &Violation) -> Option<String> {
+        let owners: Vec<&str> = v
+            .from
+            .split(',')
+            .filter_map(|c| self.owners.get(c).map(String::as_str))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        (!owners.is_empty()).then(|| owners.join(", "))
+    }
+
     pub fn sort(&mut self) {
         for list in [&mut self.new, &mut self.warnings] {
             list.sort_by(|a, b| (&a.file, a.line, a.rule).cmp(&(&b.file, b.line, b.rule)));

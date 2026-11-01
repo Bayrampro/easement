@@ -238,13 +238,32 @@ pub struct Component {
 /// One layer of `layers`: a component, sibling components that do not
 /// depend on each other, or a closed component that the layers above it
 /// cannot reach past.
-#[derive(Debug, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(untagged)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(schemars::JsonSchema), serde(untagged))]
 pub enum Layer {
     One(String),
     Siblings(Vec<String>),
     Named(NamedLayer),
+}
+
+impl<'de> Deserialize<'de> for Layer {
+    /// By the shape of the value, so a mistyped key of a named layer
+    /// (`close:`) is named in the error, not lost in "no variant matched".
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        match Value::deserialize(deserializer)? {
+            Value::String(name) => Ok(Layer::One(name)),
+            seq @ Value::Sequence(_) => serde_norway::from_value(seq)
+                .map(Layer::Siblings)
+                .map_err(|e| D::Error::custom(format!("a list of sibling layers: {e}"))),
+            map @ Value::Mapping(_) => serde_norway::from_value(map)
+                .map(Layer::Named)
+                .map_err(|e| D::Error::custom(format!("a layer {{ name, closed }}: {e}"))),
+            _ => Err(D::Error::custom(
+                "a layer is a component name, a list of siblings or { name, closed }",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -992,6 +1011,8 @@ layers:
             Some("they are siblings in one layer")
         );
         assert_eq!(c.layer_block("service", "repo"), None);
+        let typo = "version: 1\ncomponents:\n  a: { in: a }\nlayers: [{ name: a, close: true }]\n";
+        assert!(format!("{:#}", parse(typo).unwrap_err()).contains("unknown field `close`"));
         let lone = "version: 1\ncomponents:\n  a: { in: a }\nlayers: [[a]]\n";
         assert!(format!("{:#}", parse(lone).unwrap_err()).contains("fewer than two siblings"));
         let twice =

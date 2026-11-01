@@ -632,6 +632,67 @@ fn unused_knows_go_programs_python_conventions_and_kotlin_beside_java() {
     ));
 }
 
+/// C# and PHP: a class of the same namespace used without an import is
+/// reached; a class nothing uses is not. Needs scip-dotnet and scip-php.
+#[test]
+fn unused_follows_csharp_and_php_namespaces() {
+    let (_tmp, root) = fixture("csharp");
+    fs::write(
+        root.join("easement.yml"),
+        "version: 1\ncomponents:\n  web: { in: Web }\n  infra: { in: Infra }\n  domain: { in: Domain }\nentry: [Web/OrderController.cs]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Infra/OrderRepository.cs"),
+        "using Shop.Domain;\n\nnamespace Shop.Infra;\n\npublic class OrderRepository { Order order; Helper helper; }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Infra/Helper.cs"),
+        "namespace Shop.Infra;\n\npublic class Helper {}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Infra/Dead.cs"),
+        "namespace Shop.Infra;\n\npublic class Dead {}\n",
+    )
+    .unwrap();
+    let out = stdout_of(easement(&root, &["check"]).code(1));
+    assert!(
+        out.contains("Infra/Dead.cs:1: not reachable from any `entry`"),
+        "{out}"
+    );
+    assert!(!out.contains("Infra/Helper.cs:1"), "{out}");
+
+    let (_tmp, root) = fixture("php");
+    fs::write(
+        root.join("easement.yml"),
+        "version: 1\ncomponents:\n  web: { in: src/Web }\n  infra: { in: src/Infra }\n  domain: { in: src/Domain }\nentry: [src/Web/OrderController.php]\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/Infra/OrderRepository.php"),
+        "<?php\nnamespace App\\Infra;\n\nuse App\\Domain\\Order;\n\nclass OrderRepository { public function find(Order $o): Helper { return new Helper(); } }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/Infra/Helper.php"),
+        "<?php\nnamespace App\\Infra;\n\nclass Helper {}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/Infra/Dead.php"),
+        "<?php\nnamespace App\\Infra;\n\nclass Dead {}\n",
+    )
+    .unwrap();
+    let out = stdout_of(easement(&root, &["check"]).code(1));
+    assert!(
+        out.contains("src/Infra/Dead.php:1: not reachable from any `entry`"),
+        "{out}"
+    );
+    assert!(!out.contains("src/Infra/Helper.php:1"), "{out}");
+}
+
 #[test]
 fn layers_forbidden_externals_metrics_and_strict() {
     let (_tmp, root) = fixture("policy");
@@ -2701,6 +2762,7 @@ fn a_violation_names_the_owner_of_the_component_to_ask() {
 
 #[test]
 fn std_says_when_it_cannot_tell_a_language() {
+    // Swift is known: Foundation is its standard library.
     let (_tmp, root) = project(&[
         (
             "easement.yml",
@@ -2711,14 +2773,47 @@ fn std_says_when_it_cannot_tell_a_language() {
             "import Foundation\nstruct View {}\n",
         ),
     ]);
-    easement(&root, &["check"]).success().stdout(contains(
-        "`$std` cannot tell the standard library of .swift files",
-    ));
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("ui -> external Foundation is forbidden"));
+    // TypeScript is not: an npm package and a Node builtin look alike to it.
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  ui: { in: src/ui }\nrules:\n  ui: { may_use_external: [$std, lodash] }\n",
+        ),
+        (
+            "src/ui/a.ts",
+            "import lodash from \"lodash\";\nexport const a = lodash;\n",
+        ),
+    ]);
+    stub_packages(&root, &["lodash"]);
     let report: serde_json::Value = serde_json::from_str(&stdout_of(
         easement(&root, &["check", "--format", "json"]).success(),
     ))
     .unwrap();
     assert_eq!(report["confidence"], "partial");
+    assert!(
+        report["confidence_reasons"][0]
+            .as_str()
+            .unwrap()
+            .contains("`$std` cannot tell the standard library of .ts files")
+    );
+}
+
+#[test]
+fn a_cycle_names_the_owners_of_its_components() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\nno_cycles: true\ncomponents:\n  a: { in: src/a, owner: '@acme/a' }\n  b: { in: src/b, owner: '@acme/b' }\nrules:\n  a: { may_depend_on: [b] }\n  b: { may_depend_on: [a] }\n",
+        ),
+        ("src/a/A.kt", "package a\nimport b.B\nclass A\n"),
+        ("src/b/B.kt", "package b\nimport a.A\nclass B\n"),
+    ]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("[cycle]\n  owner: @acme/a, @acme/b"));
 }
 
 #[test]
