@@ -1,6 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use pathfinding::NodeRefs;
+use pathfinding::directed::bfs::{bfs, bfs_loop, bfs_reach};
+use pathfinding::directed::strongly_connected_components::strongly_connected_components;
 use serde::{Deserialize, Serialize};
 
 use crate::components::ComponentMap;
@@ -498,11 +501,13 @@ pub fn cycles(config: &Config, edges: &[Edge]) -> Vec<Violation> {
         graph.entry(&e.from).or_default().insert(&e.to);
         graph.entry(&e.to).or_default();
     }
-    let mut groups: Vec<BTreeSet<&str>> = strongly_connected(&graph)
-        .into_iter()
-        .filter(|g| g.len() > 1)
-        .map(|g| g.into_iter().collect())
-        .collect();
+    let nodes: Vec<&str> = graph.keys().copied().collect();
+    let mut groups: Vec<BTreeSet<&str>> =
+        strongly_connected_components(&nodes, |v| graph[v].iter().copied())
+            .into_iter()
+            .filter(|g| g.len() > 1)
+            .map(|g| g.into_iter().collect())
+            .collect();
     groups.sort();
     groups
         .into_iter()
@@ -664,6 +669,22 @@ pub fn file_graph(deps: &[Dep], files: &[String]) -> BTreeMap<String, BTreeSet<(
     graph
 }
 
+/// Every file a chain of `successors` reaches from any of `roots`, the roots
+/// included.
+pub fn reach<'a, I: IntoIterator<Item = &'a str>>(
+    roots: impl IntoIterator<Item = &'a str>,
+    mut successors: impl FnMut(&'a str) -> I,
+) -> BTreeSet<&'a str> {
+    // `None` stands before every root, so one search starts from all of them.
+    let roots: Vec<Option<&str>> = roots.into_iter().map(Some).collect();
+    bfs_reach(None, |node: &Option<&'a str>| match node {
+        None => roots.clone(),
+        Some(file) => successors(file).into_iter().map(Some).collect(),
+    })
+    .flatten()
+    .collect()
+}
+
 /// The shortest chain from any of `starts` through files `is_hop` accepts to
 /// a file `is_end` accepts: each hop with the line of its import, and the
 /// file it ends in. Every start is searched at once, so no start's longer
@@ -674,77 +695,55 @@ pub fn shortest_chain<'a>(
     is_hop: impl Fn(&str) -> bool,
     is_end: impl Fn(&str) -> bool,
 ) -> Option<(Vec<(String, usize)>, &'a str)> {
-    let mut queue: VecDeque<&str> = starts.collect();
-    let first: BTreeSet<&str> = queue.iter().copied().collect();
-    let mut prev: BTreeMap<&str, (&str, usize)> = BTreeMap::new();
-    while let Some(file) = queue.pop_front() {
-        for (next, line) in graph.get(file).into_iter().flatten() {
-            let next = next.as_str();
-            // From a start, an import of the end is direct, not a chain.
-            if is_end(next) && !first.contains(file) {
-                let mut hops = vec![(file.to_string(), *line)];
-                let mut at = file;
-                while let Some(&(back, line)) = prev.get(at) {
-                    hops.push((back.to_string(), line));
-                    at = back;
-                }
-                hops.reverse();
-                return Some((hops, next));
-            }
-            if is_hop(next) && !prev.contains_key(next) && !first.contains(next) {
-                prev.insert(next, (file, *line));
-                queue.push_back(next);
-            }
-        }
+    /// A file the chain passes through, or the one it ends in.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum Step<'a> {
+        Hop(&'a str),
+        End(&'a str),
     }
-    None
-}
-
-/// Tarjan's algorithm; component graphs are small, so recursion is fine.
-fn strongly_connected<'a>(graph: &BTreeMap<&'a str, BTreeSet<&'a str>>) -> Vec<Vec<&'a str>> {
-    #[derive(Default)]
-    struct State<'a> {
-        index: BTreeMap<&'a str, usize>,
-        low: BTreeMap<&'a str, usize>,
-        stack: Vec<&'a str>,
-        on_stack: BTreeSet<&'a str>,
-        groups: Vec<Vec<&'a str>>,
-    }
-    fn visit<'a>(v: &'a str, graph: &BTreeMap<&'a str, BTreeSet<&'a str>>, s: &mut State<'a>) {
-        let i = s.index.len();
-        s.index.insert(v, i);
-        s.low.insert(v, i);
-        s.stack.push(v);
-        s.on_stack.insert(v);
-        for &w in &graph[v] {
-            if !s.index.contains_key(w) {
-                visit(w, graph, s);
-                let low = s.low[v].min(s.low[w]);
-                s.low.insert(v, low);
-            } else if s.on_stack.contains(w) {
-                let low = s.low[v].min(s.index[w]);
-                s.low.insert(v, low);
-            }
-        }
-        if s.low[v] == s.index[v] {
-            let mut group = Vec::new();
-            while let Some(w) = s.stack.pop() {
-                s.on_stack.remove(w);
-                group.push(w);
-                if w == v {
-                    break;
-                }
-            }
-            s.groups.push(group);
-        }
-    }
-    let mut state = State::default();
-    for &v in graph.keys() {
-        if !state.index.contains_key(v) {
-            visit(v, graph, &mut state);
-        }
-    }
-    state.groups
+    let starts: BTreeSet<&str> = starts.collect();
+    let first: Vec<Step> = starts.iter().map(|file| Step::Hop(file)).collect();
+    let path = bfs(
+        first.iter().collect::<NodeRefs<_>>(),
+        |step| {
+            let Step::Hop(file) = *step else {
+                return Vec::new();
+            };
+            graph
+                .get(file)
+                .into_iter()
+                .flatten()
+                .filter_map(|(next, _)| {
+                    let next = next.as_str();
+                    // From a start, an import of the end is direct, not a chain.
+                    if is_end(next) && !starts.contains(file) {
+                        Some(Step::End(next))
+                    } else {
+                        is_hop(next).then_some(Step::Hop(next))
+                    }
+                })
+                .collect()
+        },
+        |step| matches!(step, Step::End(_)),
+    )?;
+    let files: Vec<&str> = path
+        .iter()
+        .map(|step| match *step {
+            Step::Hop(file) | Step::End(file) => file,
+        })
+        .collect();
+    let hops = files
+        .windows(2)
+        .map(|pair| {
+            let line = graph[pair[0]]
+                .iter()
+                .find(|(to, _)| to == pair[1])
+                .map(|(_, line)| *line)
+                .expect("a step of the chain is an import");
+            (pair[0].to_string(), line)
+        })
+        .collect();
+    Some((hops, *files.last().expect("a chain ends in a file")))
 }
 
 /// Shortest path from `start` back to itself inside `members`, breadth-first:
@@ -754,31 +753,10 @@ fn shortest_cycle<'a>(
     members: &BTreeSet<&'a str>,
     start: &'a str,
 ) -> Vec<&'a str> {
-    let mut prev: BTreeMap<&str, &str> = BTreeMap::new();
-    let mut queue = VecDeque::from([start]);
-    while let Some(v) = queue.pop_front() {
-        for &w in &graph[v] {
-            if !members.contains(w) {
-                continue;
-            }
-            if w == start {
-                let mut path = vec![v];
-                let mut cur = v;
-                while cur != start {
-                    cur = prev[cur];
-                    path.push(cur);
-                }
-                path.reverse();
-                path.push(start);
-                return path;
-            }
-            if w != start && !prev.contains_key(w) {
-                prev.insert(w, v);
-                queue.push_back(w);
-            }
-        }
-    }
-    unreachable!("a strongly connected group has a cycle through every member")
+    bfs_loop(&start, |v| {
+        graph[v].iter().copied().filter(|w| members.contains(w))
+    })
+    .expect("a strongly connected group has a cycle through every member")
 }
 
 /// Coupling limits: `max_fan_out` counts the components a component depends
@@ -1581,6 +1559,21 @@ rules:
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].file, "b/y.go");
         assert!(orphans(&yaml(false), &map, &files).is_empty());
+    }
+
+    #[test]
+    fn of_cycles_as_short_the_first_in_name_order_is_shown() {
+        let edges = [
+            edge("a", "c"),
+            edge("c", "a"),
+            edge("a", "b"),
+            edge("b", "a"),
+        ];
+        let found = cycles(&config("true"), &edges);
+        assert_eq!(
+            found[0].message,
+            "component dependency cycle among 3 components: a, b, c (shortest: a -> b -> a)"
+        );
     }
 
     #[test]

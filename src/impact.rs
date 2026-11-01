@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use crate::check::{NO_COMPONENT, Violation, describe_chain, file_graph, shortest_chain};
+use crate::check::{NO_COMPONENT, Violation, describe_chain, file_graph, reach, shortest_chain};
 use crate::components::ComponentMap;
 use crate::config::Config;
 use crate::scan::Dep;
@@ -72,19 +72,18 @@ pub fn impact(
             importers.entry(to).or_default().insert(from.clone());
         }
     }
-    let mut seen: BTreeSet<String> = changed.clone();
-    let mut queue: VecDeque<String> = changed.iter().cloned().collect();
-    while let Some(file) = queue.pop_front() {
-        for importer in importers.get(&file).into_iter().flatten() {
-            if seen.insert(importer.clone()) {
-                queue.push_back(importer.clone());
-            }
-        }
-    }
-    let dependents = seen
-        .difference(&changed)
+    let reached = reach(changed.iter().map(String::as_str), |file| {
+        importers
+            .get(file)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+    });
+    let dependents = reached
+        .into_iter()
+        .filter(|file| !changed.contains(*file))
         .map(|file| Dependent {
-            file: file.clone(),
+            file: file.to_string(),
             component: map.component_of(file).map(str::to_string),
         })
         .collect();

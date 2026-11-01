@@ -2,13 +2,13 @@
 //! entry point reaches. An agent acting on it deletes the file, so every
 //! doubt counts a file as reached.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
 use regex::Regex;
 
-use crate::check::{RuleId, Violation, file_graph};
+use crate::check::{RuleId, Violation, file_graph, reach};
 use crate::components::ComponentMap;
 use crate::config::{Config, TEST_PATTERNS, TESTS};
 use crate::scan::{Dep, glob_set};
@@ -192,30 +192,22 @@ fn reached_from<'a>(
     for file in paths {
         in_dir.entry(parent(file)).or_default().push(file);
     }
-    let mut packages: BTreeSet<&str> = BTreeSet::new();
-    let mut reached: BTreeSet<&'a str> = BTreeSet::new();
-    let mut queue: VecDeque<&'a str> = VecDeque::new();
-    let visit = |file: &'a str, reached: &mut BTreeSet<&'a str>, queue: &mut VecDeque<&'a str>| {
-        if reached.insert(file) {
-            queue.push_back(file);
-        }
-    };
-    for root in roots {
-        visit(root, &mut reached, &mut queue);
-    }
-    while let Some(file) = queue.pop_front() {
-        for (next, _) in graph.get(file).into_iter().flatten() {
-            visit(next, &mut reached, &mut queue);
-        }
+    reach(roots, |file| {
+        let mut next: Vec<&'a str> = graph
+            .get(file)
+            .into_iter()
+            .flatten()
+            .map(|(to, _)| to.as_str())
+            .collect();
         let dir = parent(file);
         match ext(file) {
-            "go" if packages.insert(dir) => {
-                for sibling in in_dir.get(dir).into_iter().flatten() {
-                    if sibling.ends_with(".go") {
-                        visit(sibling, &mut reached, &mut queue);
-                    }
-                }
-            }
+            "go" => next.extend(
+                in_dir
+                    .get(dir)
+                    .into_iter()
+                    .flatten()
+                    .filter(|sibling| sibling.ends_with(".go")),
+            ),
             "py" => {
                 let mut dir = dir;
                 loop {
@@ -224,12 +216,11 @@ fn reached_from<'a>(
                     } else {
                         format!("{dir}/__init__.py")
                     };
-                    if let Some(found) = in_dir
-                        .get(dir)
-                        .and_then(|fs| fs.iter().find(|f| **f == init))
-                    {
-                        visit(found, &mut reached, &mut queue);
-                    }
+                    next.extend(
+                        in_dir
+                            .get(dir)
+                            .and_then(|fs| fs.iter().find(|f| **f == init)),
+                    );
                     if dir.is_empty() {
                         break;
                     }
@@ -238,8 +229,8 @@ fn reached_from<'a>(
             }
             _ => {}
         }
-    }
-    reached
+        next
+    })
 }
 
 /// Whether a Go file is in `package main`: a program of its own.
