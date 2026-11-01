@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.3](https://github.com/mokevnin/easement/compare/v0.4.2...v0.4.3) (2026-11-01)
+
+
+### Features
+
+* check `defines` globs when the config loads, and name every claimant ([afb623b](https://github.com/mokevnin/easement/commit/afb623b2d2c3e5e32c9870ccac975bdb9a135632))
+* check the dependencies against a Mermaid diagram with `diagram` ([c6bd32a](https://github.com/mokevnin/easement/commit/c6bd32ae8c0fdb4999812e0d6ea2cd49892b3e2e))
+* claim type names for a component with `defines` ([2957d52](https://github.com/mokevnin/easement/commit/2957d520afe48c55b02138e586c63b6d229a8b65))
+* fail on an import the nearest manifest does not declare ([ae59f31](https://github.com/mokevnin/easement/commit/ae59f31b97d511cca9c24fb706051c3dce3b1b87))
+* judge C# and PHP in `unused`, and know Swift and PHP in `$std` ([fbfdaf0](https://github.com/mokevnin/easement/commit/fbfdaf011981e66a11a3d22008baeb3f62a25447))
+* judge only the packages a file names in `manifests` ([fd44bbc](https://github.com/mokevnin/easement/commit/fd44bbcb7b0cdcdf1f6b3bdb13fe4b8e66d5a2f2))
+* read every Mermaid link in `diagram`, and leave tests and common out ([c8cf81f](https://github.com/mokevnin/easement/commit/c8cf81fb631f6e889db33d93629607be798de1df))
+
 ## [0.4.2](https://github.com/mokevnin/easement/compare/v0.4.1...v0.4.2) (2026-11-01)
 
 
