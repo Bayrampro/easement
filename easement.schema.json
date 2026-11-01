@@ -181,6 +181,10 @@
           "description": "The directories matched by `in` (each pattern needs a `*`, no `**`) are instances that must not import each other.",
           "type": "boolean"
         },
+        "owner": {
+          "description": "Who to ask about the component and its rules: a team or a person. Printed with the violations of the component.",
+          "type": "string"
+        },
         "optional": {
           "description": "The component may match no file. Otherwise an `in` pattern that matches no file of the project fails as `unmatched`. Default false.",
           "type": "boolean"

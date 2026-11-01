@@ -215,6 +215,9 @@ pub struct Component {
     /// matches nothing is an `unmatched` violation.
     #[serde(default)]
     pub optional: bool,
+    /// Who to ask about the component and its rules: a team, a person.
+    #[serde(default)]
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -319,6 +322,7 @@ impl Config {
                 allow_importers: None,
                 // A project may have no tests yet.
                 optional: true,
+                owner: None,
             },
         );
         Ok(self)
@@ -519,6 +523,14 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    /// The owner of each component that names one.
+    pub fn owners(&self) -> std::collections::BTreeMap<String, String> {
+        self.components
+            .iter()
+            .filter_map(|(name, c)| Some((name.clone(), c.owner.clone()?)))
+            .collect()
     }
 
     /// Whether violations of `rule` are warnings rather than failures.

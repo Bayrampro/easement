@@ -2454,3 +2454,27 @@ fn std_stands_for_the_standard_library_of_the_language() {
         ))
         .stdout(contains("because: the UI goes through core"));
 }
+
+#[test]
+fn a_violation_names_the_owner_of_the_component_to_ask() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  a: { in: src/a, owner: '@acme/payments' }\n  b: { in: src/b }\n",
+        ),
+        ("src/a/A.kt", "package a\nimport b.B\nclass A\n"),
+        ("src/b/B.kt", "package b\nclass B\n"),
+    ]);
+    easement(&root, &["check"]).code(1).stdout(contains(
+        "a -> b is not allowed (imports b.B) [dependency]\n  owner: @acme/payments",
+    ));
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    assert_eq!(report["violations"][0]["from"], "a");
+    assert_eq!(report["owners"]["a"], "@acme/payments");
+    easement(&root, &["explain", "src/a/A.kt"])
+        .success()
+        .stdout(contains("owner: @acme/payments"));
+}

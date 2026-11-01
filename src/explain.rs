@@ -29,6 +29,9 @@ pub fn explain(config: &Config, map: &ComponentMap, rel: &str) -> Result<String>
             public.as_vec().join(", ")
         ));
     }
+    if let Some(owner) = &component.owner {
+        out.push_str(&format!("  owner: {owner}\n"));
+    }
     if component.priority != 0 {
         out.push_str(&format!("  priority: {}\n", component.priority));
     }

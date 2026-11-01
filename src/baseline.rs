@@ -65,6 +65,8 @@ pub struct Verdict {
     pub new: Vec<Violation>,
     /// Violations of the rules in `warn`: reported, never failing.
     pub warnings: Vec<Violation>,
+    /// The owner of each component that names one, to ask about a violation by its `from`.
+    pub owners: std::collections::BTreeMap<String, String>,
     /// Baseline entries that no longer occur: the debt was paid, the baseline must shrink.
     pub stale: Vec<Key>,
     pub legalized: usize,
@@ -84,6 +86,7 @@ impl Verdict {
             return Self {
                 new: violations,
                 warnings,
+                owners: Default::default(),
                 stale: Vec::new(),
                 legalized: 0,
             };
@@ -95,6 +98,7 @@ impl Verdict {
         Self {
             new,
             warnings,
+            owners: Default::default(),
             stale,
             legalized: legal.len(),
         }

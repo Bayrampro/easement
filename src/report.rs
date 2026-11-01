@@ -1,6 +1,7 @@
 use anstyle::{AnsiColor, Style};
 use serde::Serialize;
 use serde_json::json;
+use std::collections::BTreeMap;
 
 use crate::baseline::Verdict;
 use crate::check::{Key, RuleId, Stats, Violation};
@@ -12,6 +13,9 @@ struct JsonReport<'a> {
     violations: &'a [Violation],
     /// Violations of the rules in `warn`, which do not fail the check.
     warnings: &'a [Violation],
+    /// Who to ask about a violation, by the component in its `from`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    owners: &'a BTreeMap<String, String>,
     stale: &'a [Key],
     legalized: usize,
     /// `full`, or `partial` when `passed` rests on code the check could not read.
@@ -58,6 +62,7 @@ pub fn json(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>) -> Stri
         passed: verdict.passed(),
         violations: &verdict.new,
         warnings: &verdict.warnings,
+        owners: &verdict.owners,
         stale: &verdict.stale,
         legalized: verdict.legalized,
         confidence: if reasons.is_empty() {
@@ -105,7 +110,7 @@ pub fn colored(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>) -> S
 }
 
 /// `file:line: message [rule]`, and the reason under it when there is one.
-fn violation_lines(v: &Violation, tag: Style, color: bool) -> String {
+fn violation_lines(v: &Violation, owner: Option<&String>, tag: Style, color: bool) -> String {
     let mut out = format!(
         "{}: {} {}\n",
         paint(color, BOLD, &format!("{}:{}", v.file, v.line)),
@@ -114,6 +119,10 @@ fn violation_lines(v: &Violation, tag: Style, color: bool) -> String {
     );
     if let Some(because) = &v.because {
         out.push_str(&paint(color, DIM, &format!("  because: {because}")));
+        out.push('\n');
+    }
+    if let Some(owner) = owner {
+        out.push_str(&paint(color, DIM, &format!("  owner: {owner}")));
         out.push('\n');
     }
     out
@@ -129,7 +138,7 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
         ));
     }
     for v in &verdict.new {
-        out.push_str(&violation_lines(v, RED, color));
+        out.push_str(&violation_lines(v, verdict.owners.get(&v.from), RED, color));
     }
     if !verdict.warnings.is_empty() {
         if !out.is_empty() {
@@ -142,7 +151,12 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
         ));
         out.push('\n');
         for v in &verdict.warnings {
-            out.push_str(&violation_lines(v, YELLOW, color));
+            out.push_str(&violation_lines(
+                v,
+                verdict.owners.get(&v.from),
+                YELLOW,
+                color,
+            ));
         }
     }
     if !verdict.stale.is_empty() {
@@ -432,6 +446,7 @@ mod tests {
                 evidence: Vec::new(),
             }],
             warnings: vec![],
+            owners: BTreeMap::new(),
             stale: vec![Key {
                 rule: RuleId::Metric,
                 file: "f".into(),
@@ -482,6 +497,7 @@ mod tests {
         let clean = junit(&Verdict {
             new: vec![],
             warnings: vec![],
+            owners: BTreeMap::new(),
             stale: vec![],
             legalized: 0,
         });

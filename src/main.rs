@@ -363,6 +363,7 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
         .into_iter()
         .partition(|v| project.config.warns(v.rule));
     let mut verdict = Verdict::judge(judged, warnings, &current, baseline.as_ref());
+    verdict.owners = project.config.owners();
     verdict.stale.retain(|k| scope.contains(&map, &k.file));
     verdict.sort();
     let changes = changes.as_ref();
