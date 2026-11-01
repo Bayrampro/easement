@@ -40,6 +40,8 @@ pub enum RuleId {
     Unmatched,
     /// An import of a file that `exclude` hides.
     Excluded,
+    /// A chain of imports from a component to one its `must_not_reach` names.
+    Reach,
 }
 
 impl RuleId {
@@ -59,6 +61,7 @@ impl RuleId {
             RuleId::SuppressionReason => "suppression-reason",
             RuleId::Unmatched => "unmatched",
             RuleId::Excluded => "excluded",
+            RuleId::Reach => "reach",
         }
     }
 
@@ -132,12 +135,18 @@ impl Violation {
 
 impl Key {
     /// The key without the file a violation happens to be reported at, where
-    /// the rule is about something else: a cycle and a limit are about
-    /// components, a requirement about a directory. Another file that sorts
+    /// the rule is about something else: a cycle, a limit and a reach are
+    /// about components, a requirement about a directory. Another file that sorts
     /// first then does not turn old debt into new.
     pub fn canonical(mut self) -> Self {
         match self.rule {
             RuleId::Cycle | RuleId::Metric => self.file.clear(),
+            // Which file of the reached component the chain ends in changes as
+            // freely as where it starts.
+            RuleId::Reach => {
+                self.file.clear();
+                self.target.clear();
+            }
             // The directory ends in `/`, so a canonical key stays as it is.
             RuleId::Required if !self.file.ends_with('/') => {
                 self.file = self
@@ -432,6 +441,145 @@ pub fn cycles(config: &Config, edges: &[Edge]) -> Vec<Violation> {
             }
         })
         .collect()
+}
+
+/// For each component and each one its `must_not_reach` names: the shortest
+/// chain of imports between them through files of neither, reported at its
+/// first import. Files of no component count as hops; an import straight
+/// into the forbidden component is a `dependency` violation instead.
+pub fn reaches(
+    config: &Config,
+    map: &ComponentMap,
+    deps: &[Dep],
+    files: &[String],
+) -> Vec<Violation> {
+    let pairs: Vec<(&str, &Listed)> = config
+        .rules
+        .iter()
+        .flat_map(|(from, rule)| {
+            rule.must_not_reach
+                .iter()
+                .map(move |to| (from.as_str(), to))
+        })
+        .collect();
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+    let graph = file_graph(deps, files);
+    let component: BTreeMap<&str, &str> = graph
+        .iter()
+        .flat_map(|(f, out)| std::iter::once(f.as_str()).chain(out.iter().map(|(t, _)| t.as_str())))
+        .filter_map(|f| map.component_of(f).map(|c| (f, c)))
+        .collect();
+    let mut found = Vec::new();
+    for (from, to) in pairs {
+        let to_name = to.name();
+        let of = |file: &str| component.get(file).copied();
+        let starts = graph
+            .keys()
+            .map(String::as_str)
+            .filter(|f| of(f) == Some(from));
+        let is_hop = |file: &str| !matches!(of(file), Some(c) if c == from || c == to_name);
+        let Some((hops, last)) =
+            shortest_chain(&graph, starts, is_hop, |file| of(file) == Some(to_name))
+        else {
+            continue;
+        };
+        let through: BTreeSet<&str> = hops[1..]
+            .iter()
+            .map(|(f, _)| of(f).unwrap_or("no component"))
+            .collect();
+        let chain: Vec<String> = hops
+            .iter()
+            .map(|(f, l)| format!("{f}:{l}"))
+            .chain(std::iter::once(last.to_string()))
+            .collect();
+        let (file, line) = hops[0].clone();
+        found.push(Violation {
+            rule: RuleId::Reach,
+            file,
+            line,
+            message: format!(
+                "{from} reaches {to_name} through {}: {}",
+                through.into_iter().collect::<Vec<_>>().join(", "),
+                chain.join(" -> ")
+            ),
+            because: to
+                .because()
+                .or_else(|| config.reason(from))
+                .map(str::to_string),
+            from: from.to_string(),
+            to: to_name.to_string(),
+            target: last.to_string(),
+            specifier: String::new(),
+            evidence: hops,
+        });
+    }
+    found
+}
+
+/// Every file -> the files it imports, with the line of the import. An
+/// import of a package directory is one of each file directly in it.
+fn file_graph(deps: &[Dep], files: &[String]) -> BTreeMap<String, BTreeSet<(String, usize)>> {
+    let mut in_dir: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for file in files {
+        let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
+        in_dir.entry(dir).or_default().push(file);
+    }
+    let known: BTreeSet<&str> = files.iter().map(String::as_str).collect();
+    let mut graph: BTreeMap<String, BTreeSet<(String, usize)>> = BTreeMap::new();
+    for dep in deps {
+        let Target::Internal(path) = &dep.target else {
+            continue;
+        };
+        let to = slash(path);
+        let targets = if known.contains(to.as_str()) {
+            vec![to.as_str()]
+        } else {
+            in_dir.get(to.as_str()).cloned().unwrap_or_default()
+        };
+        let out = graph.entry(slash(&dep.file)).or_default();
+        for target in targets {
+            out.insert((target.to_string(), dep.line));
+        }
+    }
+    graph
+}
+
+/// The shortest chain from any of `starts` through files `is_hop` accepts to
+/// a file `is_end` accepts: each hop with the line of its import, and the
+/// file it ends in. Every start is searched at once, so no start's longer
+/// chain hides another's shorter one.
+fn shortest_chain<'a>(
+    graph: &'a BTreeMap<String, BTreeSet<(String, usize)>>,
+    starts: impl Iterator<Item = &'a str>,
+    is_hop: impl Fn(&str) -> bool,
+    is_end: impl Fn(&str) -> bool,
+) -> Option<(Vec<(String, usize)>, &'a str)> {
+    let mut queue: VecDeque<&str> = starts.collect();
+    let first: BTreeSet<&str> = queue.iter().copied().collect();
+    let mut prev: BTreeMap<&str, (&str, usize)> = BTreeMap::new();
+    while let Some(file) = queue.pop_front() {
+        for (next, line) in graph.get(file).into_iter().flatten() {
+            let next = next.as_str();
+            // From a start, an import of the end is direct, not a chain.
+            if is_end(next) && !first.contains(file) {
+                let mut hops = vec![(file.to_string(), *line)];
+                let mut at = file;
+                while let Some(&(back, line)) = prev.get(at) {
+                    hops.push((back.to_string(), line));
+                    at = back;
+                }
+                hops.reverse();
+                return Some((hops, next));
+            }
+            if is_hop(next) && !prev.contains_key(next) && !first.contains(next) {
+                prev.insert(next, (file, *line));
+                queue.push_back(next);
+            }
+        }
+    }
+    None
 }
 
 /// Tarjan's algorithm; component graphs are small, so recursion is fine.
@@ -985,6 +1133,7 @@ mod tests {
             (RuleId::Required, "src/a/M.kt", "src/a/"),
             (RuleId::Required, "M.kt", "./"),
             (RuleId::Cycle, "src/a/M.kt", ""),
+            (RuleId::Reach, "src/a/M.kt", ""),
             (RuleId::Dependency, "src/a/M.kt", "src/a/M.kt"),
         ] {
             let once = key(rule, file).canonical();
@@ -1080,6 +1229,47 @@ no_cycles: {no_cycles}
         );
         assert_eq!(found[0].from, "a,b,c");
         assert_eq!(found[0].evidence.len(), 4);
+    }
+
+    #[test]
+    fn reach_reports_the_shortest_chain_from_any_file() {
+        let config: Config = serde_norway::from_str(
+            "version: 1
+components:
+  a: { in: a }
+  c: { in: c }
+rules:
+  a: { must_not_reach: [c] }
+",
+        )
+        .unwrap();
+        let map = ComponentMap::new(&config).unwrap();
+        let dep = |from: &str, to: &str, line| Dep {
+            file: from.into(),
+            line,
+            specifier: String::new(),
+            target: Target::Internal(to.into()),
+        };
+        // `a/A1.kt` sorts first but its chain is the longer one.
+        let deps = [
+            dep("a/A1.kt", "x/L1.kt", 1),
+            dep("x/L1.kt", "x/L2.kt", 2),
+            dep("x/L2.kt", "c/C.kt", 3),
+            dep("a/A2.kt", "x/S.kt", 4),
+            dep("x/S.kt", "c/C.kt", 5),
+        ];
+        let files: Vec<String> = [
+            "a/A1.kt", "a/A2.kt", "x/L1.kt", "x/L2.kt", "x/S.kt", "c/C.kt",
+        ]
+        .map(String::from)
+        .to_vec();
+        let found = reaches(&config, &map, &deps, &files);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].message,
+            "a reaches c through no component: a/A2.kt:4 -> x/S.kt:5 -> c/C.kt"
+        );
+        assert_eq!(found[0].target, "c/C.kt");
     }
 
     fn limits(rule: &str) -> Config {

@@ -196,6 +196,7 @@ Every violation carries a rule id, used in the JSON report, the baseline and sup
 | `unused-suppression` | an inline suppression matches no violation, or names a rule that cannot be suppressed (`dependency`, `privacy`, `external`, `isolation`, `symbol` and `excluded` can be) |
 | `unmatched` | an `in` pattern of a component matches no file of the project |
 | `excluded` | a component imports a file that `exclude` hides |
+| `reach` | a component reaches one its `must_not_reach` names through a chain of imports |
 
 ### Public API
 
@@ -259,9 +260,30 @@ rules:
     because: core stays dependency-free   # printed for lodash
 ```
 
-`may_depend_on`, `may_use_external`, `must_depend_on`, `must_use_external`, `requires_file`, `forbid_file`, `requires_directive` and `forbid_symbol` take the same items. For the allow-lists the reason says why the dependency is allowed and is shown by `easement explain`.
+`may_depend_on`, `must_not_reach`, `may_use_external`, `must_depend_on`, `must_use_external`, `requires_file`, `forbid_file`, `requires_directive` and `forbid_symbol` take the same items. For the allow-lists the reason says why the dependency is allowed and is shown by `easement explain`.
 
 Quote a reason that contains a comma or a colon.
+
+### Reaching through others
+
+```yaml
+rules:
+  domain:
+    may_depend_on: [util]
+    must_not_reach:
+      - { name: http, because: the domain knows no transport }
+  util: { may_depend_on: [http] }
+```
+
+`must_not_reach` forbids a dependency the way `must_not_depend_on` does, and also every chain of imports that leads there through other files: `domain` may use `util` and `util` may use `http`, but `domain` must not end up depending on `http` through it. The rule fails even though every hop on its own is allowed. Files of no component count as hops, so a chain cannot slip through an unowned file.
+
+A direct import is a `dependency` violation (`domain -> http is forbidden`); a chain is one `reach` violation per pair of components, at its first import, with the shortest chain and every hop:
+
+```text
+src/domain/Order.kt:2: domain reaches http through util: src/domain/Order.kt:2 -> src/util/Retry.kt:2 -> src/http/Client.kt [reach]
+```
+
+Break any hop to fix it. The baseline keys a chain by its two components, so other files on it do not make it new debt, and `--diff` reports it when a changed line is one of its hops. It cannot be suppressed inline.
 
 ### External modules
 

@@ -237,6 +237,10 @@ pub struct Rule {
     /// Components that are never allowed, even if `common` or `layers` would allow them.
     #[serde(default)]
     pub must_not_depend_on: Vec<Listed>,
+    /// Components the component must not depend on, directly or through any
+    /// chain of imports, even when every hop of the chain is allowed.
+    #[serde(default)]
+    pub must_not_reach: Vec<Listed>,
     /// External modules the component may use; unset means no restriction.
     #[serde(default)]
     pub may_use_external: Option<Vec<Listed>>,
@@ -353,6 +357,15 @@ impl Config {
                     bail!("rules.{from} both allows and forbids `{to}`");
                 }
             }
+            for to in rule.must_not_reach.iter().map(Listed::name) {
+                check(to, &format!("rules.{from}.must_not_reach"))?;
+                if to == from {
+                    bail!("rules.{from}.must_not_reach names `{from}` itself");
+                }
+                if rule.may_depend_on.iter().any(|c| c.name() == to) {
+                    bail!("rules.{from} both allows `{to}` and forbids reaching it");
+                }
+            }
             for to in rule.must_depend_on.iter().map(Listed::name) {
                 check(to, &format!("rules.{from}.must_depend_on"))?;
             }
@@ -429,17 +442,21 @@ impl Config {
     }
 
     pub fn forbids(&self, from: &str, to: &str) -> bool {
-        self.rules
-            .get(from)
-            .is_some_and(|r| r.must_not_depend_on.iter().any(|c| c.name() == to))
+        self.rules.get(from).is_some_and(|r| {
+            r.must_not_depend_on
+                .iter()
+                .chain(&r.must_not_reach)
+                .any(|c| c.name() == to)
+        })
     }
 
-    /// The reason given with `to` in the `must_not_depend_on` of `from`, if any.
+    /// The reason given with `to` in the `must_not_depend_on` or
+    /// `must_not_reach` of `from`, if any.
     pub fn forbid_reason(&self, from: &str, to: &str) -> Option<&str> {
-        self.rules
-            .get(from)?
-            .must_not_depend_on
+        let rule = self.rules.get(from)?;
+        rule.must_not_depend_on
             .iter()
+            .chain(&rule.must_not_reach)
             .find(|c| c.name() == to)?
             .because()
     }
@@ -764,6 +781,30 @@ rules:
         )
         .unwrap_err();
         assert!(err.to_string().contains("both allows and forbids"));
+        let err = parse(
+            "version: 1
+components:
+  a: { in: a }
+  b: { in: b }
+rules:
+  a: { may_depend_on: [b], must_not_reach: [b] }
+",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("both allows `b` and forbids reaching it")
+        );
+        let err = parse(
+            "version: 1
+components:
+  a: { in: a }
+rules:
+  a: { must_not_reach: [a] }
+",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("names `a` itself"));
         let err = parse(
             "version: 1
 components:

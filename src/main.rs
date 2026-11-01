@@ -202,6 +202,12 @@ impl Project {
             &std::fs::read_to_string(&self.config_path).unwrap_or_default(),
         ));
         violations.extend(check::cycles(&self.config, &edges));
+        violations.extend(check::reaches(
+            &self.config,
+            &map,
+            &scan.deps,
+            &scan.all_files,
+        ));
         violations.extend(check::metrics(&self.config, &edges));
         violations.extend(check::orphans(&self.config, &map, &scan.paths));
         violations.extend(check::forbidden_files(&self.config, &map, &scan.all_files));

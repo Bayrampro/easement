@@ -2001,3 +2001,126 @@ fn excluded_wildcard_imports_and_ignored_files() {
     ]);
     easement(&root, &["check"]).success();
 }
+
+/// `domain` must not reach `http`, even through `util`, though every hop on
+/// its own is allowed.
+fn reach_project(extra: &[(&str, &str)]) -> (TempDir, PathBuf) {
+    let mut files = vec![
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  domain: { in: src/domain }\n  util: { in: src/util }\n  http: { in: src/http }\nrules:\n  domain:\n    may_depend_on: [util]\n    must_not_reach: [{ name: http, because: the domain knows no transport }]\n  util: { may_depend_on: [http] }\n",
+        ),
+        (
+            "src/domain/Order.kt",
+            "package domain\nimport util.Retry\nclass Order\n",
+        ),
+        (
+            "src/util/Retry.kt",
+            "package util\nimport http.Client\nclass Retry\n",
+        ),
+        ("src/http/Client.kt", "package http\nclass Client\n"),
+    ];
+    files.extend_from_slice(extra);
+    project(&files)
+}
+
+#[test]
+fn a_component_must_not_reach_another_through_a_chain() {
+    let (_tmp, root) = reach_project(&[]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "src/domain/Order.kt:2: domain reaches http through util: src/domain/Order.kt:2 -> src/util/Retry.kt:2 -> src/http/Client.kt [reach]",
+        ))
+        .stdout(contains("because: the domain knows no transport"));
+}
+
+#[test]
+fn reach_follows_files_of_no_component_and_leaves_direct_imports_to_dependency() {
+    // Through a file that belongs to no component.
+    let (_tmp, root) = reach_project(&[
+        (
+            "src/domain/Order.kt",
+            "package domain\nimport misc.Glue\nclass Order\n",
+        ),
+        (
+            "src/misc/Glue.kt",
+            "package misc\nimport http.Client\nclass Glue\n",
+        ),
+    ]);
+    easement(&root, &["check"]).code(1).stdout(contains(
+        "domain reaches http through no component: src/domain/Order.kt:2 -> src/misc/Glue.kt:2 -> src/http/Client.kt [reach]",
+    ));
+    // Through an import of a whole package, which resolves to its directory.
+    let (_tmp, root) = reach_project(&[(
+        "src/domain/Order.kt",
+        "package domain\nimport util.*\nclass Order\n",
+    )]);
+    easement(&root, &["check"]).code(1).stdout(contains(
+        "domain reaches http through util: src/domain/Order.kt:2 -> src/util/Retry.kt:2 -> src/http/Client.kt [reach]",
+    ));
+    // Straight into it: forbidden, and not a chain.
+    let (_tmp, root) = reach_project(&[(
+        "src/domain/Order.kt",
+        "package domain\nimport http.Client\nclass Order\n",
+    )]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("domain -> http is forbidden"))
+        .stdout(contains("[reach]").not());
+}
+
+#[test]
+fn a_baselined_reach_stays_legal_and_diff_reports_a_new_one() {
+    let (_tmp, root) = reach_project(&[]);
+    easement(&root, &["baseline"]).success();
+    // Another file on the same chain is not new debt.
+    fs::write(
+        root.join("src/domain/Account.kt"),
+        "package domain\nimport util.Retry\nclass Account\n",
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .success()
+        .stdout(contains("1 legalized"));
+
+    // A pull request that adds the last hop is judged in diff mode.
+    let (_tmp, root) = reach_project(&[("src/util/Retry.kt", "package util\nclass Retry\n")]);
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "init"]);
+    fs::write(
+        root.join("src/util/Retry.kt"),
+        "package util\nimport http.Client\nclass Retry\n",
+    )
+    .unwrap();
+    easement(&root, &["check", "--diff", "main"])
+        .code(1)
+        .stdout(contains("domain reaches http through util"));
+}
+
+#[test]
+fn reach_crosses_go_packages() {
+    let (_tmp, root) = project(&[
+        ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  domain: { in: internal/domain }\n  util: { in: internal/util }\n  http: { in: internal/http }\nrules:\n  domain: { may_depend_on: [util], must_not_reach: [http] }\n  util: { may_depend_on: [http] }\n",
+        ),
+        (
+            "internal/domain/order.go",
+            "package domain\n\nimport \"example.com/app/internal/util\"\n\nvar Order = util.Retry\n",
+        ),
+        (
+            "internal/util/retry.go",
+            "package util\n\nimport \"example.com/app/internal/http\"\n\nvar Retry = http.Client\n",
+        ),
+        (
+            "internal/http/client.go",
+            "package http\n\nvar Client = 1\n",
+        ),
+    ]);
+    easement(&root, &["check"]).code(1).stdout(contains(
+        "domain reaches http through util: internal/domain/order.go:3 -> internal/util/retry.go:3 -> internal/http/client.go [reach]",
+    ));
+}

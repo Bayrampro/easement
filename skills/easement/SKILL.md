@@ -26,7 +26,7 @@ Run `easement check`. It exits 0 when the code matches the config, 1 on violatio
 A violation reads like `internal/handlers/books.go:6: handlers -> repository is not allowed (imports internal/repository/books.go) [dependency]`, followed by `because:` with the reason of the rule.
 
 1. Read `because`: it says where the code should go instead.
-2. Fix the code: go through the component the rule allows (call the service, not the repository), move the file into the component it belongs to, or turn the dependency around.
+2. Fix the code: go through the component the rule allows (call the service, not the repository), move the file into the component it belongs to, or turn the dependency around. A `reach` violation lists a chain of imports; remove any one hop of it.
 3. Do not edit `easement.yml`, regenerate the baseline or add an `easement:disable` comment to get the check through. If the rule itself looks wrong, stop and ask a human, with the violation and why you think the rule is wrong.
 
 Two cases are cleanup, not exceptions:

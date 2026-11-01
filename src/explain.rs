@@ -53,7 +53,12 @@ pub fn explain(config: &Config, map: &ComponentMap, rel: &str) -> Result<String>
     let mut other = Vec::new();
     for to in config.components.keys().filter(|c| c.as_str() != name) {
         if config.forbids(name, to) {
-            forbidden.push(to.as_str());
+            let reach = rule.is_some_and(|r| r.must_not_reach.iter().any(|c| c.name() == to));
+            forbidden.push(if reach {
+                format!("{to} (not even through others)")
+            } else {
+                to.clone()
+            });
         } else if config.allows(name, to) {
             let why = if rule.is_some_and(|r| r.may_depend_on.iter().any(|c| c.name() == to)) {
                 "may_depend_on"
@@ -176,6 +181,7 @@ layers: [web, core]
 rules:
   web:
     must_not_depend_on: [data]
+    must_not_reach: [pages]
     forbid_external: [moment]
     requires_file: [README.md]
     because: pages go through core
@@ -186,7 +192,7 @@ rules:
         let out = explain(&config, &map, "src/web/page.ts").unwrap();
         assert!(out.contains("component: web (matches `src/web`)"));
         assert!(out.contains("may depend on: core (layers), shared (common)"));
-        assert!(out.contains("forbidden: data"));
+        assert!(out.contains("forbidden: data, pages (not even through others)"));
         assert!(out.contains("forbidden external modules: moment"));
         assert!(out.contains("every directory must contain: README.md"));
         assert!(out.contains("because: pages go through core"));

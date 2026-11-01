@@ -208,6 +208,7 @@ fn stale_description(k: &Key) -> String {
     match k.rule {
         RuleId::Cycle => format!("cycle among {}", k.from),
         RuleId::Metric => format!("{} exceeds {}", k.from, k.target),
+        RuleId::Reach => format!("{} reaches {}", k.from, k.to),
         RuleId::External => format!("{}: {} -> external {}", k.file, k.from, k.target),
         RuleId::Dependency | RuleId::Privacy => {
             format!("{}: {} -> {} ({})", k.file, k.from, k.to, k.target)

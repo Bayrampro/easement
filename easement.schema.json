@@ -214,6 +214,13 @@
             "$ref": "#/definitions/listed"
           }
         },
+        "must_not_reach": {
+          "description": "Components this component must not depend on, directly or through any chain of imports, even when every hop is allowed. An item may carry its own reason.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/listed"
+          }
+        },
         "may_use_external": {
           "description": "External modules this component may use; unset means no restriction. A pattern covers submodules: lodash covers lodash/fp. An item may carry its own reason.",
           "type": "array",
