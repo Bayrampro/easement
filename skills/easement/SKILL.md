@@ -34,6 +34,8 @@ Two cases are cleanup, not exceptions:
 - **Stale baseline entries**: a violation recorded in the baseline is gone. When the check reports stale entries and no new violations, run `easement baseline` to drop them; the baseline only shrinks. With new violations in the report, fix those first, or `easement baseline` would legalize them.
 - **`unused-suppression`**: the excused import is gone, so delete the comment.
 
+An `unmatched` violation is about the config, not the code: an `in` pattern of a component points at no file, usually because the code moved. It needs a change to `easement.yml`, so tell a human which pattern it is and where the code went.
+
 ## Changing easement.yml
 
 Change the config only when a human asks for it or agrees to it.

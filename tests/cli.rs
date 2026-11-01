@@ -187,7 +187,12 @@ fn exclude_skips_files() {
         format!("{config}\nexclude: [internal/handlers]\n"),
     )
     .unwrap();
-    easement(&root, &["check"]).success();
+    // The violations of the handlers are gone with their files, and the
+    // component left without a file is reported instead.
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("[dependency]").not())
+        .stdout(contains("component `handler` matches no file"));
 }
 
 #[test]
@@ -1606,9 +1611,10 @@ rules:
         pairs(&root),
         [("src/app/a.ts".to_string(), "generated".to_string())]
     );
-    // `exclude` hides the file altogether: nothing is seen.
+    // `exclude` hides the file altogether: no import of it is seen, and the
+    // component that owned it matches no file.
     let (_tmp, root) = files(config("exclude"));
-    assert!(pairs(&root).is_empty());
+    assert_eq!(pairs(&root), [("easement.yml".to_string(), String::new())]);
 }
 
 #[test]
@@ -1708,4 +1714,103 @@ fn indexes_are_cached_until_the_project_changes() {
     fs::write(&file, format!("{text}\n// changed\n")).unwrap();
     assert_eq!(stats(&[])["indexed"], 1);
     assert_eq!(stats(&[])["from_cache"], 1);
+}
+
+/// A project whose `ghost` component points at a directory that is gone.
+fn ghost_project() -> (TempDir, PathBuf) {
+    project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: src/app }\n  ghost: { in: src/renamed_away }\nrules:\n  app: { may_depend_on: [ghost] }\n",
+        ),
+        ("src/app/Main.kt", "package app\n"),
+    ])
+}
+
+#[test]
+fn a_component_that_matches_no_file_fails() {
+    let (_tmp, root) = ghost_project();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "easement.yml:4: component `ghost` matches no file (in: src/renamed_away)",
+        ))
+        .stdout(contains("[unmatched]"));
+}
+
+#[test]
+fn an_optional_component_may_match_no_file() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ntests: auto\ncomponents:\n  app: { in: src/app }\n  plugins: { in: src/plugins, optional: true }\nrules:\n  app: { may_depend_on: [plugins] }\n",
+        ),
+        ("src/app/Main.kt", "package app\n"),
+    ]);
+    // Neither `plugins` nor the `tests` of `tests: auto` has a file.
+    easement(&root, &["check"]).success();
+}
+
+#[test]
+fn an_unmatched_component_is_reported_in_json() {
+    let (_tmp, root) = ghost_project();
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    let v = &report["violations"][0];
+    assert_eq!(v["rule"], "unmatched");
+    assert_eq!(v["file"], "easement.yml");
+    assert_eq!(v["from"], "ghost");
+    assert_eq!(v["target"], "src/renamed_away");
+}
+
+#[test]
+fn diff_and_scope_still_report_an_unmatched_component() {
+    let (_tmp, root) = ghost_project();
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "init"]);
+    // The pull request touches neither the config nor a line with an import.
+    fs::write(root.join("src/app/Other.kt"), "package app\n").unwrap();
+    easement(&root, &["check", "--diff", "main"])
+        .code(1)
+        .stdout(contains("component `ghost` matches no file"));
+    easement(&root, &["check", "--component", "app"])
+        .code(1)
+        .stdout(contains("component `ghost` matches no file"));
+}
+
+#[test]
+fn the_baseline_never_accepts_an_unmatched_component() {
+    let (_tmp, root) = ghost_project();
+    easement(&root, &["baseline"])
+        .success()
+        .stdout(contains("0 violation(s) written"))
+        .stdout(contains("1 violation(s) of the config left out"));
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("component `ghost` matches no file"));
+}
+
+/// Files that .gitignore hides are not read and no import of them is seen,
+/// so a component of nothing else checks nothing.
+#[test]
+fn a_component_of_ignored_files_matches_no_file() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: src/app }\n  gen: { in: src/gen }\nrules:\n  app: { may_depend_on: [gen] }\n",
+        ),
+        (".gitignore", "src/gen/\n"),
+        ("src/gen/api.ts", "export const api = 1;\n"),
+        (
+            "src/app/a.ts",
+            "import { api } from \"../gen/api\";\nexport const a = api;\n",
+        ),
+    ]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("component `gen` matches no file"))
+        .stdout(contains(".gitignore hide do not count"));
 }

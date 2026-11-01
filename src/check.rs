@@ -36,6 +36,8 @@ pub enum RuleId {
     UnusedSuppression,
     /// An inline suppression without a reason.
     SuppressionReason,
+    /// An `in` pattern of a component that matches no file of the project.
+    Unmatched,
 }
 
 impl RuleId {
@@ -53,7 +55,15 @@ impl RuleId {
             RuleId::Symbol => "symbol",
             RuleId::UnusedSuppression => "unused-suppression",
             RuleId::SuppressionReason => "suppression-reason",
+            RuleId::Unmatched => "unmatched",
         }
+    }
+
+    /// Rules about the config rather than the code: no import or changed line
+    /// stands behind them, so `--diff` and `--scope` keep them, and the
+    /// baseline never accepts them.
+    pub fn is_config_rule(self) -> bool {
+        self == RuleId::Unmatched
     }
 
     /// Rules that an inline comment can suppress.
@@ -816,6 +826,95 @@ pub fn orphans(config: &Config, map: &ComponentMap, files: &[String]) -> Vec<Vio
         .collect()
 }
 
+/// One violation per `in` pattern that matches no file in `files`, at its
+/// line in the config text, or line 1 when it comes from `extends`. The
+/// `tests` component of `tests: auto` and components marked `optional` may
+/// match nothing.
+pub fn unmatched(
+    config: &Config,
+    map: &ComponentMap,
+    files: &[String],
+    config_file: &str,
+    config_text: &str,
+) -> Vec<Violation> {
+    map.unmatched_patterns(files)
+        .into_iter()
+        .filter(|(component, _)| !config.components[*component].optional)
+        .map(|(component, pattern)| Violation {
+            rule: RuleId::Unmatched,
+            file: config_file.to_string(),
+            line: config_line(config_text, component, pattern),
+            message: format!(
+                "component `{component}` matches no file (in: {pattern}); fix the pattern, or set `optional: true` if the component may be empty (files that `exclude` or .gitignore hide do not count)"
+            ),
+            because: None,
+            from: component.to_string(),
+            to: String::new(),
+            target: pattern.to_string(),
+            specifier: String::new(),
+            evidence: Vec::new(),
+        })
+        .collect()
+}
+
+/// The line, counted from 1, where `component` lists `pattern` under
+/// `components:` in the config text; 1 when the text does not declare it
+/// (it comes from `extends`).
+fn config_line(text: &str, component: &str, pattern: &str) -> usize {
+    let lines: Vec<&str> = text.lines().map(without_comment).collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let Some(section) = lines.iter().position(|l| l.trim_end() == "components:") else {
+        return 1;
+    };
+    let body: Vec<(usize, &str)> = lines
+        .iter()
+        .copied()
+        .enumerate()
+        .skip(section + 1)
+        .filter(|(_, l)| !l.trim().is_empty())
+        .take_while(|(_, l)| indent(l) > 0)
+        .collect();
+    let Some(level) = body.first().map(|(_, l)| indent(l)) else {
+        return 1;
+    };
+    let names = |l: &str| {
+        l.split_once(':')
+            .is_some_and(|(key, _)| key.trim().trim_matches(['"', '\'']) == component)
+    };
+    let Some(at) = body
+        .iter()
+        .position(|(_, l)| indent(l) == level && names(l))
+    else {
+        return 1;
+    };
+    body[at..]
+        .iter()
+        .take_while(|(i, l)| *i == body[at].0 || indent(l) > level)
+        .find(|(_, l)| holds(l, pattern))
+        .map_or(1, |(i, _)| i + 1)
+}
+
+/// The line without a `#` comment.
+fn without_comment(line: &str) -> &str {
+    line.match_indices('#')
+        .find(|(i, _)| *i == 0 || line[..*i].ends_with(char::is_whitespace))
+        .map_or(line, |(i, _)| &line[..i])
+}
+
+/// Whether `line` holds `pattern` as a whole, not as part of a longer path.
+fn holds(line: &str, pattern: &str) -> bool {
+    let in_path = |c: char| c.is_alphanumeric() || "/_-.*".contains(c);
+    line.match_indices(pattern).any(|(i, _)| {
+        let rest = &line[i + pattern.len()..];
+        // The config may write `src/a/` for `src/a`.
+        let rest = rest
+            .strip_prefix('/')
+            .filter(|r| !r.starts_with(in_path))
+            .unwrap_or(rest);
+        !line[..i].ends_with(in_path) && !rest.starts_with(in_path)
+    })
+}
+
 /// One violation per use: the same key at the same line once, every other line
 /// kept, sorted by key and line. The baseline still matches by key alone.
 pub fn dedupe(violations: Vec<Violation>) -> Vec<Violation> {
@@ -829,6 +928,32 @@ pub fn dedupe(violations: Vec<Violation>) -> Vec<Violation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_line_finds_the_pattern_in_the_declaration_of_its_component() {
+        let text = r#"version: 1
+rules:
+  b: { may_depend_on: [a] }
+components:
+  a:
+    in:
+      - src/ab
+      - src/a   # was src/x
+  "c": { in: src/c }
+  d: { in: [src/d/] }
+  b:
+    # old home was src/old
+    in: src/old
+exclude: ["src/gone/**"]
+"#;
+        assert_eq!(config_line(text, "b", "src/old"), 13);
+        assert_eq!(config_line(text, "d", "src/d"), 10);
+        assert_eq!(config_line(text, "a", "src/ab"), 7);
+        assert_eq!(config_line(text, "a", "src/a"), 8);
+        assert_eq!(config_line(text, "c", "src/c"), 9);
+        // A component that comes from `extends` is not declared here.
+        assert_eq!(config_line(text, "legacy", "src/gone"), 1);
+    }
 
     #[test]
     fn dedupe_keeps_every_line_and_drops_repeats() {

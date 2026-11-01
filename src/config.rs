@@ -207,6 +207,10 @@ pub struct Component {
     /// When set, only these components (and the component itself) may import it.
     #[serde(default)]
     pub allow_importers: Option<Vec<String>>,
+    /// The component may match no file; otherwise an `in` pattern that
+    /// matches nothing is an `unmatched` violation.
+    #[serde(default)]
+    pub optional: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -305,6 +309,8 @@ impl Config {
                 isolated: false,
                 public_symbols: None,
                 allow_importers: None,
+                // A project may have no tests yet.
+                optional: true,
             },
         );
         Ok(self)

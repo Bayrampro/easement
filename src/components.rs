@@ -244,6 +244,20 @@ impl ComponentMap {
         })
     }
 
+    /// Every `in` pattern, as (component, pattern), that matches none of
+    /// `files`, in the order of the config.
+    pub fn unmatched_patterns(&self, files: &[String]) -> Vec<(&str, &str)> {
+        self.entries
+            .iter()
+            .filter(|e| {
+                !files
+                    .iter()
+                    .any(|f| e.matchers.iter().any(|m| m.is_match(f)))
+            })
+            .map(|e| (e.component.as_str(), e.pattern.as_str()))
+            .collect()
+    }
+
     pub fn component_of(&self, rel_path: &str) -> Option<&str> {
         self.matching(rel_path).map(|e| e.component.as_str())
     }
@@ -294,6 +308,18 @@ mod tests {
     fn map(yaml: &str) -> ComponentMap {
         let config: Config = serde_norway::from_str(yaml).unwrap();
         ComponentMap::new(&config).unwrap()
+    }
+
+    #[test]
+    fn a_pattern_matches_its_directory_or_a_file_of_its_name() {
+        let m = map("version: 1
+components:
+  cli: { in: src/app/cli }
+  pages: { in: 'src/pages/*' }
+  ghost: { in: src/gone }
+");
+        let files = ["src/app/cli.py".to_string(), "src/pages/a/x.ts".to_string()];
+        assert_eq!(m.unmatched_patterns(&files), vec![("ghost", "src/gone")]);
     }
 
     #[test]

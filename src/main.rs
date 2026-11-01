@@ -154,6 +154,8 @@ enum Format {
 struct Project {
     root: PathBuf,
     config: Config,
+    /// The config file, resolved.
+    config_path: PathBuf,
 }
 
 impl Project {
@@ -165,7 +167,11 @@ impl Project {
             .parent()
             .context("config has no parent directory")?
             .to_path_buf();
-        Ok(Self { root, config })
+        Ok(Self {
+            root,
+            config,
+            config_path,
+        })
     }
 
     fn baseline_path(&self) -> PathBuf {
@@ -184,6 +190,13 @@ impl Project {
             check::evaluate(&self.config, &map, scope, &scan.deps);
         violations.extend(check::symbols(&self.config, &map, &scan.symbols));
         let (mut violations, suppressed) = suppress::apply(violations, &scan.suppressions);
+        violations.extend(check::unmatched(
+            &self.config,
+            &map,
+            &scan.all_files,
+            &scan::slash(self.config_path.strip_prefix(&self.root)?),
+            &std::fs::read_to_string(&self.config_path).unwrap_or_default(),
+        ));
         violations.extend(check::cycles(&self.config, &edges));
         violations.extend(check::metrics(&self.config, &edges));
         violations.extend(check::orphans(&self.config, &map, &scan.paths));
@@ -281,7 +294,9 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
     // the scope when any file behind it does.
     let violations: Vec<_> = violations
         .into_iter()
-        .filter(|v| v.evidence.iter().any(|(f, _)| scope.contains(&map, f)))
+        .filter(|v| {
+            v.rule.is_config_rule() || v.evidence.iter().any(|(f, _)| scope.contains(&map, f))
+        })
         .collect();
     let changes = options
         .diff
@@ -294,7 +309,9 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
     let judged = match &changes {
         Some(changes) => violations
             .into_iter()
-            .filter(|v| v.evidence.iter().any(|(f, l)| changes.contains(f, *l)))
+            .filter(|v| {
+                v.rule.is_config_rule() || v.evidence.iter().any(|(f, l)| changes.contains(f, *l))
+            })
             .collect(),
         None => violations,
     };
@@ -380,11 +397,13 @@ fn run(cli: Cli) -> Result<bool> {
         }
         Command::Baseline { config } => {
             let project = Project::open(&config)?;
-            let violations = check::dedupe(
+            let (config_rules, violations): (Vec<_>, Vec<_>) = check::dedupe(
                 project
                     .analyze(&mut scan::Cache::default(), &scope::Scope::default())?
                     .violations,
-            );
+            )
+            .into_iter()
+            .partition(|v| v.rule.is_config_rule());
             let path = project.baseline_path();
             Baseline::from_violations(&violations).save(&path)?;
             println!(
@@ -392,6 +411,12 @@ fn run(cli: Cli) -> Result<bool> {
                 violations.len(),
                 path.display()
             );
+            if !config_rules.is_empty() {
+                println!(
+                    "easement: {} violation(s) of the config left out, the baseline never accepts them; `easement check` lists them",
+                    config_rules.len()
+                );
+            }
             Ok(true)
         }
         Command::Init { force } => {

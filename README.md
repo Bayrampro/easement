@@ -170,6 +170,7 @@ exclude: ["**/*_test.go"]
 ```
 
 - **components**: an `in` pattern (a glob or a list of globs) names a module, whether it is a directory or a file: `src/app/cli` covers the `cli/` directory with everything below it and a file `cli.py`. `*` stays within one directory, `**` crosses directories. When several components match a file, the one with the higher `priority` wins (default 0), then the longest pattern, so a single file can be carved out of a larger component. `except` lists patterns a component gives up: its files matching them belong to the next component that matches, if any.
+- **optional**: every `in` pattern has to match a file, and one that matches nothing (a directory renamed, a typo, files that `exclude` or `.gitignore` hide) fails as `unmatched` at its line in `easement.yml`, so a boundary cannot vanish while the check stays green. `--diff` and `--scope` still report it, the baseline never accepts it, and it cannot be suppressed. `optional: true` lets a component be empty for now; the `tests` component of `tests: auto` is optional.
 - **rules**: an allow-list. A component may depend on itself, on `common` components and on what `may_depend_on` lists — nothing else. `because` is printed with every violation of the rule, so the reader (or an agent) learns where the code should go instead.
 - Files outside every component are not checked, unless `strict: true` turns them into `orphan` violations. External modules are checked only where a rule says so, see [External modules](#external-modules).
 - **target_only**: globs of generated files that stay in the graph as targets but are never checked as sources. Components can own them (`web-generated: { in: src/generated }`), and rules can allow or forbid importing them (`must_not_depend_on: [web-generated]`); their own imports, symbol uses and directives are not checked. `exclude` wins when a file matches both.
@@ -193,6 +194,7 @@ Every violation carries a rule id, used in the JSON report, the baseline and sup
 | `symbol` | a component uses a name its `forbid_symbol` rule forbids, or one outside the `public_symbols` of another component |
 | `suppression-reason` | an inline suppression has no reason |
 | `unused-suppression` | an inline suppression matches no violation, or names a rule that cannot be suppressed (`dependency`, `privacy`, `external`, `isolation` and `symbol` can be) |
+| `unmatched` | an `in` pattern of a component matches no file of the project |
 
 ### Public API
 

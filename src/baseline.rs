@@ -67,7 +67,7 @@ impl Verdict {
         let stale = baseline.violations.difference(current).cloned().collect();
         let (legal, new): (Vec<_>, Vec<_>) = violations
             .into_iter()
-            .partition(|v| baseline.violations.contains(&v.key()));
+            .partition(|v| !v.rule.is_config_rule() && baseline.violations.contains(&v.key()));
         Self {
             new,
             stale,
