@@ -211,6 +211,7 @@ Every violation carries a rule id, used in the JSON report, the baseline and sup
 | `unused` | with `entry`, a file of a component that no chain of imports from an entry reaches |
 | `naming` | a component defines a type whose name another component's `defines` claims |
 | `diagram` | a dependency between components has no arrow in the `diagram` |
+| `undeclared` | with `manifests`, a file imports an external module the nearest manifest does not declare |
 
 ### Public API
 
@@ -451,6 +452,14 @@ flowchart LR
 ````
 
 `diagram` points at a Markdown file with a Mermaid `graph` or `flowchart` (or at a bare `.mmd` file). A node is a component when its id or its label is the component's name; other nodes (users, external systems) are left alone. A dependency between components that the diagram has no arrow for fails as `diagram`, once per pair, at its first import: either the code grew a dependency the picture does not show, or the picture is out of date. `easement suggest` lists the arrows no import stands for. The baseline keys a missing arrow by its two components.
+
+### Declared dependencies
+
+```yaml
+manifests: true
+```
+
+With `manifests`, every external module a file imports has to be a dependency of the nearest manifest above it: `package.json` (any of `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`; `@types/x` counts for `x`) for JavaScript and TypeScript, `go.mod` (`require`, matched by module prefix) for Go, `Cargo.toml` (any dependency table, `-` and `_` alike) for Rust. An import of anything else fails as `undeclared` at its line: it builds only because a dependency of a dependency happens to bring the package, or because the package is installed on this machine. The standard library is never undeclared. In a monorepo each package's own manifest counts. Other languages are not checked, since their imports do not name their packages (Python's `yaml` comes from `PyYAML`), and the report says so with `confidence: partial`. The rule can be suppressed inline.
 
 ### Names of types
 

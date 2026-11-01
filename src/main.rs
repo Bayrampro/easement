@@ -11,6 +11,7 @@ mod impact;
 mod indexer;
 mod init;
 mod lang;
+mod manifests;
 mod patch;
 mod report;
 mod scan;
@@ -226,6 +227,9 @@ impl Project {
             check::evaluate(&self.config, &map, scope, &scan.deps);
         violations.extend(check::symbols(&self.config, &map, &scan.symbols));
         violations.extend(check::naming(&self.config, &map, &scan.types)?);
+        let undeclared =
+            manifests::undeclared(&self.config, &map, &self.root, &scan.deps, &scan.all_files);
+        violations.extend(undeclared.violations);
         let (mut violations, suppressed) = suppress::apply(violations, &scan.suppressions);
         violations.extend(check::unmatched(
             &self.config,
@@ -283,6 +287,7 @@ impl Project {
             stats.naming_unseen = unseen.into_iter().collect();
         }
         stats.unused_partial = unused.reasons;
+        stats.manifests_partial = undeclared.reasons;
         stats.files = scan
             .paths
             .iter()

@@ -64,6 +64,10 @@ pub struct Config {
     /// `diagram` violation.
     #[serde(default)]
     pub diagram: Option<PathBuf>,
+    /// Every external module a file imports has to be a dependency of the
+    /// nearest `package.json`, `go.mod` or `Cargo.toml` above it.
+    #[serde(default)]
+    pub manifests: bool,
     /// Rules whose violations are reported as warnings and do not fail the check.
     #[serde(default)]
     pub warn: Vec<String>,

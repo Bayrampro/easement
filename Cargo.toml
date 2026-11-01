@@ -32,6 +32,7 @@ similar = "3"
 streaming-iterator = "0.1.9"
 strsim = "0.11.1"
 tempfile = "3.27.0"
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
 tree-sitter = "0.27.1"
 tree-sitter-kotlin-ng = "1.1.0"
 tree-sitter-swift = "0.7.4"

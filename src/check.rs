@@ -48,6 +48,8 @@ pub enum RuleId {
     Naming,
     /// A dependency between components that the `diagram` has no arrow for.
     Diagram,
+    /// An external module the nearest manifest does not declare.
+    Undeclared,
 }
 
 impl RuleId {
@@ -71,6 +73,7 @@ impl RuleId {
             RuleId::Unused => "unused",
             RuleId::Naming => "naming",
             RuleId::Diagram => "diagram",
+            RuleId::Undeclared => "undeclared",
         }
     }
 
@@ -82,7 +85,7 @@ impl RuleId {
     }
 
     /// Every rule, in the order of the declaration.
-    pub const ALL: [RuleId; 18] = [
+    pub const ALL: [RuleId; 19] = [
         RuleId::Dependency,
         RuleId::Privacy,
         RuleId::Cycle,
@@ -101,10 +104,11 @@ impl RuleId {
         RuleId::Unused,
         RuleId::Naming,
         RuleId::Diagram,
+        RuleId::Undeclared,
     ];
 
     /// Rules that an inline comment can suppress.
-    pub const SUPPRESSIBLE: [RuleId; 7] = [
+    pub const SUPPRESSIBLE: [RuleId; 8] = [
         RuleId::Dependency,
         RuleId::Privacy,
         RuleId::External,
@@ -112,6 +116,7 @@ impl RuleId {
         RuleId::Symbol,
         RuleId::Excluded,
         RuleId::Naming,
+        RuleId::Undeclared,
     ];
 
     pub fn suppressible(s: &str) -> Option<Self> {
@@ -217,6 +222,9 @@ pub struct Stats {
     /// see: they are read with tree-sitter, which reports no definitions.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub naming_unseen: Vec<String>,
+    /// Why `manifests` left some imports unchecked.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub manifests_partial: Vec<String>,
     /// Why `unused` took some files as used without judging them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unused_partial: Vec<String>,

@@ -776,6 +776,31 @@ fn a_dependency_the_diagram_does_not_draw_fails() {
 }
 
 #[test]
+fn an_external_module_the_manifest_does_not_declare_fails() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\nmanifests: true\ncomponents:\n  web: { in: src/web }\n",
+        ),
+        (
+            "package.json",
+            "{\"name\": \"app\", \"dependencies\": {\"react\": \"1\"}}\n",
+        ),
+        (
+            "src/web/a.ts",
+            "import react from \"react\";\nimport lodash from \"lodash/fp\";\nexport const a = [react, lodash];\n",
+        ),
+    ]);
+    stub_packages(&root, &["react", "lodash/fp"]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "src/web/a.ts:2: lodash is not declared in package.json; add it to the dependencies, or drop the import [undeclared]",
+        ))
+        .stdout(contains("src/web/a.ts:1:").not());
+}
+
+#[test]
 fn layers_forbidden_externals_metrics_and_strict() {
     let (_tmp, root) = fixture("policy");
     let out = easement(&root, &["check", "--format", "json"])

@@ -123,7 +123,8 @@
           "reach",
           "unused",
           "naming",
-          "diagram"
+          "diagram",
+          "undeclared"
         ]
       }
     },
@@ -162,6 +163,10 @@
     "diagram": {
       "description": "A Markdown file with a Mermaid graph or flowchart of the components (or a .mmd file). A dependency between components the diagram has no arrow for fails as diagram. Nodes match components by id or label.",
       "type": "string"
+    },
+    "manifests": {
+      "description": "Every external module a file imports has to be a dependency of the nearest package.json, go.mod or Cargo.toml above it, else it fails as undeclared. Other languages are not checked.",
+      "type": "boolean"
     },
     "go": {
       "description": "How the Go indexer builds the project.",
