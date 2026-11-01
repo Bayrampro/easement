@@ -21,9 +21,16 @@ impl Baseline {
         }
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read baseline {}", path.display()))?;
-        let baseline = serde_norway::from_str(&text)
+        let baseline: Self = serde_norway::from_str(&text)
             .with_context(|| format!("invalid baseline {}", path.display()))?;
-        Ok(Some(baseline))
+        // Entries written before keys were canonical still match.
+        Ok(Some(Self {
+            violations: baseline
+                .violations
+                .into_iter()
+                .map(Key::canonical)
+                .collect(),
+        }))
     }
 
     pub fn from_violations(violations: &[Violation]) -> Self {
@@ -134,6 +141,23 @@ mod tests {
         assert_eq!(refused[0].file, "f3");
         let (kept, refused) = baseline.admit(vec![v("f1", "b"), v("f3", "c")], true);
         assert_eq!((kept.len(), refused.len()), (2, 0));
+    }
+
+    #[test]
+    fn an_old_cycle_entry_with_a_file_still_matches() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("easement.baseline.yml");
+        std::fs::write(
+            &path,
+            "violations:\n- rule: cycle\n  file: src/a/Z.kt\n  target: ''\n  from: a,b\n  to: ''\n",
+        )
+        .unwrap();
+        let baseline = Baseline::load(&path).unwrap().unwrap();
+        let mut cycle = v("src/a/A.kt", "");
+        cycle.rule = crate::check::RuleId::Cycle;
+        cycle.from = "a,b".into();
+        cycle.target = String::new();
+        assert!(baseline.violations.contains(&cycle.key()));
     }
 
     #[test]

@@ -122,6 +122,28 @@ impl Violation {
             from: self.from.clone(),
             to: self.to.clone(),
         }
+        .canonical()
+    }
+}
+
+impl Key {
+    /// The key without the file a violation happens to be reported at, where
+    /// the rule is about something else: a cycle and a limit are about
+    /// components, a requirement about a directory. Another file that sorts
+    /// first then does not turn old debt into new.
+    pub fn canonical(mut self) -> Self {
+        match self.rule {
+            RuleId::Cycle | RuleId::Metric => self.file.clear(),
+            // The directory ends in `/`, so a canonical key stays as it is.
+            RuleId::Required if !self.file.ends_with('/') => {
+                self.file = self
+                    .file
+                    .rsplit_once('/')
+                    .map_or_else(|| "./".to_string(), |(dir, _)| format!("{dir}/"));
+            }
+            _ => {}
+        }
+        self
     }
 }
 
@@ -928,6 +950,27 @@ pub fn dedupe(violations: Vec<Violation>) -> Vec<Violation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_canonical_key_stays_canonical() {
+        let key = |rule, file: &str| Key {
+            rule,
+            file: file.into(),
+            target: String::new(),
+            from: String::new(),
+            to: String::new(),
+        };
+        for (rule, file, want) in [
+            (RuleId::Required, "src/a/M.kt", "src/a/"),
+            (RuleId::Required, "M.kt", "./"),
+            (RuleId::Cycle, "src/a/M.kt", ""),
+            (RuleId::Dependency, "src/a/M.kt", "src/a/M.kt"),
+        ] {
+            let once = key(rule, file).canonical();
+            assert_eq!(once.file, want);
+            assert_eq!(once.clone().canonical(), once);
+        }
+    }
 
     #[test]
     fn config_line_finds_the_pattern_in_the_declaration_of_its_component() {

@@ -1872,3 +1872,41 @@ fn the_baseline_keeps_the_debt_of_files_no_indexer_read() {
     let baseline = fs::read_to_string(root.join("easement.baseline.yml")).unwrap();
     assert!(baseline.contains("src/ui/legacy.js"), "{baseline}");
 }
+
+#[test]
+fn a_new_file_on_a_baselined_cycle_or_limit_is_not_new_debt() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\nno_cycles: true\ncomponents:\n  a: { in: src/a }\n  b: { in: src/b }\nrules:\n  a: { may_depend_on: [b], max_fan_out: 0 }\n  b: { may_depend_on: [a] }\n",
+        ),
+        ("src/a/M.kt", "package a\nimport b.N\nclass M\n"),
+        ("src/b/N.kt", "package b\nimport a.M\nclass N\n"),
+    ]);
+    easement(&root, &["baseline"])
+        .success()
+        .stdout(contains("2 violation(s)"));
+    // A file that sorts first now carries the same edge.
+    fs::write(root.join("src/a/A.kt"), "package a\nimport b.N\nclass A\n").unwrap();
+    easement(&root, &["check"])
+        .success()
+        .stdout(contains("2 legalized"));
+}
+
+#[test]
+fn a_new_file_in_a_directory_with_baselined_requirement_is_not_new_debt() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  a: { in: src/a }\nrules:\n  a: { requires_file: [README.md] }\n",
+        ),
+        ("src/a/M.kt", "package a\nclass M\n"),
+    ]);
+    easement(&root, &["baseline"])
+        .success()
+        .stdout(contains("1 violation(s)"));
+    fs::write(root.join("src/a/A.kt"), "package a\nclass A\n").unwrap();
+    easement(&root, &["check"])
+        .success()
+        .stdout(contains("1 legalized"));
+}
