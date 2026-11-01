@@ -27,10 +27,26 @@ betterleaks = "1.9.0"
 typos = "1.51.1"
 rumdl = "0.3.0"
 lychee = "0.24.2"
+# Installs the agent skills of `mise run skills`.
+"npm:skills" = "1.7.4"
 
 [tasks.setup]
-description = "Install dependencies and the git hooks"
+description = "Install dependencies, the git hooks and the agent skills"
+depends = ["skills"]
 run = ["pnpm install --frozen-lockfile", "hk install"]
+
+# The skills of the mattpocock-skills plugin (its .claude-plugin/plugin.json), without the
+# in-progress and misc ones. They are copied into .agents/skills and linked for Claude Code;
+# both are gitignored, rerun the task to update them.
+[tasks.skills]
+description = "Install Matt Pocock's agent skills into the project"
+run = """
+skills add mattpocock/skills --agent claude-code codex --yes --skill \
+  ask-matt diagnosing-bugs grill-with-docs triage improve-codebase-architecture \
+  setup-matt-pocock-skills tdd to-spec to-tickets wayfinder implement implement-spec \
+  prototype research domain-modeling codebase-design code-review pr retro wizard \
+  grill-me grilling handoff teach to-questionnaire wait-what writing-for-agents
+"""
 
 [tasks.check]
 description = "Run every check, the same set CI runs"

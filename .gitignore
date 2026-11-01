@@ -1,3 +1,7 @@
 /target
 node_modules/
 .lycheecache
+# Agent skills installed by `mise run skills`.
+.agents/
+.claude/skills/
+skills-lock.json
