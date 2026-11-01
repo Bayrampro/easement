@@ -2134,7 +2134,7 @@ fn suggest_never_offers_to_allow_a_forbidden_import() {
     easement(&root, &["suggest"])
         .success()
         .stdout(contains(
-            "Imported but forbidden by must_not_depend_on or must_not_reach (fix the imports):\n  domain: http (1 import(s))",
+            "Imported but forbidden by the config (fix the imports):\n  domain: http (1 import(s))",
         ))
         .stdout(contains("add to may_depend_on").not());
 }
@@ -2499,4 +2499,40 @@ fn std_says_when_it_cannot_tell_a_language() {
     ))
     .unwrap();
     assert_eq!(report["confidence"], "partial");
+}
+
+#[test]
+fn a_layer_violation_says_which_layer_stops_it() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  api: { in: src/api, owner: '@acme/api' }\n  jobs: { in: src/jobs }\n  service: { in: src/service }\n  repo: { in: src/repo }\nlayers:\n  - [api, jobs]\n  - { name: service, closed: true }\n  - repo\n",
+        ),
+        (
+            "src/api/A.kt",
+            "package api\nimport repo.R\nimport jobs.J\nimport service.S\nclass A\n",
+        ),
+        ("src/jobs/J.kt", "package jobs\nclass J\n"),
+        (
+            "src/service/S.kt",
+            "package service\nimport repo.R\nclass S\n",
+        ),
+        ("src/repo/R.kt", "package repo\nclass R\n"),
+    ]);
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("src/api/A.kt:2: api -> repo is not allowed: the closed layer service is between them (imports repo.R)"))
+        .stdout(contains("src/api/A.kt:3: api -> jobs is not allowed: they are siblings in one layer (imports jobs.J)"));
+    easement(&root, &["suggest"])
+        .success()
+        .stdout(contains("Imported but forbidden by the config (fix the imports):\n  api: jobs (1 import(s)), repo (1 import(s))"));
+    easement(&root, &["why", "api", "repo"])
+        .success()
+        .stdout(contains(
+            "api -> repo is not allowed: the closed layer service is between them",
+        ))
+        .stdout(contains("owner of api: @acme/api"));
+    easement(&root, &["check", "--format", "github"])
+        .code(1)
+        .stdout(contains("(owner: @acme/api)"));
 }

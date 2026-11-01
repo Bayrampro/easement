@@ -116,7 +116,7 @@ pub fn colored(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>) -> S
 }
 
 /// `file:line: message [rule]`, and the reason under it when there is one.
-fn violation_lines(v: &Violation, owner: Option<&String>, tag: Style, color: bool) -> String {
+fn violation_lines(v: &Violation, owner: Option<&str>, tag: Style, color: bool) -> String {
     let mut out = format!(
         "{}: {} {}\n",
         paint(color, BOLD, &format!("{}:{}", v.file, v.line)),
@@ -144,7 +144,12 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
         ));
     }
     for v in &verdict.new {
-        out.push_str(&violation_lines(v, verdict.owners.get(&v.from), RED, color));
+        out.push_str(&violation_lines(
+            v,
+            verdict.owners.get(&v.from).map(String::as_str),
+            RED,
+            color,
+        ));
     }
     if !verdict.warnings.is_empty() {
         if !out.is_empty() {
@@ -159,7 +164,7 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
         for v in &verdict.warnings {
             out.push_str(&violation_lines(
                 v,
-                verdict.owners.get(&v.from),
+                verdict.owners.get(&v.from).map(String::as_str),
                 YELLOW,
                 color,
             ));
@@ -360,10 +365,13 @@ fn escape_property(text: &str) -> String {
 pub fn github(verdict: &Verdict, stats: &Stats) -> String {
     let mut out = String::new();
     for (level, v) in verdict.reported() {
-        let text = match &v.because {
+        let mut text = match &v.because {
             Some(because) => format!("{} (because: {because})", v.message),
             None => v.message.clone(),
         };
+        if let Some(owner) = verdict.owners.get(&v.from) {
+            text.push_str(&format!(" (owner: {owner})"));
+        }
         out.push_str(&format!(
             "::{level} file={},line={},title={}::{}\n",
             escape_property(&v.file),

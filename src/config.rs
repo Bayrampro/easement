@@ -229,12 +229,12 @@ pub struct Component {
 pub enum Layer {
     One(String),
     Siblings(Vec<String>),
-    Closed(ClosedLayer),
+    Named(NamedLayer),
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ClosedLayer {
+pub struct NamedLayer {
     name: String,
     #[serde(default)]
     closed: bool,
@@ -243,13 +243,13 @@ pub struct ClosedLayer {
 impl Layer {
     pub fn names(&self) -> Vec<&str> {
         match self {
-            Layer::One(name) | Layer::Closed(ClosedLayer { name, .. }) => vec![name],
+            Layer::One(name) | Layer::Named(NamedLayer { name, .. }) => vec![name],
             Layer::Siblings(names) => names.iter().map(String::as_str).collect(),
         }
     }
 
     fn closed(&self) -> bool {
-        matches!(self, Layer::Closed(ClosedLayer { closed: true, .. }))
+        matches!(self, Layer::Named(NamedLayer { closed: true, .. }))
     }
 }
 
@@ -540,6 +540,15 @@ impl Config {
             }
         }
         let mut layers = BTreeSet::new();
+        if let Some(Layer::Siblings(names)) = self
+            .layers
+            .iter()
+            .find(|l| matches!(l, Layer::Siblings(n) if n.len() < 2))
+        {
+            bail!(
+                "layers: `{names:?}` lists fewer than two siblings; write a lone layer as its name"
+            );
+        }
         for name in self.layers.iter().flat_map(Layer::names) {
             check(name, "layers")?;
             if !layers.insert(name) {
@@ -638,6 +647,21 @@ impl Config {
         } else {
             None
         }
+    }
+
+    /// Why `layers` keep `from` off `to` although both are layers, if they do:
+    /// they are siblings, or a closed layer lies between them.
+    pub fn layer_block(&self, from: &str, to: &str) -> Option<String> {
+        let at = |name: &str| self.layers.iter().position(|l| l.names().contains(&name));
+        let (f, t) = (at(from)?, at(to)?);
+        if f == t && from != to {
+            return Some("they are siblings in one layer".to_string());
+        }
+        let closed = self.layers.get(f + 1..t)?.iter().find(|l| l.closed())?;
+        Some(format!(
+            "the closed layer {} is between them",
+            closed.names().join(", ")
+        ))
     }
 
     /// Whether `from` is a higher layer than `to`, with no closed layer between.
@@ -870,6 +894,17 @@ layers:
         assert!(!c.allows("api", "repo"));
         assert!(!c.allows("web", "repo"));
         assert!(!c.allows("repo", "web"));
+        assert_eq!(
+            c.layer_block("api", "repo").as_deref(),
+            Some("the closed layer service is between them")
+        );
+        assert_eq!(
+            c.layer_block("api", "jobs").as_deref(),
+            Some("they are siblings in one layer")
+        );
+        assert_eq!(c.layer_block("service", "repo"), None);
+        let lone = "version: 1\ncomponents:\n  a: { in: a }\nlayers: [[a]]\n";
+        assert!(format!("{:#}", parse(lone).unwrap_err()).contains("fewer than two siblings"));
         let twice =
             "version: 1\ncomponents:\n  a: { in: a }\n  b: { in: b }\nlayers: [a, [a, b]]\n";
         assert!(format!("{:#}", parse(twice).unwrap_err()).contains("twice"));

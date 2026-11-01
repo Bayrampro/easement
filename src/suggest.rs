@@ -46,12 +46,13 @@ pub fn suggest(
         allowances.unreliable,
     );
 
-    // A forbidden import cannot be allowed: the config would contradict itself.
+    // A forbidden import cannot be allowed: the config would contradict itself,
+    // or route around a closed or sibling layer.
     let mut missing: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     let mut forbidden: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for ((from, to), count) in &used {
         if !config.allows(from, to) {
-            let list = if config.forbids(from, to) {
+            let list = if config.forbids(from, to) || config.layer_block(from, to).is_some() {
                 &mut forbidden
             } else {
                 &mut missing
@@ -73,7 +74,7 @@ pub fn suggest(
     );
     section(
         &mut out,
-        "Imported but forbidden by must_not_depend_on or must_not_reach (fix the imports):",
+        "Imported but forbidden by the config (fix the imports):",
         lines(forbidden),
     );
 

@@ -183,7 +183,10 @@ pub fn why(config: &Config, graph: &Graph, from: &str, to: &str) -> Result<Strin
     } else if let Some(source) = config.allow_source(from, to) {
         format!("is allowed ({source})")
     } else {
-        "is not allowed".to_string()
+        match config.layer_block(from, to) {
+            Some(why) => format!("is not allowed: {why}"),
+            None => "is not allowed".to_string(),
+        }
     };
     let because = config
         .forbid_reason(from, to)
@@ -199,6 +202,11 @@ pub fn why(config: &Config, graph: &Graph, from: &str, to: &str) -> Result<Strin
             "  but {to} may be imported only from {}\n",
             importers.join(", ")
         ));
+    }
+    for name in [from, to] {
+        if let Some(owner) = &config.components[name].owner {
+            out.push_str(&format!("  owner of {name}: {owner}\n"));
+        }
     }
     let of = |file: &str| graph.map.component_of(file);
     let files = file_graph(graph.deps, graph.files);

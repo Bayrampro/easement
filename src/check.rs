@@ -356,9 +356,14 @@ pub fn evaluate(
             } else {
                 "is not allowed"
             };
+            let layer = config
+                .layer_block(from, to)
+                .filter(|_| !config.forbids(from, to))
+                .map(|why| format!(": {why}"))
+                .unwrap_or_default();
             (
                 RuleId::Dependency,
-                format!("{from} -> {to} {how} (imports {})", dep.specifier),
+                format!("{from} -> {to} {how}{layer} (imports {})", dep.specifier),
                 config
                     .forbid_reason(from, to)
                     .or_else(|| config.reason(from)),
