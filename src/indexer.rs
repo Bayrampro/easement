@@ -5,7 +5,7 @@
 //! or missing dependencies is an error, never a quiet gap in the check.
 
 use std::collections::BTreeSet;
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -443,7 +443,7 @@ fn fingerprint(
     files: &[String],
     env: &[(&str, String)],
 ) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = StableHasher::default();
     language.name.hash(&mut hasher);
     env.hash(&mut hasher);
     (language.args)(Path::new("")).hash(&mut hasher);
@@ -464,11 +464,9 @@ fn fingerprint(
         })
         .map(|f| {
             // An unreadable file is a different state from every readable one.
-            let content = std::fs::read(root.join(f)).ok().map(|bytes| {
-                let mut h = DefaultHasher::new();
-                bytes.hash(&mut h);
-                h.finish()
-            });
+            let content = std::fs::read(root.join(f))
+                .ok()
+                .map(|bytes| content_hash(&bytes));
             (f.as_str(), content)
         })
         .collect();
@@ -491,13 +489,7 @@ fn indexer_identity(
     > = std::sync::OnceLock::new();
     let real = std::fs::canonicalize(binary).ok();
     let path = real.clone().unwrap_or_else(|| binary.to_path_buf());
-    let hash = |path: &Path| {
-        std::fs::read(path).ok().map(|bytes| {
-            let mut h = DefaultHasher::new();
-            bytes.hash(&mut h);
-            h.finish()
-        })
-    };
+    let hash = |path: &Path| std::fs::read(path).ok().map(|bytes| content_hash(&bytes));
     let content = CONTENT
         .get_or_init(Default::default)
         .lock()
@@ -511,11 +503,39 @@ fn indexer_identity(
     (real, content, modified)
 }
 
+/// A hasher for the keys of the index cache, which outlives the build of easement that
+/// wrote it: `DefaultHasher` may change its algorithm in any Rust release, BLAKE3 does not.
+/// The bytes still come from std's `Hash`, which Rust does not promise to keep either; a
+/// change there only makes the cache miss once.
+#[derive(Default)]
+struct StableHasher(blake3::Hasher);
+
+impl Hasher for StableHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+
+    fn finish(&self) -> u64 {
+        first_word(self.0.finalize())
+    }
+}
+
+/// The BLAKE3 hash of a file's content, cut to 64 bits.
+fn content_hash(bytes: &[u8]) -> u64 {
+    first_word(blake3::hash(bytes))
+}
+
+fn first_word(hash: blake3::Hash) -> u64 {
+    let mut word = [0; 8];
+    word.copy_from_slice(&hash.as_bytes()[..8]);
+    u64::from_le_bytes(word)
+}
+
 /// The file the index of `dir` is kept in; the name carries the fingerprint, so a
 /// changed project misses it, and `prefix` finds the entries of the same directory
 /// and indexer, which are pruned to the most recently used few.
 fn cache_file(language: &Language, dir: &str, key: u64) -> Option<(PathBuf, String)> {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = StableHasher::default();
     (language.name, dir).hash(&mut hasher);
     let prefix = format!("{:016x}-", hasher.finish());
     Some((
@@ -784,6 +804,15 @@ fn require_installed(root: &Path, dir: &Path, shown: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_keys_hash_with_blake3_which_no_build_of_easement_changes() {
+        // The BLAKE3 test vector: the hash of `abc` begins 64 37 b3 ac 38 46 51 33.
+        assert_eq!(content_hash(b"abc"), 0x3351_4638_acb3_3764);
+        let mut hasher = StableHasher::default();
+        hasher.write(b"abc");
+        assert_eq!(hasher.finish(), 0x3351_4638_acb3_3764);
+    }
 
     #[test]
     fn languages_cover_their_sources_and_roots() {
