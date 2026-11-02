@@ -17,17 +17,7 @@ pub fn suggest(
     uncovered: &[String],
     stale_arrows: &[(String, String)],
 ) -> String {
-    // Files no indexer saw have no edges: a missing import next to them proves nothing.
-    let mut unindexed: BTreeMap<&str, usize> = BTreeMap::new();
-    for file in uncovered {
-        if let Some(component) = map.component_of(file) {
-            *unindexed.entry(component).or_default() += 1;
-        }
-    }
-    let mut used: BTreeMap<(&str, &str), usize> = BTreeMap::new();
-    for e in edges {
-        *used.entry((&e.from, &e.to)).or_default() += 1;
-    }
+    let Counts { unindexed, used } = counts(map, edges, uncovered);
 
     let mut out = String::new();
 
@@ -157,6 +147,19 @@ pub fn removable(
     edges: &[Edge],
     uncovered: &[String],
 ) -> Vec<(String, String)> {
+    let Counts { unindexed, used } = counts(map, edges, uncovered);
+    unused_allowances(config, &used, &unindexed).removable
+}
+
+/// What `suggest` reads off the graph: the files of each component that no indexer
+/// read, and the imports between each pair of components.
+struct Counts<'a> {
+    /// Files no indexer saw have no edges: a missing import next to them proves nothing.
+    unindexed: BTreeMap<&'a str, usize>,
+    used: BTreeMap<(&'a str, &'a str), usize>,
+}
+
+fn counts<'a>(map: &'a ComponentMap, edges: &'a [Edge], uncovered: &[String]) -> Counts<'a> {
     let mut unindexed: BTreeMap<&str, usize> = BTreeMap::new();
     for file in uncovered {
         if let Some(component) = map.component_of(file) {
@@ -167,7 +170,7 @@ pub fn removable(
     for e in edges {
         *used.entry((&e.from, &e.to)).or_default() += 1;
     }
-    unused_allowances(config, &used, &unindexed).removable
+    Counts { unindexed, used }
 }
 
 fn section(out: &mut String, title: &str, items: Vec<String>) {
