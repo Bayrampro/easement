@@ -620,23 +620,27 @@ fn key_env(
 fn indexer_identity(
     binary: &Path,
 ) -> (Option<PathBuf>, Option<u64>, Option<std::time::SystemTime>) {
-    static CONTENT: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<PathBuf, Option<u64>>>,
-    > = std::sync::OnceLock::new();
+    type Seen =
+        std::collections::HashMap<(PathBuf, Option<std::time::SystemTime>, u64), Option<u64>>;
+    static CONTENT: std::sync::OnceLock<std::sync::Mutex<Seen>> = std::sync::OnceLock::new();
     let real = std::fs::canonicalize(binary).ok();
     let path = real.clone().unwrap_or_else(|| binary.to_path_buf());
+    let meta = std::fs::metadata(&path).ok();
+    let modified = meta.as_ref().and_then(|m| m.modified().ok());
+    // Hashed once per process while the file stays as it is; an indexer upgraded in
+    // place during `--watch` has another time or size, and is hashed again.
+    let seen = (path.clone(), modified, meta.map_or(0, |m| m.len()));
     let hash = |path: &Path| std::fs::read(path).ok().map(|bytes| content_hash(&bytes));
     let content = CONTENT
         .get_or_init(Default::default)
         .lock()
-        .map(|mut seen| *seen.entry(path.clone()).or_insert_with(|| hash(&path)))
+        .map(|mut known| *known.entry(seen).or_insert_with(|| hash(&path)))
         .unwrap_or_else(|_| hash(&path));
-    let modified = if content.is_some() {
-        None
-    } else {
-        std::fs::metadata(binary).and_then(|m| m.modified()).ok()
-    };
-    (real, content, modified)
+    (
+        real,
+        content,
+        if content.is_some() { None } else { modified },
+    )
 }
 
 /// A hasher for the keys of the index cache, which outlives the build of easement that
@@ -1033,6 +1037,17 @@ mod tests {
             ("GOFLAGS".to_string(), "-tags=x".to_string())
         );
         assert!(key_env(ts, inherited(), &[]).is_empty());
+    }
+
+    #[test]
+    fn an_indexer_replaced_in_place_has_another_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = dir.path().join("scip-x");
+        std::fs::write(&binary, b"version 1").unwrap();
+        let before = indexer_identity(&binary);
+        assert_eq!(before, indexer_identity(&binary));
+        std::fs::write(&binary, b"version 2, longer").unwrap();
+        assert_ne!(before.1, indexer_identity(&binary).1);
     }
 
     #[test]
