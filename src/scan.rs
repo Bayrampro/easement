@@ -79,6 +79,9 @@ pub struct Scan {
     /// Source files of an indexed language that the indexer did not cover,
     /// for example files outside every `tsconfig.json`.
     pub uncovered: Vec<String>,
+    /// Checked files that use a name of a package the indexer left unnamed,
+    /// which no rule on names judged.
+    pub unnamed_uses: Vec<String>,
     /// Indexers that ran, and indexes taken from the cache.
     pub indexed: (usize, usize),
 }
@@ -238,6 +241,12 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
             .cloned(),
     );
     unread.sort();
+    let unnamed_uses = facts
+        .unnamed
+        .iter()
+        .filter(|file| is_source(Path::new(file.as_str())))
+        .cloned()
+        .collect();
     let symbols = facts
         .symbols
         .into_iter()
@@ -258,6 +267,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         symbols,
         suppressions,
         uncovered: indexed.uncovered,
+        unnamed_uses,
         indexed: (indexed.ran, indexed.cached),
     })
 }

@@ -105,6 +105,7 @@ fn unread_reasons(stats: &Stats) -> Vec<String> {
     let mut reasons = Vec::new();
     reasons.extend(stats.unused_partial.iter().cloned());
     reasons.extend(stats.manifests_partial.iter().cloned());
+    reasons.extend(stats.symbols_partial.iter().cloned());
     if !stats.naming_unseen.is_empty() {
         reasons.push(naming_unseen(stats));
     }
@@ -279,11 +280,19 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
         out.push_str(&paint(color, YELLOW, &naming_unseen(stats)));
         out.push('\n');
     }
-    if !stats.unused_partial.is_empty() || !stats.manifests_partial.is_empty() {
+    if !stats.unused_partial.is_empty()
+        || !stats.manifests_partial.is_empty()
+        || !stats.symbols_partial.is_empty()
+    {
         if !out.is_empty() {
             out.push('\n');
         }
-        for reason in stats.unused_partial.iter().chain(&stats.manifests_partial) {
+        for reason in stats
+            .unused_partial
+            .iter()
+            .chain(&stats.manifests_partial)
+            .chain(&stats.symbols_partial)
+        {
             out.push_str(&paint(color, YELLOW, reason));
             out.push('\n');
         }

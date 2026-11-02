@@ -571,6 +571,9 @@ fn ruby_use(
 pub struct Facts {
     pub deps: Vec<Dep>,
     pub symbols: Vec<SymbolRef>,
+    /// With `symbols`, the files that use a name of an unnamed package, whose
+    /// uses are left out of `symbols`.
+    pub unnamed: BTreeSet<String>,
 }
 
 /// One `Dep` per file and module it refers to, at the first line that does:
@@ -639,6 +642,7 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
     };
     let mut deps = Vec::new();
     let mut uses = Vec::new();
+    let mut unnamed = BTreeSet::new();
     for document in documents {
         // Rust writes `crate::domain::order::Order` as a reference to every module on
         // the path, and Ruby `Shop::Domain::Order` as one to every module and the class;
@@ -744,6 +748,7 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                     }
                     // Which package an unnamed name belongs to the index does not say.
                     if home.is_none() && reference.symbol.starts_with(UNNAMED_NPM) {
+                        unnamed.insert(document.path.clone());
                         continue;
                     }
                     let target = match home {
@@ -777,6 +782,7 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
     Facts {
         deps,
         symbols: uses,
+        unnamed,
     }
 }
 

@@ -892,6 +892,47 @@ fn a_package_whose_types_sit_under_a_marker_package_json_is_judged_by_its_name()
 }
 
 #[test]
+fn a_name_of_a_package_the_index_left_unnamed_is_flagged_as_unjudged() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  web: { in: src/web }\nrules:\n  web: { forbid_symbol: [nested.Thing] }\n",
+        ),
+        (
+            "package.json",
+            "{\"name\": \"app\", \"dependencies\": {\"nested\": \"1\"}}\n",
+        ),
+        (
+            "node_modules/nested/package.json",
+            "{\"name\": \"nested\", \"version\": \"1.0.0\", \"types\": \"esm/index.d.ts\"}\n",
+        ),
+        (
+            "node_modules/nested/esm/package.json",
+            "{\"type\": \"module\"}\n",
+        ),
+        (
+            "node_modules/nested/esm/index.d.ts",
+            "export declare class Thing {}\n",
+        ),
+        (
+            "src/web/a.ts",
+            "import { Thing } from \"nested\";\nexport const t = new Thing();\n",
+        ),
+    ]);
+    let out = easement(&root, &["check", "--format", "json"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let partial = report["stats"]["symbols_partial"][0].as_str().unwrap();
+    assert!(partial.contains("src/web/a.ts"), "{partial}");
+    easement(&root, &["check"]).success().stdout(contains(
+        "`forbid_symbol` cannot tell the npm package of the names used in src/web/a.ts",
+    ));
+}
+
+#[test]
 fn layers_forbidden_externals_metrics_and_strict() {
     let (_tmp, root) = fixture("policy");
     let out = easement(&root, &["check", "--format", "json"])

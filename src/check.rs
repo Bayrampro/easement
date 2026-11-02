@@ -229,6 +229,9 @@ pub struct Stats {
     /// Why `manifests` left some imports unchecked.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub manifests_partial: Vec<String>,
+    /// Why `forbid_symbol` left some uses of names unchecked.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub symbols_partial: Vec<String>,
     /// Why `unused` took some files as used without judging them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unused_partial: Vec<String>,
@@ -1031,6 +1034,23 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
         }
     }
     found
+}
+
+/// Why `forbid_symbol` left uses of names unchecked: the files in `unnamed`
+/// use names of an npm package that the indexer left unnamed, because a
+/// `package.json` with no `name` inside it (`{"type": "module"}`) hides it.
+pub fn symbols_partial(config: &Config, unnamed: &[String]) -> Vec<String> {
+    const SHOWN: usize = 3;
+    if unnamed.is_empty() || config.rules.values().all(|r| r.forbid_symbol.is_empty()) {
+        return Vec::new();
+    }
+    let mut files = unnamed[..unnamed.len().min(SHOWN)].join(", ");
+    if unnamed.len() > SHOWN {
+        files.push_str(&format!(" and {} more files", unnamed.len() - SHOWN));
+    }
+    vec![format!(
+        "`forbid_symbol` cannot tell the npm package of the names used in {files}: a `package.json` without `name` inside the package hides it from the indexer, so those uses were not checked"
+    )]
 }
 
 /// Whether `pattern` (`pkg.Name` or `import/path.Name`) names the symbol
