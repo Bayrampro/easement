@@ -1,6 +1,6 @@
 ---
 source: tests/cli.rs
-assertion_line: 113
+assertion_line: 111
 expression: report
 ---
 {
@@ -12,6 +12,7 @@ expression: report
   "stats": {
     "external_deps": 1,
     "files": 5,
+    "indexed": 1,
     "internal_deps": 6,
     "suppressed": 0,
     "unmapped_files": 1

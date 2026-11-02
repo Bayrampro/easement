@@ -4,7 +4,8 @@
 //! build system (`go.mod`, `tsconfig.json`) does. A missing indexer, a failed run
 //! or missing dependencies is an error, never a quiet gap in the check.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -40,6 +41,23 @@ pub struct Language {
     /// path): what the indexer could see. Another language's sources, docs and assets are left
     /// out, so a change to them reuses the index. When in doubt, a file is in.
     inputs: fn(&str) -> bool,
+    /// Which inherited environment variables change what the indexer writes
+    /// (`GOFLAGS`, `PYTHONPATH`); their values are in the cache key.
+    env: fn(&str) -> bool,
+}
+
+/// Go's own variables (`GOFLAGS`, `GOOS`, `GO111MODULE`) have no `_` after `GO`,
+/// unlike `GOOGLE_APPLICATION_CREDENTIALS`, which a CI job may point at another
+/// file every run; cgo's are `CGO_*`.
+fn go_env(name: &str) -> bool {
+    name.strip_prefix("GO").is_some_and(|rest| {
+        rest.bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+    }) || name.starts_with("CGO_")
+}
+
+fn starts_with_any(name: &str, prefixes: &[&str]) -> bool {
+    prefixes.iter().any(|prefix| name.starts_with(prefix))
 }
 
 fn nothing_needed(_: &Path, _: &Path, _: &str) -> Result<()> {
@@ -102,6 +120,7 @@ pub const LANGUAGES: &[Language] = &[
         writes_in_cwd: None,
         needs: nothing_needed,
         inputs: go_inputs,
+        env: go_env,
     },
     Language {
         name: "typescript",
@@ -124,6 +143,7 @@ pub const LANGUAGES: &[Language] = &[
         writes_in_cwd: None,
         needs: require_installed,
         inputs: typescript_inputs,
+        env: |_| false,
     },
     Language {
         name: "python",
@@ -156,6 +176,7 @@ pub const LANGUAGES: &[Language] = &[
         writes_in_cwd: None,
         needs: nothing_needed,
         inputs: every_file,
+        env: |name| starts_with_any(name, &["PYTHON", "VIRTUAL_ENV", "CONDA_PREFIX"]),
     },
     Language {
         name: "php",
@@ -171,6 +192,7 @@ pub const LANGUAGES: &[Language] = &[
         writes_in_cwd: Some("index.scip"),
         needs: require_composer,
         inputs: every_file,
+        env: |_| false,
     },
     Language {
         name: "java",
@@ -186,6 +208,7 @@ pub const LANGUAGES: &[Language] = &[
         writes_in_cwd: None,
         needs: nothing_needed,
         inputs: every_file,
+        env: |name| starts_with_any(name, &["JAVA_", "JDK_JAVA_OPTIONS", "MAVEN_"]),
     },
     Language {
         name: "csharp",
@@ -201,6 +224,7 @@ pub const LANGUAGES: &[Language] = &[
         writes_in_cwd: None,
         needs: nothing_needed,
         inputs: every_file,
+        env: |name| starts_with_any(name, &["DOTNET_", "MSBUILD", "NUGET_"]),
     },
     Language {
         name: "ruby",
@@ -224,6 +248,7 @@ pub const LANGUAGES: &[Language] = &[
         writes_in_cwd: None,
         needs: nothing_needed,
         inputs: every_file,
+        env: |name| starts_with_any(name, &["BUNDLE_", "GEM_"]),
     },
     Language {
         name: "rust",
@@ -246,6 +271,7 @@ pub const LANGUAGES: &[Language] = &[
         writes_in_cwd: None,
         needs: nothing_needed,
         inputs: every_file,
+        env: |name| starts_with_any(name, &["RUSTFLAGS", "RUSTC", "CARGO_"]),
     },
 ];
 
@@ -514,7 +540,8 @@ fn cache_dir() -> Option<PathBuf> {
     Some(user.join("easement"))
 }
 
-/// Everything that decides what an indexer would write: the indexer itself and
+/// Everything that decides what an indexer would write: the indexer itself, its
+/// environment ([`key_env`]) and
 /// the name and content of every project file under `dir` that the indexer reads
 /// (`Language::inputs`, all but build output), plus the files that sit directly in the directories above `dir`
 /// (`tsconfig.base.json`, `go.work`, a root `package.json`), which the project
@@ -528,7 +555,7 @@ fn fingerprint(
     root: &Path,
     dir: &str,
     files: &[String],
-    env: &[(&str, String)],
+    env: &[(String, String)],
 ) -> u64 {
     let mut hasher = StableHasher::default();
     language.name.hash(&mut hasher);
@@ -560,6 +587,28 @@ fn fingerprint(
     seen.sort();
     seen.hash(&mut hasher);
     hasher.finish()
+}
+
+/// The environment an indexer runs with, as far as it changes the index: the
+/// inherited variables that `Language::env` names, with what easement sets for
+/// the run over them.
+fn key_env(
+    language: &Language,
+    inherited: impl IntoIterator<Item = (OsString, OsString)>,
+    set: &[(&str, String)],
+) -> Vec<(String, String)> {
+    let mut env: BTreeMap<String, String> = inherited
+        .into_iter()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.to_string_lossy().into_owned(),
+            )
+        })
+        .filter(|(k, _)| (language.env)(k))
+        .collect();
+    env.extend(set.iter().map(|(k, v)| (k.to_string(), v.clone())));
+    env.into_iter().collect()
 }
 
 /// What tells one build of an indexer from another: where it really is (symbolic links
@@ -723,7 +772,14 @@ fn index_dir(
             language.install
         )
     })?;
-    let key = fingerprint(language, &binary, root, dir, files, &env);
+    let key = fingerprint(
+        language,
+        &binary,
+        root,
+        dir,
+        files,
+        &key_env(language, std::env::vars_os(), &env),
+    );
     let cached = (cache != CacheUse::Off)
         .then(|| cache_file(language, dir, key))
         .flatten();
@@ -950,6 +1006,33 @@ mod tests {
         });
         assert_eq!(results, Err("second"));
         assert_eq!(started.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn the_cache_key_reads_the_environment_the_indexer_inherits() {
+        let go = &LANGUAGES[0];
+        let ts = &LANGUAGES[1];
+        let inherited = || {
+            [
+                ("GOFLAGS", "-tags=race"),
+                ("HOME", "/home/a"),
+                ("CGO_ENABLED", "0"),
+                // Not Go's: a CI job may point it at another file every run.
+                ("GOOGLE_APPLICATION_CREDENTIALS", "/tmp/gha-creds-1.json"),
+            ]
+            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+        };
+        assert_eq!(
+            key_env(go, inherited(), &[]),
+            [("CGO_ENABLED", "0"), ("GOFLAGS", "-tags=race")]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        );
+        // What easement sets for the run wins over what it inherits.
+        assert_eq!(
+            key_env(go, inherited(), &[("GOFLAGS", "-tags=x".to_string())])[1],
+            ("GOFLAGS".to_string(), "-tags=x".to_string())
+        );
+        assert!(key_env(ts, inherited(), &[]).is_empty());
     }
 
     #[test]

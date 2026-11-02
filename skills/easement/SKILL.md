@@ -20,7 +20,7 @@ Run `easement explain <path>` for the file or directory you are about to add or 
 Run `easement check`. It exits 0 when the code matches the config, 1 on violations and 2 on an error.
 
 - On a branch, `easement check --diff <base>` judges only the lines you added. Run the full `easement check` too when `easement.yml` or the baseline changed, because a rule change touches no import line.
-- `--format json` gives the same report as data. When `confidence` is `partial`, a pass covers only the code an indexer read: say so, and name the files in `stats.uncovered`.
+- `--format json` gives the same report as data. When `confidence` is `partial`, a pass covers only the code an indexer read: say so, and name the files in `stats.uncovered`. When `cached` is set, the indexes came from the cache; after changing dependencies outside the project without a lock file, run `easement check --no-cache`.
 - On exit 2, read the message. For a missing indexer or missing dependencies, run `easement doctor`.
 - `easement impact --diff <base>` lists every file that depends on your change: run the tests among them. When it says `Partial`, files no indexer read or files the change deletes may hide more.
 

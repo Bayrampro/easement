@@ -102,16 +102,17 @@ fn go_reports_layer_violation() {
 #[test]
 fn the_report_of_check_is_pinned() {
     let (_tmp, root) = fixture("go");
-    let mut report: serde_json::Value = serde_json::from_str(&stdout_of(
-        easement(&root, &["check", "--format", "json"]).code(1),
+    // A cache of its own: the first run indexes, the second reads the cache.
+    let cache = TempDir::new().unwrap();
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement_cached(&root, &["check", "--format", "json"], cache.path()).code(1),
     ))
     .unwrap();
-    // Whether the index came from the cache depends on which test ran first.
-    let stats = report["stats"].as_object_mut().unwrap();
-    stats.remove("indexed");
-    stats.remove("from_cache");
     insta::assert_json_snapshot!("check_json", report);
-    insta::assert_snapshot!("check_text", stdout_of(easement(&root, &["check"]).code(1)));
+    insta::assert_snapshot!(
+        "check_text",
+        stdout_of(easement_cached(&root, &["check"], cache.path()).code(1))
+    );
 }
 
 #[test]
@@ -1704,6 +1705,29 @@ fn go_tags_bring_files_behind_a_build_constraint_into_the_index() {
     easement(&root, &["check"])
         .success()
         .stdout(contains("not covered").not());
+}
+
+#[test]
+fn an_index_built_with_other_goflags_is_not_reused() {
+    let (_tmp, root) = fixture("gotags");
+    Command::cargo_bin("easement")
+        .unwrap()
+        .current_dir(&root)
+        .env("EASEMENT_CACHE_DIR", test_cache())
+        .env("GOFLAGS", "-tags=race")
+        .args(["check"])
+        .assert()
+        .success()
+        .stdout(contains("not covered").not());
+    // The race file is not built without the tag the first run inherited.
+    easement(&root, &["check"])
+        .success()
+        .stdout(contains("  pkg/race.go"));
+    // The same run again reads its index from the cache, and says so.
+    easement(&root, &["check"])
+        .success()
+        .stdout(contains("came from the cache"))
+        .stdout(contains("--no-cache"));
 }
 
 #[test]

@@ -21,6 +21,10 @@ struct JsonReport<'a> {
     /// `full`, or `partial` when `passed` rests on code the check could not read.
     confidence: &'static str,
     confidence_reasons: Vec<String>,
+    /// Set when indexes came from the cache: what their key leaves out and how
+    /// to index again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cached: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     diff: Option<DiffInfo<'a>>,
     stats: &'a Stats,
@@ -38,6 +42,17 @@ fn naming_unseen(stats: &Stats) -> String {
         "`defines` cannot see the types of .{} files, which are read without an index, so their names were not checked",
         stats.naming_unseen.join(", .")
     )
+}
+
+/// What a verdict over cached indexes rests on. Not a reason for `partial`: the
+/// key holds what decides an index, but not dependencies outside the project.
+fn cache_note(stats: &Stats) -> Option<String> {
+    (stats.from_cache > 0).then(|| {
+        format!(
+            "{} index(es) came from the cache, keyed on the project files, the indexer and its environment but not on dependencies outside the project; if those changed without a lock file, run with `--no-cache` to index again",
+            stats.from_cache
+        )
+    })
 }
 
 /// Why a verdict is only as good as the code the check could read.
@@ -90,6 +105,7 @@ pub fn json(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>) -> Stri
             "partial"
         },
         confidence_reasons: reasons,
+        cached: cache_note(stats),
         diff: changes.map(|c| DiffInfo {
             base: &c.base,
             merge_base: &c.merge_base,
@@ -255,6 +271,13 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
                 stats.std_unknown.join(", .")
             ),
         ));
+        out.push('\n');
+    }
+    if let Some(note) = cache_note(stats) {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&note);
         out.push('\n');
     }
     if !out.is_empty() {
@@ -561,5 +584,28 @@ mod tests {
         });
         assert!(clean.contains("tests=\"1\" failures=\"0\""));
         assert!(clean.contains("name=\"architecture\"/>"));
+    }
+
+    #[test]
+    fn a_cache_hit_is_named_with_how_to_index_again() {
+        let stats = Stats {
+            indexed: 1,
+            from_cache: 2,
+            ..Stats::default()
+        };
+        let report: serde_json::Value =
+            serde_json::from_str(&json(&verdict(), &stats, None)).unwrap();
+        let cached = report["cached"].as_str().unwrap();
+        assert!(
+            cached.contains("2 index(es)") && cached.contains("--no-cache"),
+            "{cached}"
+        );
+        let out = text(&verdict(), &stats, None);
+        assert!(out.contains(cached), "{out}");
+
+        let fresh: serde_json::Value =
+            serde_json::from_str(&json(&verdict(), &Stats::default(), None)).unwrap();
+        assert!(fresh.get("cached").is_none());
+        assert!(!text(&verdict(), &Stats::default(), None).contains("--no-cache"));
     }
 }
