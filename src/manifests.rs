@@ -154,7 +154,10 @@ fn names_in_source(kind: Manifest, source: &str, package: &str) -> bool {
             .expect("valid regex");
             quoted
                 .captures_iter(source)
-                .any(|c| Manifest::Npm.package(&c[1]) == package)
+                .map(|c| c[1].to_string())
+                // A path names a file, not a package.
+                .filter(|specifier| !specifier.starts_with(['.', '/']))
+                .any(|specifier| Manifest::Npm.package(&specifier) == package)
         }
         Manifest::Cargo => {
             let name = regex::escape(package);
@@ -391,6 +394,10 @@ mod tests {
         assert!(names_in_source(Manifest::Npm, ts, "pkg"));
         assert!(!names_in_source(Manifest::Npm, ts, "node"));
         assert!(!names_in_source(Manifest::Npm, ts, "b"));
+        // A path names a file of the project, not the package `.` or ``.
+        let relative = "import { h } from \"./helper\";\nimport x from \"/abs/x\";\n";
+        assert!(!names_in_source(Manifest::Npm, relative, "."));
+        assert!(!names_in_source(Manifest::Npm, relative, ""));
         let rs = "use serde::de::Error;\nextern crate libc;\nfn f() { other::x(); }\n";
         assert!(names_in_source(Manifest::Cargo, rs, "serde"));
         assert!(names_in_source(Manifest::Cargo, rs, "libc"));

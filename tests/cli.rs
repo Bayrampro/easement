@@ -802,6 +802,96 @@ fn an_external_module_the_manifest_does_not_declare_fails() {
 }
 
 #[test]
+fn a_package_whose_types_sit_under_a_marker_package_json_is_judged_by_its_name() {
+    // `{"type": "module"}` in a subdirectory of a package (zod, hono, @simplewebauthn/browser)
+    // hides the package from scip-typescript: what is defined under it has no package.
+    let marker = "{\"type\": \"module\"}\n";
+    let stub = "declare const stub: any;\nexport default stub;\n";
+    let nested = |name: &'static str| {
+        [
+            (
+                format!("node_modules/{name}/package.json"),
+                format!(
+                    "{{\"name\": \"{name}\", \"version\": \"1.0.0\", \"types\": \"esm/index.d.ts\"}}\n"
+                ),
+            ),
+            (
+                format!("node_modules/{name}/esm/package.json"),
+                marker.into(),
+            ),
+            (format!("node_modules/{name}/esm/index.d.ts"), stub.into()),
+        ]
+    };
+    let mut files: Vec<(String, String)> = vec![
+        (
+            "easement.yml".into(),
+            "version: 1\nmanifests: true\ncomponents:\n  web: { in: src/web }\nrules:\n  web: { forbid_external: [nested-ok] }\n".into(),
+        ),
+        (
+            "package.json".into(),
+            "{\"name\": \"app\", \"dependencies\": {\"zodlike\": \"1\", \"nested-ok\": \"1\"}}\n"
+                .into(),
+        ),
+        (
+            "node_modules/zodlike/package.json".into(),
+            "{\"name\": \"zodlike\", \"version\": \"1.0.0\", \"types\": \"index.d.ts\"}\n".into(),
+        ),
+        (
+            "node_modules/zodlike/index.d.ts".into(),
+            "export * as z from \"./v4/external\";\n".into(),
+        ),
+        ("node_modules/zodlike/v4/package.json".into(), marker.into()),
+        (
+            "node_modules/zodlike/v4/external.d.ts".into(),
+            "export declare function string(): string;\n".into(),
+        ),
+        (
+            "src/web/helper.ts".into(),
+            "export const helper = 1;\n".into(),
+        ),
+        (
+            "src/web/a.ts".into(),
+            "import { helper } from \"./helper\";\nimport { z } from \"zodlike\";\nimport a from \"nested-a\";\nimport b from \"nested-b\";\nimport ok from \"nested-ok\";\nexport const all = [helper, z.string(), a, b, ok];\n".into(),
+        ),
+    ];
+    for name in ["nested-a", "nested-b", "nested-ok"] {
+        files.extend(nested(name));
+    }
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, t)| (p.as_str(), t.as_str()))
+        .collect();
+    let (_tmp, root) = project(&files);
+    let out = easement(&root, &["check", "--format", "json"])
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let mut found: Vec<(String, u64, String)> = report["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| {
+            (
+                v["rule"].as_str().unwrap().into(),
+                v["line"].as_u64().unwrap(),
+                v["target"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("external".to_string(), 5, "nested-ok".to_string()),
+            ("undeclared".to_string(), 3, "nested-a".to_string()),
+            ("undeclared".to_string(), 4, "nested-b".to_string()),
+        ]
+    );
+}
+
+#[test]
 fn layers_forbidden_externals_metrics_and_strict() {
     let (_tmp, root) = fixture("policy");
     let out = easement(&root, &["check", "--format", "json"])

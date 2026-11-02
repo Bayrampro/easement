@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use protobuf::Message;
-use scip::types::{Index, Occurrence, occurrence::Typed_range};
+use scip::types::{Index, Occurrence, PositionEncoding, occurrence::Typed_range};
 
 use crate::check::SymbolRef;
 use crate::lang::Target;
@@ -30,7 +30,15 @@ pub struct Reference {
     /// 1-based line.
     pub line: usize,
     pub symbol: String,
+    /// For a reference into an unnamed npm package (see `UNNAMED_NPM`) that
+    /// stands on the string of an import: the module the string spells.
+    pub spelled: Option<String>,
 }
+
+/// How scip-typescript begins a symbol defined under a `package.json` with no
+/// `name`, such as the `{"type": "module"}` that marks `esm/` in a published
+/// package: which package that is, only the import in the source still says.
+const UNNAMED_NPM: &str = "scip-typescript npm . . ";
 
 /// A source file of the index, with the paths relative to the project root.
 #[derive(Debug, Clone, Default)]
@@ -49,9 +57,10 @@ pub struct Document {
 pub struct Documents(pub Vec<Document>);
 
 /// Parses an index written by an indexer that ran in `base` (a directory
-/// relative to the project root, `""` for the root itself). Documents outside
-/// the project, such as generated files in a build cache, are dropped.
-pub fn parse(bytes: &[u8], base: &Path) -> Result<Vec<Document>> {
+/// relative to the project `root`, `""` for the root itself). Documents outside
+/// the project, such as generated files in a build cache, are dropped. The
+/// source of a document is read only for a reference into an unnamed package.
+pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
     let index = Index::parse_from_bytes(bytes).context("not a SCIP index")?;
     let prefix = crate::scan::slash(base);
     let mut documents = Vec::new();
@@ -69,6 +78,8 @@ pub fn parse(bytes: &[u8], base: &Path) -> Result<Vec<Document>> {
             "" => relative.to_string(),
             base => format!("{base}/{relative}"),
         };
+        let encoding = document.position_encoding.enum_value_or_default();
+        let mut source: Option<Vec<String>> = None;
         let mut parsed = Document {
             path,
             ..Document::default()
@@ -85,15 +96,72 @@ pub fn parse(bytes: &[u8], base: &Path) -> Result<Vec<Document>> {
                 }
                 parsed.definitions.push(occurrence.symbol.clone());
             } else {
+                let spelled = match occurrence.symbol.starts_with(UNNAMED_NPM) {
+                    true => {
+                        let lines = source.get_or_insert_with(|| {
+                            std::fs::read_to_string(root.join(&parsed.path))
+                                .unwrap_or_default()
+                                .lines()
+                                .map(str::to_string)
+                                .collect()
+                        });
+                        spelled_module(lines, occurrence, encoding)
+                    }
+                    false => None,
+                };
                 parsed.references.push(Reference {
                     line: line_of(occurrence) + 1,
                     symbol: occurrence.symbol.clone(),
+                    spelled,
                 });
             }
         }
         documents.push(parsed);
     }
     Ok(documents)
+}
+
+/// The package an import names when `occurrence` stands on its string
+/// (`"hono"`, `'@scope/pkg/sub'`); `None` for a name, a relative path or a
+/// range over more than one line.
+fn spelled_module(
+    lines: &[String],
+    occurrence: &Occurrence,
+    encoding: PositionEncoding,
+) -> Option<String> {
+    let (line, start, end) = match (&occurrence.typed_range, occurrence.range.as_slice()) {
+        (Some(Typed_range::SingleLineRange(r)), _) => (r.line, r.start_character, r.end_character),
+        (Some(_), _) => return None,
+        (None, [line, start, end]) => (*line, *start, *end),
+        (None, _) => return None,
+    };
+    let text = lines.get(usize::try_from(line).ok()?)?;
+    // The byte offset of a column, counted in the code units of the index;
+    // TypeScript counts UTF-16 ones when the index does not say.
+    let offset = |column: i32| -> Option<usize> {
+        let column = usize::try_from(column).ok()?;
+        let mut units = 0;
+        for (byte, c) in text.char_indices() {
+            if units == column {
+                return Some(byte);
+            }
+            units += match encoding {
+                PositionEncoding::UTF8CodeUnitOffsetFromLineStart => c.len_utf8(),
+                PositionEncoding::UTF32CodeUnitOffsetFromLineStart => 1,
+                _ => c.len_utf16(),
+            };
+        }
+        (units == column).then_some(text.len())
+    };
+    let quoted = text.get(offset(start)?..offset(end)?)?;
+    let module = ['"', '\'', '`']
+        .into_iter()
+        .find_map(|quote| quoted.strip_prefix(quote)?.strip_suffix(quote))?;
+    let bare = !module.is_empty()
+        && !module.starts_with(['.', '/'])
+        && !module.contains("${")
+        && !module.contains(['"', '\'', '`']);
+    bare.then(|| module.to_string())
 }
 
 /// The start line, 0-based, from the typed range or the deprecated one.
@@ -641,17 +709,23 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                     if internal == Some(document.path.as_str()) {
                         continue;
                     }
+                    let unnamed = internal.is_none() && reference.symbol.starts_with(UNNAMED_NPM);
                     // C# gives its own types and the framework's the same header, so there
                     // an undefined type is always external.
                     if internal.is_none()
+                        && !unnamed
                         && parsed.scheme != "scip-dotnet"
                         && own.contains(&parsed.owner())
                     {
                         continue;
                     }
-                    let module = match internal {
-                        Some(_) => String::new(),
-                        None => parsed.external_module(),
+                    // Only the string of the import names an unnamed package; a name
+                    // bound to one of its modules (`z` of `import { z } from "zod"`)
+                    // stands on a line whose string already did.
+                    let module = match (internal, unnamed) {
+                        (Some(_), _) => String::new(),
+                        (None, true) => reference.spelled.clone().unwrap_or_default(),
+                        (None, false) => parsed.external_module(),
                     };
                     if internal.is_none() && module.is_empty() {
                         continue;
@@ -666,6 +740,10 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                     }
                     let home = internal;
                     if home == Some(document.path.as_str()) {
+                        continue;
+                    }
+                    // Which package an unnamed name belongs to the index does not say.
+                    if home.is_none() && reference.symbol.starts_with(UNNAMED_NPM) {
                         continue;
                     }
                     let target = match home {
@@ -737,6 +815,7 @@ mod tests {
                 .map(|(line, symbol)| Reference {
                     line: *line,
                     symbol: symbol.to_string(),
+                    spelled: None,
                 })
                 .collect(),
         }
@@ -1072,6 +1151,48 @@ mod tests {
     }
 
     #[test]
+    fn an_unnamed_package_is_what_the_string_of_its_import_spells() {
+        let at = |line: i32, start: i32, end: i32| {
+            let mut occurrence = Occurrence::new();
+            occurrence.range = vec![line, start, end];
+            occurrence
+        };
+        let lines: Vec<String> = [
+            "import { Hono } from 'hono'",
+            "import x from \"./local\"",
+            // `é` is one UTF-16 unit and two UTF-8 bytes.
+            "/*é*/ import a from \"@scope/pkg/sub\"",
+        ]
+        .map(str::to_string)
+        .to_vec();
+        let utf16 = PositionEncoding::UnspecifiedPositionEncoding;
+        assert_eq!(
+            spelled_module(&lines, &at(0, 21, 27), utf16).as_deref(),
+            Some("hono")
+        );
+        assert_eq!(spelled_module(&lines, &at(0, 9, 13), utf16), None, "a name");
+        assert_eq!(
+            spelled_module(&lines, &at(1, 14, 23), utf16),
+            None,
+            "a path"
+        );
+        assert_eq!(
+            spelled_module(&lines, &at(2, 20, 36), utf16).as_deref(),
+            Some("@scope/pkg/sub")
+        );
+        let utf8 = PositionEncoding::UTF8CodeUnitOffsetFromLineStart;
+        assert_eq!(
+            spelled_module(&lines, &at(2, 21, 37), utf8).as_deref(),
+            Some("@scope/pkg/sub")
+        );
+        assert_eq!(
+            spelled_module(&lines, &at(9, 0, 1), utf16),
+            None,
+            "no such line"
+        );
+    }
+
+    #[test]
     fn documents_outside_the_project_are_dropped_and_paths_rebased() {
         let mut index = Index::new();
         for path in ["a.go", "../../go-build/x.go", "C:\\cache\\y.go", "b\\c.go"] {
@@ -1088,7 +1209,8 @@ mod tests {
             index.documents.push(document);
         }
         let bytes = index.write_to_bytes().unwrap();
-        let documents = parse(&bytes, Path::new("services/api")).unwrap();
+        let documents =
+            parse(&bytes, Path::new("/nonexistent"), Path::new("services/api")).unwrap();
         let paths: Vec<_> = documents.iter().map(|d| d.path.as_str()).collect();
         assert_eq!(paths, ["services/api/a.go", "services/api/b/c.go"]);
         assert_eq!(documents[0].references[0].line, 5);

@@ -917,7 +917,7 @@ fn index_dir(
         .flatten();
     if let Some((path, _)) = &cached
         && let Ok(bytes) = std::fs::read(path)
-        && let Ok(documents) = scip::parse(&bytes, Path::new(dir))
+        && let Ok(documents) = scip::parse(&bytes, root, Path::new(dir))
         && !documents.is_empty()
     {
         // Recency decides what pruning keeps: best effort, a failure only ages the entry.
@@ -989,7 +989,7 @@ fn index_dir(
         let _ = std::fs::remove_file(&file);
     }
     let bytes = bytes?;
-    let documents = scip::parse(&bytes, Path::new(dir))
+    let documents = scip::parse(&bytes, root, Path::new(dir))
         .with_context(|| format!("cannot read the index of {} in {shown}", language.binary))?;
     if documents.is_empty() {
         bail!(
