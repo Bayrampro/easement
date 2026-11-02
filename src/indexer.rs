@@ -61,6 +61,79 @@ fn starts_with_any(name: &str, prefixes: &[&str]) -> bool {
     prefixes.iter().any(|prefix| name.starts_with(prefix))
 }
 
+/// pyright asks the `python3` on the path for its search paths, and scip-python
+/// runs `pip` for the installed packages: `PYTHONPATH` changes what an import
+/// resolves to. `PYTHONHASHSEED` is left out: tox sets a new one every run.
+/// `VIRTUAL_ENV` and `CONDA_PREFIX` stand for which interpreter that is.
+fn python_env(name: &str) -> bool {
+    (name.starts_with("PYTHON") && name != "PYTHONHASHSEED")
+        || name.starts_with("PIP_")
+        || matches!(name, "VIRTUAL_ENV" | "CONDA_PREFIX")
+}
+
+/// scip-java runs Maven or Gradle with the JDK of `JAVA_HOME`: `MAVEN_ARGS`
+/// can skip the build, `ORG_GRADLE_PROJECT_*` sets project properties. Not
+/// `JAVA_*` as a prefix: CI runners name every JDK they carry
+/// (`JAVA_HOME_17_X64`), used or not.
+fn java_env(name: &str) -> bool {
+    matches!(
+        name,
+        "JAVA_HOME"
+            | "JAVA_OPTS"
+            | "JAVA_TOOL_OPTIONS"
+            | "JDK_JAVA_OPTIONS"
+            | "_JAVA_OPTIONS"
+            | "GRADLE_OPTS"
+            | "GRADLE_USER_HOME"
+    ) || starts_with_any(name, &["MAVEN_", "ORG_GRADLE_PROJECT_"])
+}
+
+/// MSBuild reads every environment variable as a property, by a name of any
+/// case (`DefineConstants=X` turns on `#if X`). Keying all of them would miss on
+/// every CI run, so the key holds the SDK's own and the properties that decide
+/// what is compiled; a project that reads another variable needs `--no-cache`
+/// after changing it.
+fn csharp_env(name: &str) -> bool {
+    let name = name.to_ascii_uppercase();
+    starts_with_any(&name, &["DOTNET_", "MSBUILD", "NUGET_"])
+        || matches!(
+            name.as_str(),
+            "DEFINECONSTANTS"
+                | "CONFIGURATION"
+                | "PLATFORM"
+                | "TARGETFRAMEWORK"
+                | "TARGETFRAMEWORKS"
+                | "RUNTIMEIDENTIFIER"
+                | "RUNTIMEIDENTIFIERS"
+                | "LANGVERSION"
+        )
+}
+
+/// rust-analyzer runs Cargo and rustc of the toolchain rustup picks: flags,
+/// `--cfg`, the toolchain and the standard library's sources change the index.
+/// Not the variables Cargo sets for what it runs (`CARGO_PKG_NAME`,
+/// `CARGO_MANIFEST_DIR`), which name the checkout and so would keep a
+/// worktree from reusing the index.
+fn rust_env(name: &str) -> bool {
+    const SET_BY_CARGO: &[&str] = &[
+        "CARGO_MANIFEST_",
+        "CARGO_PKG_",
+        "CARGO_CRATE_NAME",
+        "CARGO_BIN_",
+        "CARGO_PRIMARY_PACKAGE",
+        "CARGO_TARGET_TMPDIR",
+        "CARGO_MAKEFLAGS",
+        "CARGO_CFG_",
+        "CARGO_FEATURE_",
+    ];
+    starts_with_any(name, &["RUSTFLAGS", "RUSTC", "RUSTDOC"])
+        || matches!(
+            name,
+            "CARGO" | "RUSTUP_TOOLCHAIN" | "RUSTUP_HOME" | "RUST_SRC_PATH"
+        )
+        || (name.starts_with("CARGO_") && !starts_with_any(name, SET_BY_CARGO))
+}
+
 fn nothing_needed(_: &Path, _: &Path, _: &str) -> Result<()> {
     Ok(())
 }
@@ -167,7 +240,7 @@ pub static INDEXERS: &[Indexer] = &[
         writes_in_cwd: None,
         needs: nothing_needed,
         inputs: every_file,
-        env: |name| starts_with_any(name, &["PYTHON", "VIRTUAL_ENV", "CONDA_PREFIX"]),
+        env: python_env,
     },
     Indexer {
         language: &registry::PHP,
@@ -197,7 +270,7 @@ pub static INDEXERS: &[Indexer] = &[
         writes_in_cwd: None,
         needs: nothing_needed,
         inputs: every_file,
-        env: |name| starts_with_any(name, &["JAVA_", "JDK_JAVA_OPTIONS", "MAVEN_"]),
+        env: java_env,
     },
     Indexer {
         language: &registry::CSHARP,
@@ -212,7 +285,7 @@ pub static INDEXERS: &[Indexer] = &[
         writes_in_cwd: None,
         needs: nothing_needed,
         inputs: every_file,
-        env: |name| starts_with_any(name, &["DOTNET_", "MSBUILD", "NUGET_"]),
+        env: csharp_env,
     },
     Indexer {
         language: &registry::RUBY,
@@ -235,7 +308,9 @@ pub static INDEXERS: &[Indexer] = &[
         writes_in_cwd: None,
         needs: nothing_needed,
         inputs: every_file,
-        env: |name| starts_with_any(name, &["BUNDLE_", "GEM_"]),
+        // scip-ruby reads no variable that changes the index; Bundler's are read
+        // by the gem's wrapper, which easement does not run.
+        env: |_| false,
     },
     Indexer {
         language: &registry::RUST,
@@ -257,7 +332,7 @@ pub static INDEXERS: &[Indexer] = &[
         writes_in_cwd: None,
         needs: nothing_needed,
         inputs: every_file,
-        env: |name| starts_with_any(name, &["RUSTFLAGS", "RUSTC", "CARGO_"]),
+        env: rust_env,
     },
 ];
 
@@ -997,6 +1072,47 @@ mod tests {
         });
         assert_eq!(results, Err("second"));
         assert_eq!(started.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn each_indexer_keys_the_variables_that_change_its_index() {
+        let keys = |language: &str, name: &str| {
+            let indexer = INDEXERS.iter().find(|i| i.name() == language).unwrap();
+            (indexer.env)(name)
+        };
+        for (language, name, keyed) in [
+            ("go", "GOFLAGS", true),
+            ("go", "GOOS", true),
+            ("go", "CGO_ENABLED", true),
+            ("go", "GOOGLE_APPLICATION_CREDENTIALS", false),
+            ("go", "GOROOT_1_22_X64", false),
+            ("typescript", "NODE_PATH", false),
+            ("python", "PYTHONPATH", true),
+            ("python", "PIP_USER", true),
+            ("python", "VIRTUAL_ENV", true),
+            ("python", "PYTHONHASHSEED", false),
+            ("php", "COMPOSER_VENDOR_DIR", false),
+            ("java", "JAVA_HOME", true),
+            ("java", "MAVEN_ARGS", true),
+            ("java", "ORG_GRADLE_PROJECT_flavor", true),
+            ("java", "GRADLE_USER_HOME", true),
+            ("java", "JAVA_HOME_17_X64", false),
+            ("csharp", "DefineConstants", true),
+            ("csharp", "MSBuildSDKsPath", true),
+            ("csharp", "DOTNET_ROOT", true),
+            ("csharp", "GITHUB_RUN_ID", false),
+            ("ruby", "BUNDLE_GEMFILE", false),
+            ("rust", "RUSTFLAGS", true),
+            ("rust", "CARGO_ENCODED_RUSTFLAGS", true),
+            ("rust", "CARGO_BUILD_RUSTFLAGS", true),
+            ("rust", "RUSTUP_TOOLCHAIN", true),
+            ("rust", "RUST_SRC_PATH", true),
+            ("rust", "CARGO", true),
+            ("rust", "CARGO_PKG_NAME", false),
+            ("rust", "CARGO_MANIFEST_DIR", false),
+        ] {
+            assert_eq!(keys(language, name), keyed, "{language} {name}");
+        }
     }
 
     #[test]
