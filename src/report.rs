@@ -415,7 +415,7 @@ fn escape_property(text: &str) -> String {
 }
 
 /// GitHub Actions workflow commands: annotations on the changed files.
-pub fn github(verdict: &Verdict, stats: &Stats) -> String {
+pub fn github(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>) -> String {
     let mut out = String::new();
     for (level, v) in verdict.reported() {
         let mut text = match &v.because {
@@ -450,8 +450,22 @@ pub fn github(verdict: &Verdict, stats: &Stats) -> String {
             ))
         ));
     }
+    for reason in confidence_reasons(stats, changes) {
+        out.push_str(&format!(
+            "::warning title={}::{}\n",
+            escape_property("easement partial"),
+            escape_command(&reason)
+        ));
+    }
+    if let Some(note) = cache_note(stats) {
+        out.push_str(&format!(
+            "::notice title={}::{}\n",
+            escape_property("easement cache"),
+            escape_command(&note)
+        ));
+    }
     out.push_str(
-        &text(verdict, stats, None)
+        &text(verdict, stats, changes)
             .lines()
             .last()
             .map_or_else(String::new, |l| format!("{l}\n")),
@@ -562,7 +576,7 @@ mod tests {
 
     #[test]
     fn github_annotations_are_escaped() {
-        let out = github(&verdict(), &Stats::default());
+        let out = github(&verdict(), &Stats::default(), None);
         assert!(out.starts_with(
             "::error file=src/a.ts,line=3,title=easement dependency::a -> b is not allowed <x> 100%25 (because: layers)\n"
         ));
@@ -607,5 +621,28 @@ mod tests {
             serde_json::from_str(&json(&verdict(), &Stats::default(), None)).unwrap();
         assert!(fresh.get("cached").is_none());
         assert!(!text(&verdict(), &Stats::default(), None).contains("--no-cache"));
+    }
+
+    #[test]
+    fn github_says_why_a_verdict_is_partial_and_when_it_was_cached() {
+        let stats = Stats {
+            from_cache: 1,
+            uncovered: vec!["tools/gen.go".into()],
+            ..Stats::default()
+        };
+        let out = github(&verdict(), &stats, None);
+        assert!(
+            out.contains(
+                "::warning title=easement partial::1 source files were not covered by an indexer"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("::notice title=easement cache::1 index(es) came from the cache"));
+        assert!(out.contains("--no-cache"));
+        assert!(
+            out.ends_with("1 files not covered by an indexer\n"),
+            "{out}"
+        );
+        assert!(!github(&verdict(), &Stats::default(), None).contains("::warning"));
     }
 }

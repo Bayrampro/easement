@@ -419,7 +419,7 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
         Format::Text => anstream::print!("{}", report::colored(&verdict, &stats, changes)),
         Format::Json => println!("{}", report::json(&verdict, &stats, changes)),
         Format::Sarif => println!("{}", report::sarif(&verdict)),
-        Format::Github => print!("{}", report::github(&verdict, &stats)),
+        Format::Github => print!("{}", report::github(&verdict, &stats, changes)),
         Format::Junit => print!("{}", report::junit(&verdict)),
     }
     Ok(verdict.passed())
