@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.5](https://github.com/mokevnin/easement/compare/v0.4.4...v0.4.5) (2026-11-02)
+
+
+### Bug Fixes
+
+* flag unjudged names only in the components that `forbid_symbol` covers ([e137329](https://github.com/mokevnin/easement/commit/e137329133dc3fb8469e0e9dc8525ac1f30c9771))
+* judge a package that a nameless package.json hides by the import that names it ([ebc231c](https://github.com/mokevnin/easement/commit/ebc231c4699e1aa3ab09a286a6b8d3c8188495c4)), closes [#55](https://github.com/mokevnin/easement/issues/55)
+* say when `forbid_symbol` could not judge the names of an unnamed npm package ([4953208](https://github.com/mokevnin/easement/commit/49532082a7534244683dbc09bc465972d03d9366))
+* take an import into a nameless project for its own code, not a package ([0309dcc](https://github.com/mokevnin/easement/commit/0309dccb98de691315b4cb8cbf26c0905101df0d))
+
 ## [0.4.4](https://github.com/mokevnin/easement/compare/v0.4.3...v0.4.4) (2026-11-02)
 
 
