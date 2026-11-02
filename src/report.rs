@@ -77,6 +77,13 @@ pub fn cache_note(stats: &Stats) -> Option<String> {
 
 /// Why a verdict is only as good as the code the check could read.
 pub fn confidence_reasons(stats: &Stats, changes: Option<&Changes>) -> Vec<String> {
+    let mut reasons = narrowed_reasons(stats, changes);
+    reasons.extend(unread_reasons(stats));
+    reasons
+}
+
+/// A run that judges a part by design: `--diff`, `--component`, `--scope`.
+fn narrowed_reasons(stats: &Stats, changes: Option<&Changes>) -> Vec<String> {
     let mut reasons = Vec::new();
     if let Some(changes) = changes {
         reasons.push(format!(
@@ -90,6 +97,12 @@ pub fn confidence_reasons(stats: &Stats, changes: Option<&Changes>) -> Vec<Strin
             stats.limited_to.join(", ")
         ));
     }
+    reasons
+}
+
+/// Code the check could not read or judge.
+fn unread_reasons(stats: &Stats) -> Vec<String> {
+    let mut reasons = Vec::new();
     reasons.extend(stats.unused_partial.iter().cloned());
     reasons.extend(stats.manifests_partial.iter().cloned());
     if !stats.naming_unseen.is_empty() {
@@ -466,9 +479,15 @@ pub fn github(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>) -> St
             ))
         ));
     }
-    for reason in confidence_reasons(stats, changes) {
+    let narrowed = narrowed_reasons(stats, changes)
+        .into_iter()
+        .map(|reason| ("notice", reason));
+    let unread = unread_reasons(stats)
+        .into_iter()
+        .map(|reason| ("warning", reason));
+    for (level, reason) in narrowed.chain(unread) {
         out.push_str(&format!(
-            "::warning title={}::{}\n",
+            "::{level} title={}::{}\n",
             escape_property("easement partial"),
             escape_command(&reason)
         ));
@@ -660,5 +679,18 @@ mod tests {
             "{out}"
         );
         assert!(!github(&verdict(), &Stats::default(), None).contains("::warning"));
+
+        // A run narrowed by design is a notice: a warning on every pull request
+        // would teach to skip the ones about code nobody read.
+        let narrowed = Stats {
+            limited_to: vec!["component web".into()],
+            ..Stats::default()
+        };
+        let out = github(&verdict(), &narrowed, None);
+        assert!(
+            out.contains("::notice title=easement partial::the report is limited to component web"),
+            "{out}"
+        );
+        assert!(!out.contains("::warning"), "{out}");
     }
 }

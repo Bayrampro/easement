@@ -558,7 +558,7 @@ A key given next to `<<` wins over the merged one, and a list is replaced, not j
 
 ## In CI
 
-`--format` picks the report: `text` (default), `json`, `sarif` (GitHub Code Scanning), `github` (annotations on the changed files, with a warning for each reason a verdict is partial and a notice when the indexes came from the cache) and `junit` (a failed test case per violation).
+`--format` picks the report: `text` (default), `json`, `sarif` (GitHub Code Scanning), `github` (annotations on the changed files, with a warning for each part of the code the check could not read, a notice when the run judges only a part by design (`--diff`, `--component`, `--scope`) and a notice when the indexes came from the cache) and `junit` (a failed test case per violation).
 
 The repository is a GitHub Action:
 
