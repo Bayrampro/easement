@@ -892,6 +892,35 @@ fn a_package_whose_types_sit_under_a_marker_package_json_is_judged_by_its_name()
 }
 
 #[test]
+fn an_alias_into_a_project_with_a_nameless_package_json_is_no_package() {
+    // Without `name`, the project's own files are unnamed too; `@/gen/api` resolves
+    // through `paths` to an ignored file, which the index defines and the walk drops.
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\nmanifests: true\ncomponents:\n  app: { in: src }\n",
+        ),
+        (
+            "package.json",
+            "{\"private\": true, \"dependencies\": {}}\n",
+        ),
+        (
+            "tsconfig.json",
+            r#"{"compilerOptions":{"module":"esnext","moduleResolution":"bundler","baseUrl":".","paths":{"@/*":["src/*"]}},"include":["src"]}"#,
+        ),
+        (".gitignore", "src/gen/\n"),
+        ("src/gen/api.ts", "export const api = 1;\n"),
+        (
+            "src/a.ts",
+            "import { api } from \"@/gen/api\";\nexport const all = [api];\n",
+        ),
+    ]);
+    easement(&root, &["check"])
+        .success()
+        .stdout(contains("[undeclared]").not());
+}
+
+#[test]
 fn a_name_of_a_package_the_index_left_unnamed_is_flagged_as_unjudged() {
     let (_tmp, root) = project(&[
         (

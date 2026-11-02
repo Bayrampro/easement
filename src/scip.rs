@@ -19,6 +19,7 @@ use scip::types::{Index, Occurrence, PositionEncoding, occurrence::Typed_range};
 
 use crate::check::SymbolRef;
 use crate::lang::Target;
+use crate::lang::registry::Manifest;
 use crate::scan::Dep;
 
 /// `SymbolRole::Definition` in the bitset of an occurrence.
@@ -106,6 +107,7 @@ pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
                                 .collect()
                         });
                         spelled_module(lines, occurrence, encoding)
+                            .filter(|module| installed(&root.join(&parsed.path), module))
                     }
                     false => None,
                 };
@@ -119,6 +121,17 @@ pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
         documents.push(parsed);
     }
     Ok(documents)
+}
+
+/// Whether the npm package of `module` is in a `node_modules` above `file`,
+/// where TypeScript finds a package. A project without `name` in its
+/// `package.json` is unnamed too, and an alias into it (`@/gen/api` through
+/// `paths`) spells no package.
+fn installed(file: &Path, module: &str) -> bool {
+    let package = Manifest::Npm.package(module);
+    file.ancestors()
+        .skip(1)
+        .any(|dir| dir.join("node_modules").join(&package).is_dir())
 }
 
 /// The package an import names when `occurrence` stands on its string

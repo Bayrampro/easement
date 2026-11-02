@@ -20,7 +20,7 @@ impl Manifest {
     /// `lodash/fp`, `@scope/pkg` for `@scope/pkg/x`, the crate for a Rust
     /// path (already written with `_`). Go modules are matched by prefix
     /// instead, so the path stays.
-    fn package(self, module: &str) -> String {
+    pub(crate) fn package(self, module: &str) -> String {
         match self {
             Manifest::Npm => {
                 let mut parts = module.split('/');
