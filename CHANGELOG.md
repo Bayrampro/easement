@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.4](https://github.com/mokevnin/easement/compare/v0.4.3...v0.4.4) (2026-11-02)
+
+
+### Bug Fixes
+
+* hash an indexer again when it is replaced in place during a run ([6d7a8a0](https://github.com/mokevnin/easement/commit/6d7a8a048dc2b4d17dfff89ca3ca5cf0a2029f7e))
+* keep suggest, impact, why and baseline careful about files in `uncovered_ok` ([dce2298](https://github.com/mokevnin/easement/commit/dce22982ebad7947b7ddb3f0866c27453bb8f86d))
+* keep the reasons for a partial verdict and the cache note in `--format github` ([f5fb41a](https://github.com/mokevnin/easement/commit/f5fb41a30103c492dbc66e19a972afb3a40fb9be))
+* key an indexer behind rustup or a mise shim by the binary it runs ([6932249](https://github.com/mokevnin/easement/commit/69322496f39d2acc8ad646642ff5cb15c4be57fc))
+* key cached indexes on the environment and say when a report used them ([3e05d01](https://github.com/mokevnin/easement/commit/3e05d01c1e0851012c2accab573e75a1bfa8266c))
+* key each indexer on the variables verified to change its index ([8ac1093](https://github.com/mokevnin/easement/commit/8ac1093246805e9e3bf8d3db8a374e1eef4acaee))
+* make a run narrowed by design a notice in `--format github`, not a warning ([fbfa525](https://github.com/mokevnin/easement/commit/fbfa525895e507ecbdc9d9fafffd1dab92e79208))
+* say in impact, why, suggest, graph and baseline when the indexes came from the cache ([bf1f2c5](https://github.com/mokevnin/easement/commit/bf1f2c5e85ad1f677e26f50fbf3746a6940ac2c4))
+
 ## [0.4.3](https://github.com/mokevnin/easement/compare/v0.4.2...v0.4.3) (2026-11-01)
 
 
