@@ -63,12 +63,11 @@ fn starts_with_any(name: &str, prefixes: &[&str]) -> bool {
 
 /// pyright asks the `python3` on the path for its search paths, and scip-python
 /// runs `pip` for the installed packages: `PYTHONPATH` changes what an import
-/// resolves to. `PYTHONHASHSEED` is left out: tox sets a new one every run.
-/// `VIRTUAL_ENV` and `CONDA_PREFIX` stand for which interpreter that is.
+/// resolves to. `PYTHONHASHSEED` is left out: tox sets a new one every run. So
+/// is `VIRTUAL_ENV`, which alone does not change the index and names the
+/// checkout when the environment lives in it, as uv and Poetry put it.
 fn python_env(name: &str) -> bool {
-    (name.starts_with("PYTHON") && name != "PYTHONHASHSEED")
-        || name.starts_with("PIP_")
-        || matches!(name, "VIRTUAL_ENV" | "CONDA_PREFIX")
+    (name.starts_with("PYTHON") && name != "PYTHONHASHSEED") || name.starts_with("PIP_")
 }
 
 /// scip-java runs Maven or Gradle with the JDK of `JAVA_HOME`: `MAVEN_ARGS`
@@ -623,7 +622,7 @@ fn fingerprint(
     language.name().hash(&mut hasher);
     env.hash(&mut hasher);
     (language.args)(Path::new("")).hash(&mut hasher);
-    indexer_identity(binary).hash(&mut hasher);
+    what_runs(binary, language.binary, &root.join(dir), &multiplexers()).hash(&mut hasher);
     let prefix = if dir.is_empty() {
         String::new()
     } else {
@@ -703,6 +702,73 @@ fn indexer_identity(
         content,
         if content.is_some() { None } else { modified },
     )
+}
+
+/// What the key holds of an indexer: the binary it is, or, for a multiplexer's
+/// proxy, the binary the multiplexer runs.
+#[derive(Debug, PartialEq, Hash)]
+enum Runs {
+    Binary((Option<PathBuf>, Option<u64>, Option<std::time::SystemTime>)),
+    /// A proxy whose multiplexer could not tell what it runs here: never the
+    /// proxy's own identity, which every toolchain shares.
+    Unresolved(Option<PathBuf>),
+}
+
+/// A program that runs another one by the name it is called with. rustup's
+/// proxies (`~/.cargo/bin/rust-analyzer`) and mise's shims are one file for
+/// every toolchain, so what tells two indexers apart is the binary each runs
+/// from the index directory, where `rust-toolchain.toml` or `mise.toml`
+/// choose it.
+struct Multiplexer {
+    path: PathBuf,
+    resolve: Box<Resolve>,
+}
+
+/// The binary a multiplexer runs for `name` in a directory, `None` when it cannot tell.
+type Resolve = dyn Fn(&str, &Path) -> Option<PathBuf>;
+
+/// The multiplexers on the path: rustup and mise, both of which answer `which <name>`.
+fn multiplexers() -> Vec<Multiplexer> {
+    ["rustup", "mise"]
+        .into_iter()
+        .filter_map(|tool| {
+            let path = which::which(tool).ok()?;
+            let program = path.clone();
+            let resolve = move |name: &str, cwd: &Path| {
+                let output = Command::new(&program)
+                    .args(["which", name])
+                    .current_dir(cwd)
+                    // A toolchain that is not installed is an answer, not a download.
+                    .env("RUSTUP_AUTO_INSTALL", "0")
+                    .output()
+                    .ok()?;
+                let found = PathBuf::from(String::from_utf8(output.stdout).ok()?.trim());
+                (output.status.success() && found.is_file()).then_some(found)
+            };
+            Some(Multiplexer {
+                path,
+                resolve: Box::new(resolve),
+            })
+        })
+        .collect()
+}
+
+/// What runs when `binary` (installed as `name`) runs in `cwd`. A file with the
+/// content of a multiplexer is its proxy, whether a symbolic link, a hard link
+/// or a copy.
+fn what_runs(binary: &Path, name: &str, cwd: &Path, multiplexers: &[Multiplexer]) -> Runs {
+    let own = indexer_identity(binary);
+    let size = |path: &Path| std::fs::metadata(path).map(|m| m.len()).ok();
+    let proxy = multiplexers.iter().find(|m| {
+        own.1.is_some() && size(&m.path) == size(binary) && indexer_identity(&m.path).1 == own.1
+    });
+    match proxy {
+        None => Runs::Binary(own),
+        Some(multiplexer) => match (multiplexer.resolve)(name, cwd) {
+            Some(real) => Runs::Binary(indexer_identity(&real)),
+            None => Runs::Unresolved(own.0),
+        },
+    }
 }
 
 /// A hasher for the keys of the index cache, which outlives the build of easement that
@@ -1089,7 +1155,7 @@ mod tests {
             ("typescript", "NODE_PATH", false),
             ("python", "PYTHONPATH", true),
             ("python", "PIP_USER", true),
-            ("python", "VIRTUAL_ENV", true),
+            ("python", "VIRTUAL_ENV", false),
             ("python", "PYTHONHASHSEED", false),
             ("php", "COMPOSER_VENDOR_DIR", false),
             ("java", "JAVA_HOME", true),
@@ -1140,6 +1206,43 @@ mod tests {
             ("GOFLAGS".to_string(), "-tags=x".to_string())
         );
         assert!(key_env(ts, inherited(), &[]).is_empty());
+    }
+
+    #[test]
+    fn a_proxy_is_known_by_the_binary_its_multiplexer_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, content: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, content).unwrap();
+            path
+        };
+        let mux = write("mux", "the multiplexer");
+        // A proxy is the multiplexer's file under the indexer's name (a copy on Windows).
+        let proxy = write("scip-x", "the multiplexer");
+        let stable = write("scip-x-stable", "build 1");
+        let nightly = write("scip-x-nightly", "build 2");
+        let runs = |real: Option<PathBuf>| {
+            let multiplexers = [Multiplexer {
+                path: mux.clone(),
+                resolve: Box::new(move |name, _| {
+                    assert_eq!(name, "scip-x");
+                    real.clone()
+                }),
+            }];
+            what_runs(&proxy, "scip-x", dir.path(), &multiplexers)
+        };
+        let on_stable = runs(Some(stable.clone()));
+        assert_eq!(on_stable, Runs::Binary(indexer_identity(&stable)));
+        assert_ne!(on_stable, runs(Some(nightly)));
+        // Unresolved is neither a toolchain's binary nor the proxy shared by all.
+        let unresolved = runs(None);
+        assert!(matches!(unresolved, Runs::Unresolved(_)));
+        assert_ne!(unresolved, Runs::Binary(indexer_identity(&proxy)));
+        // A binary of its own is itself.
+        assert_eq!(
+            what_runs(&stable, "scip-x", dir.path(), &[]),
+            Runs::Binary(indexer_identity(&stable))
+        );
     }
 
     #[test]
