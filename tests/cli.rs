@@ -925,7 +925,7 @@ fn a_name_of_a_package_the_index_left_unnamed_is_flagged_as_unjudged() {
     let (_tmp, root) = project(&[
         (
             "easement.yml",
-            "version: 1\ncomponents:\n  web: { in: src/web }\nrules:\n  web: { forbid_symbol: [nested.Thing] }\n",
+            "version: 1\ncomponents:\n  web: { in: src/web }\n  api: { in: src/api }\nrules:\n  web: { forbid_symbol: [nested.Thing] }\n",
         ),
         (
             "package.json",
@@ -947,6 +947,11 @@ fn a_name_of_a_package_the_index_left_unnamed_is_flagged_as_unjudged() {
             "src/web/a.ts",
             "import { Thing } from \"nested\";\nexport const t = new Thing();\n",
         ),
+        // No rule on names covers `api`, so nothing was left unjudged there.
+        (
+            "src/api/b.ts",
+            "import { Thing } from \"nested\";\nexport const t = new Thing();\n",
+        ),
     ]);
     let out = easement(&root, &["check", "--format", "json"])
         .success()
@@ -956,6 +961,7 @@ fn a_name_of_a_package_the_index_left_unnamed_is_flagged_as_unjudged() {
     let report: serde_json::Value = serde_json::from_slice(&out).unwrap();
     let partial = report["stats"]["symbols_partial"][0].as_str().unwrap();
     assert!(partial.contains("src/web/a.ts"), "{partial}");
+    assert!(!partial.contains("src/api/b.ts"), "{partial}");
     easement(&root, &["check"]).success().stdout(contains(
         "`forbid_symbol` cannot tell the npm package of the names used in src/web/a.ts",
     ));

@@ -288,7 +288,7 @@ impl Project {
         }
         stats.unused_partial = unused.reasons;
         stats.manifests_partial = undeclared.reasons;
-        stats.symbols_partial = check::symbols_partial(&self.config, &scan.unnamed_uses);
+        stats.symbols_partial = check::symbols_partial(&self.config, &map, &scan.unnamed_uses);
         stats.files = scan
             .paths
             .iter()

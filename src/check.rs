@@ -1039,9 +1039,19 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
 /// Why `forbid_symbol` left uses of names unchecked: the files in `unnamed`
 /// use names of an npm package that the indexer left unnamed, because a
 /// `package.json` with no `name` inside it (`{"type": "module"}`) hides it.
-pub fn symbols_partial(config: &Config, unnamed: &[String]) -> Vec<String> {
+/// Only files of a component with `forbid_symbol` count.
+pub fn symbols_partial(config: &Config, map: &ComponentMap, unnamed: &[String]) -> Vec<String> {
     const SHOWN: usize = 3;
-    if unnamed.is_empty() || config.rules.values().all(|r| r.forbid_symbol.is_empty()) {
+    let unnamed: Vec<&str> = unnamed
+        .iter()
+        .map(String::as_str)
+        .filter(|file| {
+            map.component_of(file)
+                .and_then(|component| config.rules.get(component))
+                .is_some_and(|rule| !rule.forbid_symbol.is_empty())
+        })
+        .collect();
+    if unnamed.is_empty() {
         return Vec::new();
     }
     let mut files = unnamed[..unnamed.len().min(SHOWN)].join(", ");
