@@ -295,10 +295,12 @@ impl Project {
         (stats.indexed, stats.from_cache) = scan.indexed;
         stats.uncovered = scan
             .uncovered
-            .into_iter()
+            .iter()
             .filter(|f| scope.contains(&map, f) && !map.is_uncovered_ok(f))
+            .cloned()
             .collect();
         Ok(Analysis {
+            unindexed: scan.uncovered,
             violations,
             all_files: scan.all_files,
             edges,
@@ -334,6 +336,10 @@ impl Project {
 
 struct Analysis {
     violations: Vec<check::Violation>,
+    /// Every source file no indexer read, `uncovered_ok` or not: the report
+    /// leaves the accepted ones out, but nobody saw their imports, so what
+    /// `suggest`, `impact`, `why` and `baseline` say about them stays careful.
+    unindexed: Vec<String>,
     /// Every file that is not excluded, source or not.
     all_files: Vec<String>,
     edges: Vec<check::Edge>,
@@ -506,7 +512,7 @@ fn run(cli: Cli) -> Result<bool> {
             let unread: Vec<_> = old
                 .iter()
                 .flat_map(|old| &old.violations)
-                .filter(|k| analysis.stats.uncovered.contains(&k.file))
+                .filter(|k| analysis.unindexed.contains(&k.file))
                 .filter(|k| !baseline.violations.contains(k))
                 .cloned()
                 .collect();
@@ -578,7 +584,7 @@ fn run(cli: Cli) -> Result<bool> {
                 &analysis.all_files,
                 changed,
                 deleted,
-                &analysis.stats.uncovered,
+                &analysis.unindexed,
             );
             match format {
                 OutputFormat::Text => print!("{}", impact::render(&result, &analysis.map)),
@@ -594,7 +600,7 @@ fn run(cli: Cli) -> Result<bool> {
                 deps: &analysis.deps,
                 files: &analysis.all_files,
                 violations: &analysis.violations,
-                uncovered: &analysis.stats.uncovered,
+                uncovered: &analysis.unindexed,
             };
             print!("{}", impact::why(&project.config, &graph, &from, &to)?);
             Ok(true)
@@ -647,7 +653,7 @@ fn run(cli: Cli) -> Result<bool> {
                     &project.config,
                     &analysis.map,
                     &analysis.edges,
-                    &analysis.stats.uncovered,
+                    &analysis.unindexed,
                 );
                 let (new, skipped) = patch::remove_allowances(&text, &gone);
                 for note in skipped {
@@ -665,7 +671,7 @@ fn run(cli: Cli) -> Result<bool> {
                     &analysis.edges,
                     &analysis.deps,
                     &analysis.files,
-                    &analysis.stats.uncovered,
+                    &analysis.unindexed,
                     &diagram::unused_arrows(&project.config, &project.root, &analysis.edges)?,
                 )
             );
@@ -673,7 +679,7 @@ fn run(cli: Cli) -> Result<bool> {
                 &project.config,
                 &analysis.map,
                 &analysis.edges,
-                &analysis.stats.uncovered,
+                &analysis.unindexed,
             );
             Ok(!check || unused.is_empty())
         }

@@ -749,7 +749,7 @@ Those files are named in the text report (the first twenty; all of them in `--fo
 
 The JSON report says `"confidence": "partial"` with the reasons in `confidence_reasons`. A green verdict then covers only the code an indexer read, and whoever acts on it has to treat the rest as unchecked. The field is also `partial` for a run that judges a part by design (`--diff`, `--component`, `--scope`) and names the part: `passed` then says nothing about the rest of the project.
 
-Files that are meant to stay outside an indexer (build helpers, generated code) are accepted with `uncovered_ok`, each with the reason, and then no longer count:
+Files that are meant to stay outside an indexer (build helpers, generated code) are accepted with `uncovered_ok`, each with the reason, and then no longer count against the verdict of `check`. No indexer read their imports all the same, so `suggest`, `impact`, `why` and `baseline` stay as careful about them as about any uncovered file:
 
 ```yaml
 uncovered_ok:

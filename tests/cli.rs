@@ -1565,6 +1565,49 @@ fn uncovered_ok_accepts_known_gaps() {
     assert!(report["confidence_reasons"].as_array().unwrap().is_empty());
 }
 
+/// An accepted file is still unread: `suggest`, `impact` and `baseline` cannot
+/// see its imports, so they stay as careful as without `uncovered_ok`.
+#[test]
+fn uncovered_ok_hides_a_file_from_the_report_not_from_suggest_and_impact() {
+    let (_tmp, root) = project(&[
+        ("go.mod", "module example.com/m\n\ngo 1.22\n"),
+        (
+            "easement.yml",
+            "version: 1
+components:
+  app: { in: app }
+  lib: { in: lib }
+rules:
+  app: { may_depend_on: [lib] }
+uncovered_ok:
+  - { name: app/race.go, because: race-only helpers }
+",
+        ),
+        ("app/main.go", "package app\n\nfunc Run() {}\n"),
+        (
+            "app/race.go",
+            "//go:build race\n\npackage app\n\nimport \"example.com/m/lib\"\n\nfunc R() { lib.L() }\n",
+        ),
+        ("lib/lib.go", "package lib\n\nfunc L() {}\n"),
+    ]);
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(report["confidence"], "full");
+
+    // The import of lib is in the file no indexer read.
+    easement(&root, &["suggest", "--check"]).success();
+    easement(&root, &["suggest", "--patch"])
+        .success()
+        .stdout(contains("may_depend_on").not());
+    let impact: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["impact", "lib/lib.go", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(impact["confidence"], "partial", "{impact}");
+}
+
 #[test]
 fn uncovered_ok_takes_a_list_of_globs_under_one_reason() {
     let (_tmp, root) = fixture("uncovered");
