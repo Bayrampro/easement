@@ -187,7 +187,7 @@ impl Adapter for Kotlin {
     }
 
     fn handles(&self, path: &Path) -> bool {
-        path.extension().is_some_and(|e| e == "kt" || e == "kts")
+        super::registry::is(path, &super::registry::KOTLIN)
     }
 
     fn imports(&self, path: &Path, source: &str) -> Result<Vec<Import>> {

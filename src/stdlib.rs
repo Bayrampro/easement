@@ -1,5 +1,7 @@
 //! The standard library of each language, to tell `$std` modules apart.
 
+use crate::lang::registry;
+
 /// The pattern in `may_use_external` and `forbid_external` that stands for
 /// the standard library of the importing file's language.
 pub const STD: &str = "$std";
@@ -7,30 +9,53 @@ pub const STD: &str = "$std";
 /// Whether `module`, imported by `file`, belongs to the standard library of
 /// the file's language. Languages without a rule here never match.
 pub fn is_std(file: &str, module: &str) -> bool {
-    let ext = crate::relpath::extension(file);
-    let first = |seps: &[char]| module.split(seps).next().unwrap_or(module);
-    match ext {
-        // A standard package's path has no domain: `fmt`, `net/http`; `C` is cgo.
-        "go" => module != "C" && !first(&['/']).contains('.'),
-        "py" | "pyi" => PYTHON.binary_search(&first(&['.'])).is_ok(),
-        "java" => jdk(module),
-        "kt" | "kts" => first(&['.']) == "kotlin" || jdk(module),
-        "rs" => ["std", "proc_macro"].contains(&first(&[':'])),
-        "cs" => first(&['.']) == "System",
-        // A class of no namespace is PHP's own: `DateTime`, `PDO`, `Exception`.
-        "php" => !module.contains('\\'),
-        "swift" => SWIFT.contains(&first(&['.'])),
-        _ => false,
-    }
+    registry::of(file)
+        .and_then(|language| language.std)
+        .is_some_and(|std| std(module))
 }
 
 /// Whether `$std` can tell the standard library of `file`'s language.
 pub fn knows(file: &str) -> bool {
-    let ext = crate::relpath::extension(file);
-    matches!(
-        ext,
-        "go" | "py" | "pyi" | "java" | "kt" | "kts" | "rs" | "cs" | "php" | "swift"
-    )
+    registry::of(file).is_some_and(|language| language.std.is_some())
+}
+
+/// The first part of a module path, up to any of `seps`.
+fn first<'a>(module: &'a str, seps: &[char]) -> &'a str {
+    module.split(seps).next().unwrap_or(module)
+}
+
+/// A standard package's path has no domain: `fmt`, `net/http`; `C` is cgo.
+pub fn go(module: &str) -> bool {
+    module != "C" && !first(module, &['/']).contains('.')
+}
+
+pub fn python(module: &str) -> bool {
+    PYTHON.binary_search(&first(module, &['.'])).is_ok()
+}
+
+pub fn java(module: &str) -> bool {
+    jdk(module)
+}
+
+pub fn kotlin(module: &str) -> bool {
+    first(module, &['.']) == "kotlin" || jdk(module)
+}
+
+pub fn rust(module: &str) -> bool {
+    ["std", "proc_macro"].contains(&first(module, &[':']))
+}
+
+pub fn csharp(module: &str) -> bool {
+    first(module, &['.']) == "System"
+}
+
+/// A class of no namespace is PHP's own: `DateTime`, `PDO`, `Exception`.
+pub fn php(module: &str) -> bool {
+    !module.contains('\\')
+}
+
+pub fn swift(module: &str) -> bool {
+    SWIFT.contains(&first(module, &['.']))
 }
 
 /// The modules of the Swift toolchain and Apple's SDKs that a Swift file imports.

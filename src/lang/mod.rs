@@ -5,6 +5,7 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, Tree};
 
 pub mod kotlin;
+pub mod registry;
 pub mod swift;
 
 /// One dependency found in a source file.

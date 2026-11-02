@@ -279,7 +279,7 @@ impl Project {
                 .iter()
                 .filter(|f| map.component_of(f).is_some())
                 // Types come from an index; an adapter reads imports alone.
-                .filter(|f| !indexer::LANGUAGES.iter().any(|l| l.covers(f)))
+                .filter(|f| !indexer::INDEXERS.iter().any(|l| l.covers(f)))
                 .map(|f| relpath::extension(f))
                 .filter(|ext| !ext.is_empty())
                 .map(str::to_string)
@@ -764,6 +764,68 @@ fn schema_text() -> String {
 
 #[cfg(test)]
 mod tests {
+    /// What each part of easement makes of a file by its name: pinned while
+    /// the knowledge of languages moves into one registry.
+    #[test]
+    fn languages_are_told_apart_as_before() {
+        let files = [
+            "a.go", "a.py", "a.pyi", "a.ts", "a.d.ts", "a.tsx", "a.mts", "a.cts", "a.js", "a.jsx",
+            "a.mjs", "a.cjs", "A.java", "A.kt", "a.kts", "A.cs", "a.php", "a.rb", "a.rs",
+            "a.swift", "Makefile", "v1.2/x", "a.json",
+        ];
+        let mut table = String::new();
+        for file in files {
+            let covered: Vec<&str> = crate::indexer::INDEXERS
+                .iter()
+                .filter(|l| l.covers(file))
+                .map(|l| l.name())
+                .collect();
+            let adapters: Vec<&str> = crate::lang::adapters(std::path::Path::new("."))
+                .unwrap()
+                .iter()
+                .filter(|a| a.handles(std::path::Path::new(file)))
+                .map(|a| a.name())
+                .collect();
+            table.push_str(&format!(
+                "{file}: indexer {covered:?}, adapter {adapters:?}, std {}, unused {:?}, manifest {:?}\n",
+                crate::stdlib::knows(file),
+                crate::unused::family(file),
+                crate::lang::registry::of(file).and_then(|l| l.manifest),
+            ));
+        }
+        let mut is_std = String::new();
+        for (file, module) in [
+            ("a.go", "net/http"),
+            ("a.go", "github.com/x/y"),
+            ("a.go", "C"),
+            ("a.py", "os.path"),
+            ("a.pyi", "os"),
+            ("a.py", "requests"),
+            ("A.java", "java.util.List"),
+            ("A.kt", "kotlin.collections.List"),
+            ("a.kts", "java.io.File"),
+            ("a.rs", "std::fmt"),
+            ("a.rs", "serde::de"),
+            ("A.cs", "System.IO"),
+            ("a.php", "DateTime"),
+            ("a.php", "Symfony\\Component"),
+            ("a.swift", "Foundation"),
+            ("a.ts", "fs"),
+            ("a.rb", "json"),
+        ] {
+            is_std.push_str(&format!(
+                "{file} {module}: {}\n",
+                crate::stdlib::is_std(file, module)
+            ));
+        }
+        insta::assert_snapshot!("languages_by_file", table);
+        insta::assert_snapshot!("std_by_language", is_std);
+        insta::assert_snapshot!(
+            "test_patterns",
+            crate::lang::registry::test_patterns().join("\n")
+        );
+    }
+
     /// Editors read `easement.schema.json` from the repository, so it must be
     /// the schema the config types give.
     #[test]

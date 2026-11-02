@@ -1,0 +1,19 @@
+---
+source: src/main.rs
+assertion_line: 823
+expression: "crate::config::TEST_PATTERNS.join(\"\\n\")"
+---
+**/*_test.go
+**/*.test.*
+**/*.spec.*
+**/__tests__/**
+**/test_*.py
+**/*_test.py
+**/*Test.java
+**/*Tests.java
+**/*Test.kt
+**/*Tests.kt
+**/*Test.cs
+**/*Tests.cs
+**/*Test.php
+**/*Tests.swift

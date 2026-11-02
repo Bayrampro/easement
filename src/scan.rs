@@ -136,7 +136,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
             continue;
         }
         all_files.push(slash(&rel));
-        if indexer::LANGUAGES.iter().any(|l| l.covers(&slash(&rel))) {
+        if indexer::INDEXERS.iter().any(|l| l.covers(&slash(&rel))) {
             continue; // read from the index below
         }
         if target_only.is_match(&rel) {

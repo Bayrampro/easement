@@ -10,41 +10,10 @@ use regex::Regex;
 
 use crate::check::{RuleId, Violation, file_graph, reach};
 use crate::components::ComponentMap;
-use crate::config::{Config, TEST_PATTERNS, TESTS};
-use crate::indexer::TYPESCRIPT_EXTENSIONS;
+use crate::config::{Config, TESTS};
+use crate::lang::registry::{self, JAVA, KOTLIN, LANGUAGES, TYPESCRIPT};
 use crate::relpath::{extension, parent};
 use crate::scan::{Dep, glob_set};
-
-/// The languages the rule judges, each checked against its indexer (C# and
-/// PHP by the CI tests): the index reports a use of another file wherever
-/// it happens. Ruby loads by convention, and Kotlin and Swift are read by
-/// imports alone.
-const FAMILIES: &[(&str, &[&str])] = &[
-    ("go", &["go"]),
-    ("js", TYPESCRIPT_EXTENSIONS),
-    ("py", &["py"]),
-    ("rs", &["rs"]),
-    ("java", &["java"]),
-    ("cs", &["cs"]),
-    ("php", &["php"]),
-];
-
-/// Files a toolchain or a convention runs without an import.
-const CONVENTIONAL: &[&str] = &[
-    "**/*.d.ts",
-    "**/package-info.java",
-    "**/module-info.java",
-    "**/conftest.py",
-    "**/__main__.py",
-    "**/setup.py",
-    "**/build.rs",
-    "**/src/main.rs",
-    "**/src/lib.rs",
-    "**/src/bin/**",
-    "**/examples/**",
-    "**/benches/**",
-    "**/tests/**",
-];
 
 /// What the rule reads from one scan.
 pub struct Input<'a> {
@@ -69,12 +38,13 @@ pub struct Unused {
     pub reasons: Vec<String>,
 }
 
-fn family(file: &str) -> Option<&'static str> {
-    let ext = extension(file);
-    FAMILIES
-        .iter()
-        .find(|(_, exts)| exts.contains(&ext))
-        .map(|(name, _)| *name)
+/// The language of a file the rule judges: each is checked against its indexer
+/// (C# and PHP by the CI tests), whose index reports a use of another file
+/// wherever it happens.
+pub(crate) fn family(file: &str) -> Option<&'static str> {
+    registry::of(file)
+        .filter(|language| language.unused.contains(&extension(file)))
+        .map(|language| language.name)
 }
 
 pub fn unused(input: &Input) -> Result<Unused> {
@@ -87,8 +57,12 @@ pub fn unused(input: &Input) -> Result<Unused> {
     }
     let owned = |patterns: &[&str]| patterns.iter().map(|p| p.to_string()).collect::<Vec<_>>();
     let entry = glob_set(&config.entry, "entry")?;
-    let tests = glob_set(&owned(TEST_PATTERNS), "tests")?;
-    let conventional = glob_set(&owned(CONVENTIONAL), "conventional entries")?;
+    let tests = glob_set(&owned(&registry::test_patterns()), "tests")?;
+    let conventional: Vec<&str> = LANGUAGES
+        .iter()
+        .flat_map(|language| language.conventional.iter().copied())
+        .collect();
+    let conventional = glob_set(&owned(&conventional), "conventional entries")?;
     let packaged = package_entries(input.root, input.all_files);
 
     // A family is judged only where the graph sees all of it: not when an
@@ -103,10 +77,10 @@ pub fn unused(input: &Input) -> Result<Unused> {
     if input
         .paths
         .iter()
-        .any(|f| matches!(extension(f), "kt" | "kts"))
+        .any(|f| registry::is(Path::new(f), &KOTLIN))
     {
         skipped.insert(
-            "java",
+            JAVA.name,
             "Kotlin beside it uses Java classes without an import".into(),
         );
     }
@@ -194,15 +168,15 @@ fn reached_from<'a>(
             .map(|(to, _)| to.as_str())
             .collect();
         let dir = parent(file);
-        match extension(file) {
-            "go" => next.extend(
+        match registry::of(file).map(|language| language.name) {
+            Some("go") => next.extend(
                 in_dir
                     .get(dir)
                     .into_iter()
                     .flatten()
                     .filter(|sibling| sibling.ends_with(".go")),
             ),
-            "py" => {
+            Some("python") => {
                 let mut dir = dir;
                 loop {
                     let init = if dir.is_empty() {
@@ -256,7 +230,8 @@ fn resolve_js(from_dir: &str, spec: &str, files: &BTreeSet<&str>) -> Option<Stri
         }
     }
     let base = parts.join("/");
-    let exts: Vec<&str> = TYPESCRIPT_EXTENSIONS
+    let exts: Vec<&str> = TYPESCRIPT
+        .extensions
         .iter()
         .copied()
         .chain(["d.ts"])
@@ -281,7 +256,7 @@ fn side_effect_imports(
     .expect("valid regex");
     let files: BTreeSet<&str> = all_files.iter().map(String::as_str).collect();
     let mut found = Vec::new();
-    for file in paths.iter().filter(|f| family(f) == Some("js")) {
+    for file in paths.iter().filter(|f| family(f) == Some(TYPESCRIPT.name)) {
         let Ok(text) = std::fs::read_to_string(root.join(file)) else {
             continue;
         };

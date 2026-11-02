@@ -12,12 +12,14 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use crate::lang::registry::{self, Language};
 use crate::relpath;
 use crate::scip::{self, Document, Documents};
 
-/// A language whose dependencies come from a SCIP index.
-pub struct Language {
-    pub name: &'static str,
+/// The SCIP indexer of a language: how to run it and what its index depends on.
+pub struct Indexer {
+    /// The language whose files it reads.
+    pub language: &'static Language,
     binary: &'static str,
     /// Files that mark a directory the indexer runs in.
     markers: &'static [&'static str],
@@ -25,8 +27,6 @@ pub struct Language {
     outermost: bool,
     /// Run at the project root when no marker is found (Python projects often have none).
     fallback_root: bool,
-    /// Extensions of the source files the indexer covers.
-    extensions: &'static [&'static str],
     /// Arguments that write the index to the given file.
     args: fn(&Path) -> Vec<String>,
     install: &'static str,
@@ -82,15 +82,14 @@ fn go_inputs(path: &str) -> bool {
         )
 }
 
-/// The sources scip-typescript reads, which the bundlers resolve alike.
-pub const TYPESCRIPT_EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"];
-
 /// scip-typescript reads what the TypeScript compiler does: the sources and declarations, every
 /// JSON file (a `tsconfig.json` and what it extends, a `package.json`, a JSON module an import
 /// names) and the lock files that decide which dependency is installed.
 fn typescript_inputs(path: &str) -> bool {
     let name = relpath::file_name(path);
-    let source = TYPESCRIPT_EXTENSIONS.contains(&relpath::extension(name));
+    let source = registry::TYPESCRIPT
+        .extensions
+        .contains(&relpath::extension(name));
     source
         || name.ends_with(".json")
         || name.ends_with(".json5")
@@ -100,14 +99,13 @@ fn typescript_inputs(path: &str) -> bool {
         )
 }
 
-pub const LANGUAGES: &[Language] = &[
-    Language {
-        name: "go",
+pub static INDEXERS: &[Indexer] = &[
+    Indexer {
+        language: &registry::GO,
         binary: "scip-go",
         markers: &["go.mod"],
         outermost: false,
         fallback_root: false,
-        extensions: &["go"],
         args: |out| vec!["--output".into(), out.display().to_string()],
         install: "mise use -g go:github.com/scip-code/scip-go/cmd/scip-go",
         mise: Some("go:github.com/scip-code/scip-go/cmd/scip-go"),
@@ -117,13 +115,12 @@ pub const LANGUAGES: &[Language] = &[
         inputs: go_inputs,
         env: go_env,
     },
-    Language {
-        name: "typescript",
+    Indexer {
+        language: &registry::TYPESCRIPT,
         binary: "scip-typescript",
         markers: &["tsconfig.json"],
         outermost: false,
         fallback_root: false,
-        extensions: TYPESCRIPT_EXTENSIONS,
         args: |out| {
             vec![
                 "index".into(),
@@ -140,8 +137,8 @@ pub const LANGUAGES: &[Language] = &[
         inputs: typescript_inputs,
         env: |_| false,
     },
-    Language {
-        name: "python",
+    Indexer {
+        language: &registry::PYTHON,
         binary: "scip-python",
         markers: &[
             "pyproject.toml",
@@ -151,7 +148,6 @@ pub const LANGUAGES: &[Language] = &[
         ],
         outermost: false,
         fallback_root: true,
-        extensions: &["py", "pyi"],
         args: |out| {
             vec![
                 "index".into(),
@@ -173,13 +169,12 @@ pub const LANGUAGES: &[Language] = &[
         inputs: every_file,
         env: |name| starts_with_any(name, &["PYTHON", "VIRTUAL_ENV", "CONDA_PREFIX"]),
     },
-    Language {
-        name: "php",
+    Indexer {
+        language: &registry::PHP,
         binary: "scip-php",
         markers: &["composer.json"],
         outermost: false,
         fallback_root: false,
-        extensions: &["php"],
         args: |_| Vec::new(),
         install: "composer global require davidrjenni/scip-php",
         mise: None,
@@ -189,13 +184,12 @@ pub const LANGUAGES: &[Language] = &[
         inputs: every_file,
         env: |_| false,
     },
-    Language {
-        name: "java",
+    Indexer {
+        language: &registry::JAVA,
         binary: "scip-java",
         markers: &["pom.xml", "build.gradle", "build.gradle.kts"],
         outermost: true,
         fallback_root: false,
-        extensions: &["java"],
         args: |out| vec!["index".into(), "--output".into(), out.display().to_string()],
         install: "mise use -g github:sourcegraph/scip-java",
         mise: Some("github:sourcegraph/scip-java"),
@@ -205,13 +199,12 @@ pub const LANGUAGES: &[Language] = &[
         inputs: every_file,
         env: |name| starts_with_any(name, &["JAVA_", "JDK_JAVA_OPTIONS", "MAVEN_"]),
     },
-    Language {
-        name: "csharp",
+    Indexer {
+        language: &registry::CSHARP,
         binary: "scip-dotnet",
         markers: &["*.csproj", "*.sln", "*.slnx"],
         outermost: true,
         fallback_root: false,
-        extensions: &["cs"],
         args: |out| vec!["index".into(), "--output".into(), out.display().to_string()],
         install: "dotnet tool install --global scip-dotnet",
         mise: None,
@@ -221,13 +214,12 @@ pub const LANGUAGES: &[Language] = &[
         inputs: every_file,
         env: |name| starts_with_any(name, &["DOTNET_", "MSBUILD", "NUGET_"]),
     },
-    Language {
-        name: "ruby",
+    Indexer {
+        language: &registry::RUBY,
         binary: "scip-ruby",
         markers: &["Gemfile", "*.gemspec"],
         outermost: true,
         fallback_root: false,
-        extensions: &["rb"],
         args: |out| {
             vec![
                 "--gem-metadata".into(),
@@ -245,13 +237,12 @@ pub const LANGUAGES: &[Language] = &[
         inputs: every_file,
         env: |name| starts_with_any(name, &["BUNDLE_", "GEM_"]),
     },
-    Language {
-        name: "rust",
+    Indexer {
+        language: &registry::RUST,
         binary: "rust-analyzer",
         markers: &["Cargo.toml"],
         outermost: true,
         fallback_root: false,
-        extensions: &["rs"],
         args: |out| {
             vec![
                 "scip".into(),
@@ -270,9 +261,13 @@ pub const LANGUAGES: &[Language] = &[
     },
 ];
 
-impl Language {
+impl Indexer {
+    pub fn name(&self) -> &'static str {
+        self.language.name
+    }
+
     pub fn covers(&self, file: &str) -> bool {
-        self.extensions.contains(&relpath::extension(file))
+        self.language.extensions.contains(&relpath::extension(file))
             && !file.ends_with(".d.ts")
             && !self.in_skip_dir(file)
     }
@@ -356,8 +351,8 @@ pub struct Indexed {
 /// Indexes every language that has source files among `files` (project files,
 /// `/`-separated, relative to `root`).
 /// What an indexer is run with besides its arguments: the build tags of Go.
-fn environment(language: &Language, go_tags: &[String]) -> Vec<(&'static str, String)> {
-    if language.name != "go" || go_tags.is_empty() {
+fn environment(language: &Indexer, go_tags: &[String]) -> Vec<(&'static str, String)> {
+    if language.name() != "go" || go_tags.is_empty() {
         return Vec::new();
     }
     let mut flags = std::env::var("GOFLAGS").unwrap_or_default();
@@ -383,7 +378,7 @@ pub fn run(
     let keyed: Vec<String> = files.iter().chain(excluded).cloned().collect();
     let mut wanted: Vec<&String> = Vec::new();
     let mut groups = Vec::new();
-    for language in LANGUAGES {
+    for language in INDEXERS {
         wanted.extend(files.iter().filter(|f| language.covers(f)));
         if !files.iter().any(|f| language.covers(f)) {
             continue;
@@ -542,7 +537,7 @@ fn cache_dir() -> Option<PathBuf> {
 /// outside the project are not covered; `--no-cache` is for when they change
 /// without a lock file.
 fn fingerprint(
-    language: &Language,
+    language: &Indexer,
     binary: &Path,
     root: &Path,
     dir: &str,
@@ -550,7 +545,7 @@ fn fingerprint(
     env: &[(String, String)],
 ) -> u64 {
     let mut hasher = StableHasher::default();
-    language.name.hash(&mut hasher);
+    language.name().hash(&mut hasher);
     env.hash(&mut hasher);
     (language.args)(Path::new("")).hash(&mut hasher);
     indexer_identity(binary).hash(&mut hasher);
@@ -585,7 +580,7 @@ fn fingerprint(
 /// inherited variables that `Language::env` names, with what easement sets for
 /// the run over them.
 fn key_env(
-    language: &Language,
+    language: &Indexer,
     inherited: impl IntoIterator<Item = (OsString, OsString)>,
     set: &[(&str, String)],
 ) -> Vec<(String, String)> {
@@ -666,9 +661,9 @@ fn first_word(hash: blake3::Hash) -> u64 {
 /// The file the index of `dir` is kept in; the name carries the fingerprint, so a
 /// changed project misses it, and `prefix` finds the entries of the same directory
 /// and indexer, which are pruned to the most recently used few.
-fn cache_file(language: &Language, dir: &str, key: u64) -> Option<(PathBuf, String)> {
+fn cache_file(language: &Indexer, dir: &str, key: u64) -> Option<(PathBuf, String)> {
     let mut hasher = StableHasher::default();
-    (language.name, dir).hash(&mut hasher);
+    (language.name(), dir).hash(&mut hasher);
     let prefix = format!("{:016x}-", hasher.finish());
     Some((
         cache_dir()?.join(format!("{prefix}{key:016x}.scip")),
@@ -702,7 +697,7 @@ impl Diagnosis {
 /// For every language with source files among `files`: is its indexer on the
 /// `PATH`, which version, and is what it needs in place.
 pub fn diagnose(root: &Path, files: &[String]) -> Vec<Diagnosis> {
-    LANGUAGES
+    INDEXERS
         .iter()
         .filter(|language| files.iter().any(|f| language.covers(f)))
         .map(|language| {
@@ -719,7 +714,7 @@ pub fn diagnose(root: &Path, files: &[String]) -> Vec<Diagnosis> {
                 })
                 .collect();
             Diagnosis {
-                language: language.name,
+                language: language.name(),
                 binary: language.binary,
                 found: binary.is_some(),
                 path: binary.map(|p| p.display().to_string()),
@@ -745,7 +740,7 @@ fn version_of(binary: &Path) -> Option<String> {
 }
 
 fn index_dir(
-    language: &Language,
+    language: &Indexer,
     root: &Path,
     dir: &str,
     files: &[String],
@@ -764,7 +759,7 @@ fn index_dir(
         anyhow::anyhow!(
             "`{}` is not installed, and easement needs it for {} files; install it with `{}`",
             language.binary,
-            language.name,
+            language.name(),
             language.install
         )
     })?;
@@ -792,7 +787,7 @@ fn index_dir(
     }
     if cache == CacheUse::Only {
         return Err(NotCached {
-            language: language.name,
+            language: language.name(),
             dir: dir.to_string(),
         }
         .into());
@@ -1006,8 +1001,8 @@ mod tests {
 
     #[test]
     fn the_cache_key_reads_the_environment_the_indexer_inherits() {
-        let go = &LANGUAGES[0];
-        let ts = &LANGUAGES[1];
+        let go = &INDEXERS[0];
+        let ts = &INDEXERS[1];
         let inherited = || {
             [
                 ("GOFLAGS", "-tags=race"),
@@ -1053,7 +1048,7 @@ mod tests {
 
     #[test]
     fn languages_cover_their_sources_and_roots() {
-        let ts = &LANGUAGES[1];
+        let ts = &INDEXERS[1];
         assert!(ts.covers("src/a.tsx") && ts.covers("a.mjs"));
         assert!(!ts.covers("src/a.d.ts") && !ts.covers("main.go"));
         let files: Vec<String> = [
@@ -1068,15 +1063,15 @@ mod tests {
         ]
         .map(String::from)
         .to_vec();
-        assert_eq!(LANGUAGES[0].roots(&files), ["", "svc"]);
+        assert_eq!(INDEXERS[0].roots(&files), ["", "svc"]);
         assert_eq!(ts.roots(&files), ["web"]);
         // A workspace root holds its members; Python falls back to the root.
-        assert_eq!(LANGUAGES[7].roots(&files), [""]);
-        assert_eq!(LANGUAGES[2].roots(&files), [""]);
+        assert_eq!(INDEXERS[7].roots(&files), [""]);
+        assert_eq!(INDEXERS[2].roots(&files), [""]);
         let nested: Vec<String> = ["a/Cargo.toml", "b/Cargo.toml", "b/c/Cargo.toml"]
             .map(String::from)
             .to_vec();
-        assert_eq!(LANGUAGES[7].roots(&nested), ["a", "b"]);
+        assert_eq!(INDEXERS[7].roots(&nested), ["a", "b"]);
     }
 
     #[test]

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::check::RuleId;
+use crate::lang::registry;
 use crate::stdlib::STD;
 use anyhow::{Context, Result, anyhow, bail};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
@@ -181,24 +182,6 @@ pub enum TestsMode {
 
 /// The component that `tests: auto` creates.
 pub const TESTS: &str = "tests";
-
-/// Test files by the conventions of the supported languages.
-pub const TEST_PATTERNS: &[&str] = &[
-    "**/*_test.go",
-    "**/*.test.*",
-    "**/*.spec.*",
-    "**/__tests__/**",
-    "**/test_*.py",
-    "**/*_test.py",
-    "**/*Test.java",
-    "**/*Tests.java",
-    "**/*Test.kt",
-    "**/*Tests.kt",
-    "**/*Test.cs",
-    "**/*Tests.cs",
-    "**/*Test.php",
-    "**/*Tests.swift",
-];
 
 /// A name in a rule's list, optionally with a reason of its own that is shown
 /// instead of the reason of the whole rule.
@@ -508,7 +491,12 @@ impl Config {
         self.components.insert(
             TESTS.to_string(),
             Component {
-                patterns: Patterns::Many(TEST_PATTERNS.iter().map(|p| p.to_string()).collect()),
+                patterns: Patterns::Many(
+                    registry::test_patterns()
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                ),
                 public: None,
                 because: None,
                 except: None,

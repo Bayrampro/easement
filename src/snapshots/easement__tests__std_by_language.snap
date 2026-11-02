@@ -1,0 +1,22 @@
+---
+source: src/main.rs
+assertion_line: 822
+expression: is_std
+---
+a.go net/http: true
+a.go github.com/x/y: false
+a.go C: false
+a.py os.path: true
+a.pyi os: true
+a.py requests: false
+A.java java.util.List: true
+A.kt kotlin.collections.List: true
+a.kts java.io.File: true
+a.rs std::fmt: true
+a.rs serde::de: false
+A.cs System.IO: true
+a.php DateTime: true
+a.php Symfony\Component: false
+a.swift Foundation: true
+a.ts fs: false
+a.rb json: false

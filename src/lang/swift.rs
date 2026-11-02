@@ -84,7 +84,7 @@ impl Adapter for Swift {
     }
 
     fn handles(&self, path: &Path) -> bool {
-        path.extension().is_some_and(|e| e == "swift")
+        super::registry::is(path, &super::registry::SWIFT)
     }
 
     fn imports(&self, path: &Path, source: &str) -> Result<Vec<Import>> {

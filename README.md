@@ -685,7 +685,7 @@ Rust: the dependency of a line is the deepest module it names, `std`, `core` and
 
 Kotlin is still read with tree-sitter: `scip-java`'s Kotlin plugin fails with a `NoClassDefFoundError` on every Kotlin compiler from 1.9 to 2.3 that I tried, so there is no indexer to use yet. References by fully qualified name without an import are not seen. Swift modules declared with a custom `path:` in `Package.swift` are not found.
 
-Adding a language to the indexed set means naming its indexer and the marker file it runs in (`src/indexer.rs`) and mapping its symbols to module names (`src/scip.rs`). A language that has no indexer can still be read with a tree-sitter adapter (`src/lang/mod.rs`): extract imports from a file, resolve a specifier to a project path or an external module. Rules, baseline and reports are language-agnostic.
+Adding a language starts with its entry in `src/lang/registry.rs`: its extensions, test files, standard library, whether `unused` can judge it and its manifest, which the rules read from there. An indexed language then names its indexer and the marker file it runs in (`src/indexer.rs`) and maps its symbols to module names (`src/scip.rs`). A language that has no indexer can still be read with a tree-sitter adapter (`src/lang/`): extract imports from a file, resolve a specifier to a project path or an external module. Rules, baseline and reports are language-agnostic.
 
 ### Index cache
 
