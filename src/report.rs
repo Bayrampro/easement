@@ -19,7 +19,7 @@ struct JsonReport<'a> {
     stale: &'a [Key],
     legalized: usize,
     /// `full`, or `partial` when `passed` rests on code the check could not read.
-    confidence: &'static str,
+    confidence: Confidence,
     confidence_reasons: Vec<String>,
     /// Set when indexes came from the cache: what their key leaves out and how
     /// to index again.
@@ -42,6 +42,26 @@ fn naming_unseen(stats: &Stats) -> String {
         "`defines` cannot see the types of .{} files, which are read without an index, so their names were not checked",
         stats.naming_unseen.join(", .")
     )
+}
+
+/// How much of the project an answer covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    Full,
+    /// It rests on code no indexer read, or judges only a part by design.
+    Partial,
+}
+
+impl Confidence {
+    /// `partial` when there is any reason the answer may be short.
+    pub fn of(reasons: &[String]) -> Self {
+        if reasons.is_empty() {
+            Confidence::Full
+        } else {
+            Confidence::Partial
+        }
+    }
 }
 
 /// What a verdict over cached indexes rests on. Not a reason for `partial`: the
@@ -99,11 +119,7 @@ pub fn json(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>) -> Stri
         owners: &verdict.owners,
         stale: &verdict.stale,
         legalized: verdict.legalized,
-        confidence: if reasons.is_empty() {
-            "full"
-        } else {
-            "partial"
-        },
+        confidence: Confidence::of(&reasons),
         confidence_reasons: reasons,
         cached: cache_note(stats),
         diff: changes.map(|c| DiffInfo {

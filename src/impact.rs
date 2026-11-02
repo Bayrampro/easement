@@ -6,6 +6,7 @@ use serde::Serialize;
 use crate::check::{NO_COMPONENT, Violation, describe_chain, file_graph, reach, shortest_chain};
 use crate::components::ComponentMap;
 use crate::config::Config;
+use crate::report::Confidence;
 use crate::scan::Dep;
 
 /// What depends on a set of files, directly or through other files.
@@ -17,7 +18,7 @@ pub struct Impact {
     pub deleted: Vec<String>,
     pub dependents: Vec<Dependent>,
     /// `full`, or `partial` when dependents may be missing.
-    pub confidence: &'static str,
+    pub confidence: Confidence,
     pub confidence_reasons: Vec<String>,
     /// Set when the indexes came from the cache: what their key leaves out and
     /// how to index again.
@@ -102,11 +103,7 @@ pub fn impact(
         changed: changed.into_iter().collect(),
         deleted,
         dependents,
-        confidence: if confidence_reasons.is_empty() {
-            "full"
-        } else {
-            "partial"
-        },
+        confidence: Confidence::of(&confidence_reasons),
         confidence_reasons,
         cached: None,
     }
