@@ -696,7 +696,7 @@ Indexers are slow (a second or two for a small project, ten or more for a big on
 - **Kept:** the newest 32 indexes of each directory and indexer.
 - **Not looked at:** dependencies outside the project (`node_modules`, `vendor/`, the Go module cache, the Python environment). After changing them without touching a lock file, run `easement check --no-cache`.
 
-`--format json` reports `stats.indexed` and `stats.from_cache`. When an index came from the cache, the report says so, in `cached` of `--format json` and in a line of the text, with what the key leaves out and that `--no-cache` indexes again.
+`--format json` reports `stats.indexed` and `stats.from_cache`. When an index came from the cache, the report says so, in `cached` of `--format json` and in a line of the text, with what the key leaves out and that `--no-cache` indexes again. `impact` (`cached` in its JSON), `why`, `suggest` and `baseline` say it the same way; `graph` and `suggest --patch`, whose output is a diagram or a patch, say it on stderr, with `graph` naming there the reasons its graph may be partial too.
 
 `--cache-only` runs no indexer and exits 3 when an index is not cached. A CI job can call it first and set up an indexer's toolchain (the Go module cache, `npm install`) only on a miss; the dependencies an indexer needs are checked only when it runs, since a cached index was written with them in place.
 

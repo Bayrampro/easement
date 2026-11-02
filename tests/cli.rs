@@ -2830,6 +2830,43 @@ fn graph_focus_keeps_a_component_and_its_neighbours() {
         .stderr(contains("unknown component `dat`; did you mean `data`?"));
 }
 
+/// Every command that reads indexes says when they came from the cache, like `check`.
+#[test]
+fn every_command_says_when_its_indexes_came_from_the_cache() {
+    let (_tmp, root) = fixture("go");
+    let cache = TempDir::new().unwrap();
+    let run = |args: &[&str]| easement_cached(&root, args, cache.path());
+    // The first run indexes; every one after it reads the cache.
+    run(&["check"]).code(1);
+    let impact: serde_json::Value = serde_json::from_str(&stdout_of(
+        run(&["impact", "internal", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert!(
+        impact["cached"].as_str().unwrap().contains("--no-cache"),
+        "{impact}"
+    );
+    run(&["impact", "internal"])
+        .success()
+        .stdout(contains("Cached: "));
+    run(&["why", "handler", "repository"])
+        .success()
+        .stdout(contains("Cached: "));
+    run(&["suggest"])
+        .success()
+        .stdout(contains("came from the cache"));
+    run(&["suggest", "--patch"])
+        .success()
+        .stderr(contains("came from the cache"));
+    run(&["graph"])
+        .success()
+        .stdout(contains("came from the cache").not())
+        .stderr(contains("came from the cache"));
+    run(&["baseline"])
+        .success()
+        .stdout(contains("came from the cache"));
+}
+
 #[test]
 fn impact_and_why_say_when_an_answer_may_be_short() {
     let (_tmp, root) = fixture("uncovered");
@@ -2838,8 +2875,10 @@ fn impact_and_why_say_when_an_answer_may_be_short() {
         "version: 1\ncomponents:\n  app: { in: app }\n  tools: { in: tools }\n",
     )
     .unwrap();
+    // A cache of its own, so the answer never says it came from the cache.
+    let cache = TempDir::new().unwrap();
     let report: serde_json::Value = serde_json::from_str(&stdout_of(
-        easement(&root, &["impact", "app", "--format", "json"]).success(),
+        easement_cached(&root, &["impact", "app", "--format", "json"], cache.path()).success(),
     ))
     .unwrap();
     insta::assert_json_snapshot!("impact_partial_json", report);

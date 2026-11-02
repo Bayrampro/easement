@@ -19,6 +19,10 @@ pub struct Impact {
     /// `full`, or `partial` when dependents may be missing.
     pub confidence: &'static str,
     pub confidence_reasons: Vec<String>,
+    /// Set when the indexes came from the cache: what their key leaves out and
+    /// how to index again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -104,6 +108,7 @@ pub fn impact(
             "partial"
         },
         confidence_reasons,
+        cached: None,
     }
 }
 
@@ -148,6 +153,9 @@ pub fn render(impact: &Impact, map: &ComponentMap) -> String {
     }
     for reason in &impact.confidence_reasons {
         out.push_str(&format!("Partial: {reason}\n"));
+    }
+    if let Some(note) = &impact.cached {
+        out.push_str(&format!("Cached: {note}\n"));
     }
     out
 }

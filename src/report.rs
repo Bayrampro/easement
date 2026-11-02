@@ -46,7 +46,7 @@ fn naming_unseen(stats: &Stats) -> String {
 
 /// What a verdict over cached indexes rests on. Not a reason for `partial`: the
 /// key holds what decides an index, but not dependencies outside the project.
-fn cache_note(stats: &Stats) -> Option<String> {
+pub fn cache_note(stats: &Stats) -> Option<String> {
     (stats.from_cache > 0).then(|| {
         format!(
             "{} index(es) came from the cache, keyed on the project files, the indexer and its environment but not on dependencies outside the project; if those changed without a lock file, run with `--no-cache` to index again",
@@ -56,7 +56,7 @@ fn cache_note(stats: &Stats) -> Option<String> {
 }
 
 /// Why a verdict is only as good as the code the check could read.
-fn confidence_reasons(stats: &Stats, changes: Option<&Changes>) -> Vec<String> {
+pub fn confidence_reasons(stats: &Stats, changes: Option<&Changes>) -> Vec<String> {
     let mut reasons = Vec::new();
     if let Some(changes) = changes {
         reasons.push(format!(

@@ -523,6 +523,9 @@ fn run(cli: Cli) -> Result<bool> {
                 violations.len(),
                 path.display()
             );
+            if let Some(note) = report::cache_note(&analysis.stats) {
+                println!("easement: {note}");
+            }
             if !unread.is_empty() {
                 println!(
                     "easement: {} entr(ies) kept for files no indexer covered, so their debt is not known to be paid; `easement check` lists those files",
@@ -578,7 +581,7 @@ fn run(cli: Cli) -> Result<bool> {
                 );
                 deleted = changes.deleted;
             }
-            let result = impact::impact(
+            let mut result = impact::impact(
                 &analysis.map,
                 &analysis.deps,
                 &analysis.all_files,
@@ -586,6 +589,7 @@ fn run(cli: Cli) -> Result<bool> {
                 deleted,
                 &analysis.unindexed,
             );
+            result.cached = report::cache_note(&analysis.stats);
             match format {
                 OutputFormat::Text => print!("{}", impact::render(&result, &analysis.map)),
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
@@ -603,6 +607,9 @@ fn run(cli: Cli) -> Result<bool> {
                 uncovered: &analysis.unindexed,
             };
             print!("{}", impact::why(&project.config, &graph, &from, &to)?);
+            if let Some(note) = report::cache_note(&analysis.stats) {
+                println!("Cached: {note}");
+            }
             Ok(true)
         }
         Command::Init { force } => {
@@ -627,6 +634,13 @@ fn run(cli: Cli) -> Result<bool> {
                 project.config.require_component(name)?;
             }
             let analysis = project.analyze(&mut fresh(), &scope::Scope::default())?;
+            // On stderr: stdout is the diagram itself.
+            for reason in report::confidence_reasons(&analysis.stats, None) {
+                eprintln!("easement: partial: {reason}");
+            }
+            if let Some(note) = report::cache_note(&analysis.stats) {
+                eprintln!("easement: {note}");
+            }
             print!(
                 "{}",
                 graph::render(
@@ -656,7 +670,10 @@ fn run(cli: Cli) -> Result<bool> {
                     &analysis.unindexed,
                 );
                 let (new, skipped) = patch::remove_allowances(&text, &gone);
-                for note in skipped {
+                for note in skipped
+                    .into_iter()
+                    .chain(report::cache_note(&analysis.stats))
+                {
                     eprintln!("easement: {note}");
                 }
                 let name = config.to_string_lossy().replace('\\', "/");
@@ -675,6 +692,9 @@ fn run(cli: Cli) -> Result<bool> {
                     &diagram::unused_arrows(&project.config, &project.root, &analysis.edges)?,
                 )
             );
+            if let Some(note) = report::cache_note(&analysis.stats) {
+                println!("easement: {note}");
+            }
             let unused = suggest::removable(
                 &project.config,
                 &analysis.map,
