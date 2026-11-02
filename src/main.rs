@@ -13,6 +13,7 @@ mod init;
 mod lang;
 mod manifests;
 mod patch;
+mod relpath;
 mod report;
 mod scan;
 mod scip;
@@ -279,7 +280,8 @@ impl Project {
                 .filter(|f| map.component_of(f).is_some())
                 // Types come from an index; an adapter reads imports alone.
                 .filter(|f| !indexer::LANGUAGES.iter().any(|l| l.covers(f)))
-                .filter_map(|f| f.rsplit_once('.').map(|(_, e)| e))
+                .map(|f| relpath::extension(f))
+                .filter(|ext| !ext.is_empty())
                 .map(str::to_string)
                 .collect();
             stats.naming_unseen = unseen.into_iter().collect();

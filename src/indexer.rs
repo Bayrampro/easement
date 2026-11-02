@@ -12,6 +12,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use crate::relpath;
 use crate::scip::{self, Document, Documents};
 
 /// A language whose dependencies come from a SCIP index.
@@ -70,15 +71,10 @@ fn every_file(_: &str) -> bool {
     true
 }
 
-/// The file name, the last part of a `/`-separated path.
-fn file_name(path: &str) -> &str {
-    path.rsplit_once('/').map_or(path, |(_, name)| name)
-}
-
 /// scip-go reads the Go sources and what `go` resolves them with: the module and workspace
 /// files and a vendored dependency list.
 fn go_inputs(path: &str) -> bool {
-    let name = file_name(path);
+    let name = relpath::file_name(path);
     name.ends_with(".go")
         || matches!(
             name,
@@ -86,16 +82,15 @@ fn go_inputs(path: &str) -> bool {
         )
 }
 
-const TYPESCRIPT_EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"];
+/// The sources scip-typescript reads, which the bundlers resolve alike.
+pub const TYPESCRIPT_EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"];
 
 /// scip-typescript reads what the TypeScript compiler does: the sources and declarations, every
 /// JSON file (a `tsconfig.json` and what it extends, a `package.json`, a JSON module an import
 /// names) and the lock files that decide which dependency is installed.
 fn typescript_inputs(path: &str) -> bool {
-    let name = file_name(path);
-    let source = name
-        .rsplit_once('.')
-        .is_some_and(|(_, ext)| TYPESCRIPT_EXTENSIONS.contains(&ext));
+    let name = relpath::file_name(path);
+    let source = TYPESCRIPT_EXTENSIONS.contains(&relpath::extension(name));
     source
         || name.ends_with(".json")
         || name.ends_with(".json5")
@@ -277,8 +272,7 @@ pub const LANGUAGES: &[Language] = &[
 
 impl Language {
     pub fn covers(&self, file: &str) -> bool {
-        file.rsplit_once('.')
-            .is_some_and(|(_, ext)| self.extensions.contains(&ext))
+        self.extensions.contains(&relpath::extension(file))
             && !file.ends_with(".d.ts")
             && !self.in_skip_dir(file)
     }
@@ -301,10 +295,8 @@ impl Language {
     fn roots(&self, files: &[String]) -> Vec<String> {
         let mut dirs: Vec<String> = files
             .iter()
-            .filter_map(|f| {
-                let (dir, name) = f.rsplit_once('/').unwrap_or(("", f));
-                self.has_marker(name).then(|| dir.to_string())
-            })
+            .filter(|f| self.has_marker(relpath::file_name(f)))
+            .map(|f| relpath::parent(f).to_string())
             .collect();
         dirs.sort();
         dirs.dedup();
@@ -568,7 +560,7 @@ fn fingerprint(
         format!("{dir}/")
     };
     let above = |f: &str| {
-        let parent = f.rsplit_once('/').map_or("", |(parent, _)| parent);
+        let parent = relpath::parent(f);
         parent.len() < dir.len() && (parent.is_empty() || dir.starts_with(&format!("{parent}/")))
     };
     let mut seen: Vec<(&str, Option<u64>)> = files

@@ -10,7 +10,9 @@ use regex::Regex;
 use crate::check::{RuleId, Violation};
 use crate::components::ComponentMap;
 use crate::config::Config;
+use crate::indexer::TYPESCRIPT_EXTENSIONS;
 use crate::lang::Target;
+use crate::relpath;
 use crate::scan::Dep;
 
 /// The kinds of manifests, by the extensions of the files they govern.
@@ -23,8 +25,8 @@ enum Kind {
 
 impl Kind {
     fn of(file: &str) -> Option<Self> {
-        match file.rsplit_once('.').map_or("", |(_, e)| e) {
-            "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => Some(Kind::Npm),
+        match relpath::extension(file) {
+            ext if TYPESCRIPT_EXTENSIONS.contains(&ext) => Some(Kind::Npm),
             "go" => Some(Kind::Go),
             "rs" => Some(Kind::Cargo),
             _ => None,
@@ -226,7 +228,7 @@ pub fn undeclared(
         };
         let file = crate::scan::slash(&dep.file);
         let Some(kind) = Kind::of(&file) else {
-            unjudged.insert(file.rsplit_once('.').map_or("", |(_, e)| e).to_string());
+            unjudged.insert(relpath::extension(&file).to_string());
             continue;
         };
         if crate::stdlib::is_std(&file, module) {
@@ -332,7 +334,7 @@ fn package_manifest(
 
 /// The nearest file named `name` in the directory of `file` or above it.
 fn nearest(file: &str, name: &str, known: &BTreeSet<&str>) -> Option<String> {
-    let mut dir = file.rsplit_once('/').map_or("", |(d, _)| d);
+    let mut dir = relpath::parent(file);
     loop {
         let candidate = if dir.is_empty() {
             name.to_string()
@@ -345,7 +347,7 @@ fn nearest(file: &str, name: &str, known: &BTreeSet<&str>) -> Option<String> {
         if dir.is_empty() {
             return None;
         }
-        dir = dir.rsplit_once('/').map_or("", |(d, _)| d);
+        dir = relpath::parent(dir);
     }
 }
 

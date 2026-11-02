@@ -11,6 +11,8 @@ use regex::Regex;
 use crate::check::{RuleId, Violation, file_graph, reach};
 use crate::components::ComponentMap;
 use crate::config::{Config, TEST_PATTERNS, TESTS};
+use crate::indexer::TYPESCRIPT_EXTENSIONS;
+use crate::relpath::{extension, parent};
 use crate::scan::{Dep, glob_set};
 
 /// The languages the rule judges, each checked against its indexer (C# and
@@ -19,10 +21,7 @@ use crate::scan::{Dep, glob_set};
 /// imports alone.
 const FAMILIES: &[(&str, &[&str])] = &[
     ("go", &["go"]),
-    (
-        "js",
-        &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
-    ),
+    ("js", TYPESCRIPT_EXTENSIONS),
     ("py", &["py"]),
     ("rs", &["rs"]),
     ("java", &["java"]),
@@ -70,21 +69,12 @@ pub struct Unused {
     pub reasons: Vec<String>,
 }
 
-fn ext(file: &str) -> &str {
-    file.rsplit_once('.').map_or("", |(_, e)| e)
-}
-
 fn family(file: &str) -> Option<&'static str> {
-    let ext = ext(file);
+    let ext = extension(file);
     FAMILIES
         .iter()
         .find(|(_, exts)| exts.contains(&ext))
         .map(|(name, _)| *name)
-}
-
-/// The directory of a `/`-separated path, `""` at the root.
-fn parent(path: &str) -> &str {
-    path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
 pub fn unused(input: &Input) -> Result<Unused> {
@@ -110,7 +100,11 @@ pub fn unused(input: &Input) -> Result<Unused> {
             skipped.insert(f, "some of its files were not covered by an indexer".into());
         }
     }
-    if input.paths.iter().any(|f| matches!(ext(f), "kt" | "kts")) {
+    if input
+        .paths
+        .iter()
+        .any(|f| matches!(extension(f), "kt" | "kts"))
+    {
         skipped.insert(
             "java",
             "Kotlin beside it uses Java classes without an import".into(),
@@ -122,7 +116,7 @@ pub fn unused(input: &Input) -> Result<Unused> {
     for file in input.paths {
         let judged = family(file).filter(|f| !skipped.contains_key(f));
         if judged.is_none() && family(file).is_none() {
-            unjudged.insert(ext(file));
+            unjudged.insert(extension(file));
         }
         let root = entry.is_match(file)
             || tests.is_match(file)
@@ -200,7 +194,7 @@ fn reached_from<'a>(
             .map(|(to, _)| to.as_str())
             .collect();
         let dir = parent(file);
-        match ext(file) {
+        match extension(file) {
             "go" => next.extend(
                 in_dir
                     .get(dir)
@@ -262,7 +256,11 @@ fn resolve_js(from_dir: &str, spec: &str, files: &BTreeSet<&str>) -> Option<Stri
         }
     }
     let base = parts.join("/");
-    let exts = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "d.ts"];
+    let exts: Vec<&str> = TYPESCRIPT_EXTENSIONS
+        .iter()
+        .copied()
+        .chain(["d.ts"])
+        .collect();
     std::iter::once(base.clone())
         .chain(exts.iter().map(|e| format!("{base}.{e}")))
         .chain(exts.iter().map(|e| format!("{base}/index.{e}")))

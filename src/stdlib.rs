@@ -7,7 +7,7 @@ pub const STD: &str = "$std";
 /// Whether `module`, imported by `file`, belongs to the standard library of
 /// the file's language. Languages without a rule here never match.
 pub fn is_std(file: &str, module: &str) -> bool {
-    let ext = file.rsplit_once('.').map_or("", |(_, ext)| ext);
+    let ext = crate::relpath::extension(file);
     let first = |seps: &[char]| module.split(seps).next().unwrap_or(module);
     match ext {
         // A standard package's path has no domain: `fmt`, `net/http`; `C` is cgo.
@@ -26,7 +26,7 @@ pub fn is_std(file: &str, module: &str) -> bool {
 
 /// Whether `$std` can tell the standard library of `file`'s language.
 pub fn knows(file: &str) -> bool {
-    let ext = file.rsplit_once('.').map_or("", |(_, ext)| ext);
+    let ext = crate::relpath::extension(file);
     matches!(
         ext,
         "go" | "py" | "pyi" | "java" | "kt" | "kts" | "rs" | "cs" | "php" | "swift"

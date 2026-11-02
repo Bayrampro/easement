@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::components::ComponentMap;
 use crate::config::{Config, Listed};
 use crate::lang::Target;
+use crate::relpath;
 use crate::scan::{Dep, slash};
 use crate::scope::Scope;
 
@@ -293,7 +294,7 @@ pub fn evaluate(
                     && map.uses_std(from)
                     && !crate::stdlib::knows(&file)
                 {
-                    let ext = file.rsplit_once('.').map_or("", |(_, e)| e).to_string();
+                    let ext = relpath::extension(&file).to_string();
                     if !stats.std_unknown.contains(&ext) {
                         stats.std_unknown.push(ext);
                     }
@@ -646,8 +647,7 @@ pub fn describe_chain<'a>(
 pub fn file_graph(deps: &[Dep], files: &[String]) -> BTreeMap<String, BTreeSet<(String, usize)>> {
     let mut in_dir: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for file in files {
-        let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
-        in_dir.entry(dir).or_default().push(file);
+        in_dir.entry(relpath::parent(file)).or_default().push(file);
     }
     let known: BTreeSet<&str> = files.iter().map(String::as_str).collect();
     let mut graph: BTreeMap<String, BTreeSet<(String, usize)>> = BTreeMap::new();
@@ -842,7 +842,7 @@ pub fn required(
     paths: &[String],
     all_files: &[String],
 ) -> Vec<Violation> {
-    let parent = |file: &str| file.rsplit_once('/').map_or("", |(dir, _)| dir).to_string();
+    let parent = |file: &str| relpath::parent(file).to_string();
     let wanted = |from: &str| {
         config.rules.get(from).is_some_and(|r| {
             !(r.must_depend_on.is_empty()
@@ -882,8 +882,10 @@ pub fn required(
     }
     let mut dir_files: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for file in all_files {
-        let (dir, name) = file.rsplit_once('/').unwrap_or(("", file));
-        dir_files.entry(dir).or_default().push(name);
+        dir_files
+            .entry(relpath::parent(file))
+            .or_default()
+            .push(relpath::file_name(file));
     }
     let mut found = Vec::new();
     for ((component, dir), unit) in &units {
@@ -1060,7 +1062,7 @@ pub fn forbidden_files(config: &Config, map: &ComponentMap, files: &[String]) ->
             if map.component_of(file) != Some(component.as_str()) {
                 continue;
             }
-            let name = file.rsplit_once('/').map_or(file.as_str(), |(_, n)| n);
+            let name = relpath::file_name(file);
             let Some((listed, _)) = matchers
                 .iter()
                 .find(|(_, m)| m.is_match(name) || m.is_match(file))
