@@ -26,3 +26,4 @@ a.swift: indexer [], adapter ["swift"], std true, unused None, manifest None
 Makefile: indexer [], adapter [], std false, unused None, manifest None
 v1.2/x: indexer [], adapter [], std false, unused None, manifest None
 a.json: indexer [], adapter [], std false, unused None, manifest None
+a.dart: indexer ["dart"], adapter [], std true, unused None, manifest Some(Pub)

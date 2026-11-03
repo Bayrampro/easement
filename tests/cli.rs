@@ -1135,6 +1135,719 @@ fn project(files: &[(&str, &str)]) -> (TempDir, PathBuf) {
     (tmp, root)
 }
 
+const DART_PUBSPEC: &str = "name: example\nenvironment:\n  sdk: ^3.13.0\n";
+const DART_CONFIG: &str = "version: 1\ncomponents:\n  app: {in: lib/app.dart}\n  domain: {in: lib/domain.dart}\nrules:\n  app:\n    must_not_depend_on: [domain]\n";
+
+/// Fixture preparation is explicit and offline; product commands never run pub.
+fn prepare_dart(root: &Path) {
+    let dart = which::which("dart").expect("Dart SDK is needed for Dart tests");
+    let mut command = std::process::Command::new(&dart);
+    command
+        .args(["--suppress-analytics", "pub", "get", "--offline"])
+        .current_dir(root);
+    let canonical = fs::canonicalize(&dart).unwrap();
+    if let Some(flutter) = canonical
+        .ancestors()
+        .find(|p| p.join("packages/flutter/pubspec.yaml").is_file())
+    {
+        command.env("FLUTTER_ROOT", flutter);
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "prepare Dart fixture: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn dart_project() -> (TempDir, PathBuf) {
+    let result = project(&[
+        ("pubspec.yaml", DART_PUBSPEC),
+        ("easement.yml", DART_CONFIG),
+        (
+            "lib/app.dart",
+            "import 'domain.dart';\nDomain make() => Domain();\n",
+        ),
+        ("lib/domain.dart", "class Domain {}\n"),
+    ]);
+    prepare_dart(&result.1);
+    result
+}
+
+#[test]
+fn dart_boundaries_report_precise_locations_and_full_confidence() {
+    let (_tmp, root) = dart_project();
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    assert_eq!(value["confidence"], "full", "{value}");
+    assert_eq!(value["violations"][0]["file"], "lib/app.dart");
+    assert_eq!(value["violations"][0]["line"], 1);
+    fs::write(
+        root.join("easement.yml"),
+        DART_CONFIG.replace("must_not_depend_on", "may_depend_on"),
+    )
+    .unwrap();
+    easement(&root, &["check"]).success();
+}
+
+#[test]
+fn dart_directives_include_both_part_forms_and_disclose_conditionals() {
+    let (_tmp, root) = fixture("dart-basic");
+    fs::write(
+        root.join("easement.yml"),
+        "version: 1\ncomponents:\n  library: {in: lib}\n",
+    )
+    .unwrap();
+    prepare_dart(&root);
+    fs::write(root.join("index.scip"), "user-owned index").unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(value["confidence"], "partial");
+    let gaps = value["stats"]["analysis_partial"].as_array().unwrap();
+    assert_eq!(gaps.len(), 1, "{value}");
+    assert!(gaps[0]["reason"].as_str().unwrap().contains("conditional"));
+    assert_eq!(gaps[0]["line"], 5);
+    assert!(
+        value["stats"]["internal_deps"].as_u64().unwrap() >= 7,
+        "{value}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("index.scip")).unwrap(),
+        "user-owned index"
+    );
+    insta::assert_json_snapshot!("dart_directive_coverage", &value);
+    easement(&root, &["check"])
+        .success()
+        .stdout(contains("Incomplete analysis"))
+        .stdout(contains("conditional Dart directive"));
+    easement(&root, &["suggest", "--patch"])
+        .success()
+        .stderr(contains("conditional"));
+}
+
+#[test]
+fn dart_suppressed_missing_imports_and_invalid_syntax_stay_partial() {
+    let (_tmp, root) = dart_project();
+    fs::write(
+        root.join("lib/app.dart"),
+        "// ignore_for_file: uri_does_not_exist\nimport 'missing.dart';\n",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(value["confidence"], "partial");
+    assert!(
+        value["stats"]["analysis_partial"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["line"] == 2
+                && (g["reason"].as_str().unwrap().contains("no matching SCIP")
+                    || g["reason"]
+                        .as_str()
+                        .unwrap()
+                        .contains("no indexed definition"))),
+        "{value}"
+    );
+    fs::write(root.join("lib/app.dart"), "void main( {\n").unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(value["confidence"], "partial", "{value}");
+}
+
+#[test]
+fn dart_doctor_and_check_explain_missing_resolution() {
+    let (_tmp, root) = project(&[
+        ("pubspec.yaml", DART_PUBSPEC),
+        ("easement.yml", DART_CONFIG),
+        ("lib/app.dart", "void main() {}\n"),
+        ("lib/domain.dart", "class Domain {}\n"),
+    ]);
+    easement(&root, &["doctor"])
+        .code(1)
+        .stdout(contains("package_config.json"))
+        .stdout(contains("pub get"));
+    easement(&root, &["check"])
+        .code(2)
+        .stderr(contains("pub get"));
+    prepare_dart(&root);
+    fs::write(root.join(".dart_tool/package_config.json"), "{").unwrap();
+    easement(&root, &["doctor"])
+        .code(1)
+        .stdout(contains("invalid Dart package configuration"));
+}
+
+#[test]
+fn dart_suppressed_missing_external_targets_cannot_look_verified() {
+    let (_tmp, root) = project(&[
+        (
+            "app/pubspec.yaml",
+            "name: example\nenvironment: {sdk: ^3.13.0}\ndependencies:\n  leaf: {path: ../leaf}\n",
+        ),
+        (
+            "leaf/pubspec.yaml",
+            "name: leaf\nenvironment: {sdk: ^3.13.0}\n",
+        ),
+        ("leaf/lib/leaf.dart", "class Leaf {}\n"),
+        (
+            "app/lib/app.dart",
+            "// ignore_for_file: uri_does_not_exist\nimport 'package:leaf/missing.dart';\n",
+        ),
+        (
+            "app/easement.yml",
+            "version: 1\ncomponents:\n  app: {in: lib}\n",
+        ),
+    ]);
+    let app = root.join("app");
+    prepare_dart(&app);
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&app, &["check", "--no-cache", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(value["confidence"], "partial", "{value}");
+    fs::write(
+        app.join("lib/app.dart"),
+        "// ignore_for_file: uri_does_not_exist\nimport 'dart:missing_library';\n",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&app, &["check", "--no-cache", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(value["confidence"], "partial", "{value}");
+}
+
+#[test]
+fn dart_private_coverage_does_not_warn_for_public_only_files() {
+    let (_tmp, root) = project(&[
+        ("pubspec.yaml", DART_PUBSPEC),
+        ("lib/api.dart", "class PublicEntity {}\n"),
+        (
+            "lib/client.dart",
+            "import 'api.dart';\nPublicEntity make(String value) { final local = value; assert(local.isNotEmpty); return PublicEntity(); }\n",
+        ),
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  api: {in: lib/api.dart, public_symbols: [PublicEntity], defines: ['*Entity']}\n  client: {in: lib/client.dart}\nrules:\n  client: {may_depend_on: [api], forbid_symbol: [lib/api.Forbidden]}\n",
+        ),
+    ]);
+    prepare_dart(&root);
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(value["confidence"], "full", "{value}");
+    assert!(value["stats"].get("analysis_partial").is_none(), "{value}");
+}
+
+#[test]
+fn dart_private_coverage_only_warns_for_relevant_naming_claims() {
+    let config = "version: 1\ncomponents:\n  entities: {in: lib/entities, defines: ['*Entity']}\n  other: {in: lib/other}\nexclude: [lib/other/excluded.dart]\ntarget_only: [lib/other/target.g.dart]\n";
+    let (_tmp, root) = project(&[
+        ("pubspec.yaml", DART_PUBSPEC),
+        ("easement.yml", config),
+        ("lib/entities/owned.dart", "class _OwnedEntity {}\n"),
+        ("lib/other/wrong.dart", "class _WrongEntity {}\n"),
+        ("lib/other/helper.dart", "class _Helper {}\n"),
+        (
+            "lib/other/function.dart",
+            "int _functionEntity() => 1;\nint call() => _functionEntity();\n",
+        ),
+        (
+            "lib/other/locals.dart",
+            "int call(int _parameterEntity) { final _localEntity = _parameterEntity; return _localEntity; }\n",
+        ),
+        ("lib/other/public.dart", "class PublicWidget {}\n"),
+        ("lib/unowned.dart", "class _UnownedEntity {}\n"),
+        ("lib/other/excluded.dart", "class _ExcludedEntity {}\n"),
+        ("lib/other/target.g.dart", "class _GeneratedEntity {}\n"),
+    ]);
+    prepare_dart(&root);
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    let gaps = value["stats"]["analysis_partial"].as_array().unwrap();
+    assert_eq!(gaps.len(), 1, "{value}");
+    assert_eq!(gaps[0]["file"], "lib/other/wrong.dart");
+    assert_eq!(gaps[0]["line"], 1);
+    assert!(gaps[0]["reason"].as_str().unwrap().contains("defines"));
+    assert_eq!(value["confidence"], "partial");
+    insta::assert_json_snapshot!("dart_private_naming_coverage", &value);
+    let scoped: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(
+            &root,
+            &[
+                "check",
+                "--no-cache",
+                "--scope",
+                "lib/entities",
+                "--format",
+                "json",
+            ],
+        )
+        .success(),
+    ))
+    .unwrap();
+    assert!(
+        scoped["stats"].get("analysis_partial").is_none(),
+        "{scoped}"
+    );
+    assert_eq!(
+        scoped["confidence_reasons"].as_array().unwrap().len(),
+        1,
+        "{scoped}"
+    );
+    fs::write(
+        root.join("easement.yml"),
+        config.replace(", defines: ['*Entity']", ""),
+    )
+    .unwrap();
+    let unchecked: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(unchecked["confidence"], "full", "{unchecked}");
+}
+
+#[test]
+fn dart_private_coverage_tracks_cross_file_uses_and_applicable_symbol_rules() {
+    let config = "version: 1\ncomponents:\n  library: {in: lib/api.dart}\n  provider: {in: lib/secret.dart, public_symbols: [PublicApi]}\n  consumer: {in: lib/consumer.dart}\n  own: {in: lib/own.dart}\n  method: {in: lib/method.dart}\n  unrelated: {in: lib/unrelated.dart}\ncommon: [library, provider, consumer, own, method]\nrules:\n  consumer: {forbid_symbol: [lib/secret._secret]}\n  own: {forbid_symbol: [lib/secret._secret]}\n";
+    let (_tmp, root) = project(&[
+        ("pubspec.yaml", DART_PUBSPEC),
+        ("easement.yml", config),
+        (
+            "lib/api.dart",
+            "part 'secret.dart';\npart 'consumer.dart';\npart 'own.dart';\npart 'method.dart';\n",
+        ),
+        (
+            "lib/secret.dart",
+            "part of 'api.dart';\nString _secret() => 'secret';\nclass PublicApi { String _method() => 'method'; }\n",
+        ),
+        (
+            "lib/consumer.dart",
+            "part of 'api.dart';\nString readSecret() => _secret();\n",
+        ),
+        (
+            "lib/own.dart",
+            "part of 'api.dart';\nString _local() => 'own';\nString readLocal() => _local();\n",
+        ),
+        (
+            "lib/method.dart",
+            "part of 'api.dart';\nString readMethod() => PublicApi()._method();\n",
+        ),
+        (
+            "lib/unrelated.dart",
+            "String _helper() => 'other library';\nString helper() => _helper();\n",
+        ),
+    ]);
+    prepare_dart(&root);
+    for configuration in [
+        config.to_string(),
+        config.replace("rules:\n  consumer: {forbid_symbol: [lib/secret._secret]}\n  own: {forbid_symbol: [lib/secret._secret]}\n", ""),
+        config.replace(", public_symbols: [PublicApi]", ""),
+    ] {
+        fs::write(root.join("easement.yml"), configuration).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&stdout_of(
+            easement(&root, &["check", "--no-cache", "--format", "json"]).success(),
+        )).unwrap();
+        let gaps = value["stats"]["analysis_partial"].as_array().unwrap();
+        assert!(!gaps.is_empty(), "{value}");
+        assert!(gaps.iter().all(|g| g["file"] == "lib/consumer.dart" && g["line"] == 2), "{value}");
+        assert!(gaps.iter().any(|g| g["reason"].as_str().unwrap().contains("private declarations")), "{value}");
+        assert_eq!(value["confidence"], "partial");
+    }
+    fs::write(
+        root.join("easement.yml"),
+        config
+            .replace(", public_symbols: [PublicApi]", "")
+            .replace("lib/secret._secret", "lib/secret.Unrelated"),
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(value["confidence"], "full", "{value}");
+}
+
+#[test]
+fn dart_public_apis_isolation_cycles_reach_symbols_and_naming_use_existing_rules() {
+    let (_tmp, root) = project(&[
+        ("pubspec.yaml", DART_PUBSPEC),
+        (
+            "lib/app.dart",
+            "import 'domain/private.dart';\nimport 'data/store.dart';\nPrivateEntity entity() => PrivateEntity();\nClient client() => Client();\n",
+        ),
+        (
+            "lib/presentation.dart",
+            "import 'domain/api.dart';\nApi api() => Api();\n",
+        ),
+        (
+            "lib/domain/api.dart",
+            "export 'private.dart';\nimport '../data/store.dart';\nclass Api { Client? client; }\n",
+        ),
+        ("lib/domain/private.dart", "class PrivateEntity {}\n"),
+        (
+            "lib/data/store.dart",
+            "import '../domain/api.dart';\nclass Client { Api? api; }\nclass RemoteEntity {}\n",
+        ),
+        (
+            "lib/features/one/one.dart",
+            "import '../two/two.dart';\nTwo make() => Two();\n",
+        ),
+        ("lib/features/two/two.dart", "class Two {}\n"),
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: {in: lib/app.dart}\n  presentation: {in: lib/presentation.dart}\n  domain: {in: lib/domain, public: lib/domain/api.dart, defines: ['*Entity']}\n  data: {in: lib/data, public_symbols: [Allowed]}\n  features: {in: 'lib/features/*', isolated: true}\nno_cycles: true\nrules:\n  app: {may_depend_on: [domain, data], forbid_symbol: ['lib/data/store.Client']}\n  presentation: {may_depend_on: [domain], must_not_reach: [data]}\n  domain: {may_depend_on: [data]}\n  data: {may_depend_on: [domain]}\n",
+        ),
+    ]);
+    prepare_dart(&root);
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    let rules: std::collections::BTreeSet<&str> = value["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["rule"].as_str().unwrap())
+        .collect();
+    for rule in ["privacy", "isolation", "cycle", "reach", "symbol", "naming"] {
+        assert!(rules.contains(rule), "missing {rule}: {value}");
+    }
+    // Public declarations have complete symbol/type coverage for these rules.
+    assert_eq!(value["confidence"], "full", "{value}");
+    assert!(value["stats"].get("analysis_partial").is_none(), "{value}");
+}
+
+#[test]
+fn dart_workspace_indexes_each_source_package_and_resolves_versionless_edges() {
+    let (_tmp, root) = project(&[
+        (
+            "pubspec.yaml",
+            "name: workspace_example\nenvironment: {sdk: ^3.13.0}\nworkspace: [packages/app, packages/domain]\n",
+        ),
+        (
+            "packages/app/pubspec.yaml",
+            "name: app\nenvironment: {sdk: ^3.13.0}\nresolution: workspace\ndependencies: {domain: any}\n",
+        ),
+        (
+            "packages/domain/pubspec.yaml",
+            "name: domain\nenvironment: {sdk: ^3.13.0}\nresolution: workspace\n",
+        ),
+        (
+            "packages/app/lib/app.dart",
+            "import 'package:domain/domain.dart';\nDomain make() => Domain();\n",
+        ),
+        ("packages/domain/lib/domain.dart", "class Domain {}\n"),
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: {in: packages/app/lib}\n  domain: {in: packages/domain/lib}\nrules:\n  app: {must_not_depend_on: [domain]}\nmanifests: true\n",
+        ),
+    ]);
+    prepare_dart(&root);
+    assert!(
+        !root
+            .join("packages/app/.dart_tool/package_config.json")
+            .exists()
+    );
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    assert_eq!(value["stats"]["indexed"], 2, "{value}");
+    assert_eq!(value["confidence"], "full", "{value}");
+    assert_eq!(
+        value["violations"][0]["target"],
+        "packages/domain/lib/domain.dart"
+    );
+}
+
+#[test]
+fn dart_nested_path_packages_are_internal_and_excluded_targets_stay_resolvable() {
+    let (_tmp, root) = project(&[
+        (
+            "packages/app/pubspec.yaml",
+            "name: app\nenvironment: {sdk: ^3.13.0}\ndependencies:\n  domain: {path: ../domain}\n",
+        ),
+        (
+            "packages/domain/pubspec.yaml",
+            "name: domain\nenvironment: {sdk: ^3.13.0}\n",
+        ),
+        (
+            "packages/app/lib/app.dart",
+            "import 'package:domain/domain.dart';\nDomain make() => Domain();\n",
+        ),
+        ("packages/domain/lib/domain.dart", "class Domain {}\n"),
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: {in: packages/app/lib}\n  domain: {in: packages/domain/lib}\nrules:\n  app: {must_not_depend_on: [domain]}\n",
+        ),
+    ]);
+    prepare_dart(&root.join("packages/domain"));
+    prepare_dart(&root.join("packages/app"));
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    assert_eq!(value["confidence"], "full", "{value}");
+    assert_eq!(value["stats"]["indexed"], 2);
+    fs::write(
+        root.join("easement.yml"),
+        "version: 1\ncomponents:\n  app: {in: packages/app/lib}\nexclude: ['packages/domain/**']\n",
+    )
+    .unwrap();
+    easement(&root, &["check", "--no-cache"])
+        .code(1)
+        .stdout(contains("excluded"));
+}
+
+#[test]
+fn dart_manifests_require_direct_declarations_not_overrides_or_transitive_installation() {
+    let (_tmp, root) = project(&[
+        (
+            "app/pubspec.yaml",
+            "name: example\nenvironment: {sdk: ^3.13.0}\ndependencies:\n  facade: {path: ../facade}\ndependency_overrides:\n  leaf: {path: ../leaf}\n",
+        ),
+        (
+            "facade/pubspec.yaml",
+            "name: facade\nenvironment: {sdk: ^3.13.0}\ndependencies:\n  leaf: {path: ../leaf}\n",
+        ),
+        (
+            "facade/lib/facade.dart",
+            "export 'package:leaf/leaf.dart';\n",
+        ),
+        (
+            "leaf/pubspec.yaml",
+            "name: leaf\nenvironment: {sdk: ^3.13.0}\n",
+        ),
+        ("leaf/lib/leaf.dart", "class Leaf {}\n"),
+        (
+            "app/lib/app.dart",
+            "import 'package:leaf/leaf.dart';\nLeaf make() => Leaf();\n",
+        ),
+        (
+            "app/easement.yml",
+            "version: 1\ncomponents:\n  app: {in: lib}\nmanifests: true\n",
+        ),
+    ]);
+    let app = root.join("app");
+    prepare_dart(&app);
+    easement(&app, &["check"])
+        .code(1)
+        .stdout(contains("leaf is not declared in pubspec.yaml"));
+    let manifest = app.join("pubspec.yaml");
+    let text = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, format!("{text}dev_dependencies:\n  leaf: any\n")).unwrap();
+    prepare_dart(&app);
+    easement(&app, &["check"]).success();
+    fs::write(
+        app.join("lib/app.dart"),
+        "import 'package:facade/facade.dart';\nLeaf make() => Leaf();\n",
+    )
+    .unwrap();
+    fs::write(&manifest, text).unwrap();
+    prepare_dart(&app);
+    easement(&app, &["check"]).success();
+}
+
+#[test]
+fn dart_generated_targets_and_exclusions_keep_existing_semantics() {
+    let (_tmp, root) = dart_project();
+    fs::rename(root.join("lib/domain.dart"), root.join("lib/domain.g.dart")).unwrap();
+    fs::write(
+        root.join("lib/app.dart"),
+        "import 'domain.g.dart';\nDomain make() => Domain();\n",
+    )
+    .unwrap();
+    let config = DART_CONFIG.replace("lib/domain.dart", "lib/domain.g.dart");
+    fs::write(
+        root.join("easement.yml"),
+        format!("{config}target_only: ['lib/domain.g.dart']\n"),
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("lib/domain.g.dart"));
+    fs::write(
+        root.join("easement.yml"),
+        "version: 1\ncomponents:\n  app: {in: lib/app.dart}\nexclude: ['lib/domain.g.dart']\n",
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("excluded"));
+    fs::write(root.join("easement.yml"), config).unwrap();
+    fs::write(
+        root.join("analysis_options.yaml"),
+        "analyzer:\n  exclude: ['lib/domain.g.dart']\n",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    assert_eq!(value["confidence"], "partial");
+    assert_eq!(
+        value["stats"]["uncovered"],
+        serde_json::json!(["lib/domain.g.dart"])
+    );
+}
+
+#[test]
+fn dart_cache_records_hits_and_invalidates_hidden_resolution_and_local_inputs() {
+    let (_tmp, root) = dart_project();
+    let cache = TempDir::new().unwrap();
+    let run = |args: &[&str]| easement_cached(&root, args, cache.path());
+    run(&["check", "--cache-only"]).code(3);
+    run(&["check"]).code(1);
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        run(&["check", "--cache-only", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    assert_eq!(value["stats"]["from_cache"], 1, "{value}");
+    fs::write(
+        root.join("analysis_options.yaml"),
+        "analyzer:\n  errors:\n    unused_import: ignore\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".gitignore"),
+        "analysis_options.yaml\n.dart_tool/\n",
+    )
+    .unwrap();
+    run(&["check", "--cache-only"]).code(3);
+    run(&["check"]).code(1);
+    let config = root.join(".dart_tool/package_config.json");
+    fs::write(
+        &config,
+        format!("{}\n", fs::read_to_string(&config).unwrap()),
+    )
+    .unwrap();
+    run(&["check", "--cache-only"]).code(3);
+    run(&["check", "--no-cache"]).code(1);
+    fs::write(root.join("lib/app.dart"), "void main() {}\n").unwrap();
+    run(&["check", "--cache-only"]).code(3);
+    run(&["check"]).success();
+    run(&["check", "--cache-only"]).success();
+    for entry in fs::read_dir(cache.path()).unwrap().flatten() {
+        if entry.file_name().to_string_lossy().starts_with("dart-v1-") {
+            fs::write(entry.path(), "{}").unwrap();
+        }
+    }
+    run(&["check", "--cache-only"]).code(3);
+}
+
+#[test]
+fn dart_existing_commands_tests_and_unsupported_checks_report_honestly() {
+    let (_tmp, root) = dart_project();
+    fs::create_dir_all(root.join("test")).unwrap();
+    fs::write(root.join("test/example_test.dart"), "void main() {}\n").unwrap();
+    fs::write(root.join("test/helper.dart"), "class Helper {}\n").unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        format!(
+            "{}tests: auto\nentry: ['lib/app.dart']\nstrict: true\n",
+            DART_CONFIG
+        ),
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("test/helper.dart"))
+        .stdout(contains("unused"));
+    easement(&root, &["graph"]).success();
+    easement(&root, &["why", "app", "domain"])
+        .success()
+        .stdout(contains("lib/app.dart"));
+    easement(&root, &["impact", "lib/domain.dart"])
+        .success()
+        .stdout(contains("lib/app.dart"));
+    easement(&root, &["suggest"]).success();
+    easement(&root, &["baseline"]).success();
+    easement(&root, &["check"]).success();
+    fs::remove_file(root.join("easement.yml")).unwrap();
+    easement(&root, &["init"]).success();
+    easement(&root, &["doctor"]).success();
+}
+
+#[test]
+fn dart_diff_and_baseline_do_not_treat_incomplete_analysis_as_paid_debt() {
+    let (_tmp, root) = dart_project();
+    fs::write(root.join("lib/data.dart"), "class Data {}\n").unwrap();
+    fs::write(root.join("easement.yml"), "version: 1\ncomponents:\n  app: {in: lib/app.dart}\n  domain: {in: lib/domain.dart}\n  data: {in: lib/data.dart}\nrules:\n  app: {may_depend_on: [domain]}\n").unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "test: base Dart project"]);
+    fs::write(
+        root.join("lib/app.dart"),
+        "import 'domain.dart';\nimport 'data.dart';\nDomain make() => Domain();\n",
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(
+            &root,
+            &["check", "--diff", "HEAD", "--no-cache", "--format", "json"],
+        )
+        .code(1),
+    ))
+    .unwrap();
+    assert_eq!(value["violations"][0]["line"], 2);
+    assert_eq!(value["confidence"], "partial");
+    easement(&root, &["baseline"]).success();
+    fs::write(
+        root.join("lib/app.dart"),
+        "// ignore_for_file: uri_does_not_exist\nimport 'missing.dart';\n",
+    )
+    .unwrap();
+    easement(&root, &["baseline"])
+        .success()
+        .stdout(contains("incomplete"));
+    assert!(
+        fs::read_to_string(root.join("easement.baseline.yml"))
+            .unwrap()
+            .contains("data")
+    );
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(value["confidence"], "partial");
+    assert!(value["stale"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn dart_flutter_uses_the_real_sdk_and_remains_an_external_dependency() {
+    let (_tmp, root) = fixture("flutter-basic");
+    fs::write(root.join("lib/main.dart"), "import 'package:flutter/widgets.dart';\nimport 'dart:ui' as ui;\nvoid main() => runApp(const SizedBox());\n").unwrap();
+    fs::create_dir(root.join("test")).unwrap();
+    fs::write(root.join("test/widget_test.dart"), "import 'package:flutter/widgets.dart';\nvoid main() { assert(const SizedBox().width == null); }\n").unwrap();
+    fs::write(root.join("easement.yml"), "version: 1\ncomponents:\n  domain: {in: lib}\ntests: auto\nstrict: true\nrules:\n  domain: {may_use_external: ['$std']}\nmanifests: true\n").unwrap();
+    prepare_dart(&root);
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    assert_eq!(value["confidence"], "full", "{value}");
+    assert_eq!(
+        value["violations"][0]["target"],
+        "package:flutter/widgets.dart"
+    );
+    assert_eq!(value["violations"][0]["line"], 1);
+    assert_eq!(value["violations"].as_array().unwrap().len(), 1, "{value}");
+    assert_eq!(value["stats"]["unmapped_files"], 0);
+}
+
 #[test]
 fn ci_formats() {
     let (_tmp, root) = fixture("policy");

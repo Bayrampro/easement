@@ -163,6 +163,14 @@ pub fn run(root: &Path, force: bool, jobs: crate::indexer::Jobs) -> Result<Strin
         &config.scan_policy(),
         &mut scan::Cache::new(Default::default(), jobs),
     )?;
+    for gap in &scanned.analysis_partial {
+        eprintln!(
+            "easement: partial: {}{}: {}",
+            gap.file,
+            gap.line.map(|line| format!(":{line}")).unwrap_or_default(),
+            gap.reason
+        );
+    }
     let map = ComponentMap::new(&config)?;
     let (_, edges, _) = check::evaluate(&config, &map, &Scope::default(), &scanned.deps);
     let mut deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();

@@ -46,6 +46,10 @@ pub fn rust(module: &str) -> bool {
     ["std", "proc_macro"].contains(&first(module, &[':']))
 }
 
+pub fn dart(module: &str) -> bool {
+    module.starts_with("dart:")
+}
+
 pub fn csharp(module: &str) -> bool {
     first(module, &['.']) == "System"
 }

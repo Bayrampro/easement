@@ -20,3 +20,4 @@ expression: "crate::lang::registry::test_patterns().join(\"\\n\")"
 **/tests/**/*.rs
 **/benches/**/*.rs
 **/examples/**/*.rs
+**/*_test.dart

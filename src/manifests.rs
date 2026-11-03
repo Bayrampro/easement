@@ -32,6 +32,13 @@ impl Manifest {
             }
             Manifest::Go => module.to_string(),
             Manifest::Cargo => module.split("::").next().unwrap_or(module).to_string(),
+            Manifest::Pub => module
+                .strip_prefix("package:")
+                .unwrap_or(module)
+                .split('/')
+                .next()
+                .unwrap_or(module)
+                .to_string(),
         }
     }
 }
@@ -50,6 +57,20 @@ const NPM_SECTIONS: [&str; 4] = [
 fn declared(kind: Manifest, text: &str) -> Option<BTreeSet<String>> {
     let mut names = BTreeSet::new();
     match kind {
+        Manifest::Pub => {
+            let yaml: serde_norway::Value = serde_norway::from_str(text).ok()?;
+            let mapping = yaml.as_mapping()?;
+            if let Some(name) = mapping.get("name").and_then(|v| v.as_str()) {
+                names.insert(name.to_string());
+            }
+            for section in ["dependencies", "dev_dependencies"] {
+                if let Some(value) = mapping.get(section).filter(|v| !v.is_null()) {
+                    for name in value.as_mapping()?.keys() {
+                        names.insert(name.as_str()?.to_string());
+                    }
+                }
+            }
+        }
         Manifest::Npm => {
             let json: serde_json::Value = serde_json::from_str(text).ok()?;
             if json["name"].is_null() && NPM_SECTIONS.iter().all(|s| json[s].is_null()) {
@@ -136,7 +157,7 @@ fn covers(kind: Manifest, names: &BTreeSet<String>, package: &str) -> bool {
         Manifest::Go => names
             .iter()
             .any(|m| package == m || package.starts_with(&format!("{m}/"))),
-        Manifest::Npm | Manifest::Cargo => names.contains(package),
+        Manifest::Npm | Manifest::Cargo | Manifest::Pub => names.contains(package),
     }
 }
 
@@ -147,6 +168,7 @@ fn covers(kind: Manifest, names: &BTreeSet<String>, package: &str) -> bool {
 /// be declared.
 fn names_in_source(kind: Manifest, source: &str, package: &str) -> bool {
     match kind {
+        Manifest::Pub => crate::indexer::dart::names_package(source, package),
         Manifest::Npm => {
             let quoted = Regex::new(
                 r#"(?:\bfrom|\bimport|\brequire\s*\(|\bimport\s*\()\s*["']([^"']+)["']"#,
@@ -303,7 +325,16 @@ fn package_manifest(
 ) -> Option<String> {
     let mut below = file.to_string();
     loop {
-        let manifest = nearest(&below, kind.file_name(), known)?;
+        let manifest = if kind == Manifest::Pub {
+            let parent = Path::new(&below).parent().unwrap_or(Path::new(""));
+            parent
+                .ancestors()
+                .map(|dir| dir.join(kind.file_name()))
+                .find(|path| root.join(path).is_file())
+                .map(|path| crate::scan::slash(&path))?
+        } else {
+            nearest(&below, kind.file_name(), known)?
+        };
         let declares = manifests
             .entry(manifest.clone())
             .or_insert_with(|| {
@@ -348,6 +379,40 @@ fn nearest(file: &str, name: &str, known: &BTreeSet<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dart_manifest_counts_pub_declarations_not_resolution_overrides() {
+        let yaml = "name: example\ndependencies:\n  hosted: ^1.0.0\n  hosted_map: {hosted: https://pub.dev, version: ^1.0.0}\n  from_git: {git: https://example.com/package.git}\n  local: {path: ../local}\n  flutter: {sdk: flutter}\ndev_dependencies:\n  testing: any\ndependency_overrides:\n  override_only: {path: ../override}\n";
+        let names = declared(Manifest::Pub, yaml).unwrap();
+        for name in [
+            "example",
+            "hosted",
+            "hosted_map",
+            "from_git",
+            "local",
+            "flutter",
+            "testing",
+        ] {
+            assert!(names.contains(name));
+        }
+        assert!(!names.contains("override_only"));
+        assert_eq!(
+            Manifest::Pub.package("package:hosted/src/api.dart"),
+            "hosted"
+        );
+        assert!(declared(Manifest::Pub, "dependencies: [bad]").is_none());
+        assert!(declared(Manifest::Pub, "name: example\ndependencies:\n").is_some());
+        assert!(names_in_source(
+            Manifest::Pub,
+            "export r'package:hosted/api.dart';",
+            "hosted"
+        ));
+        assert!(!names_in_source(
+            Manifest::Pub,
+            "// import 'package:hosted/api.dart';",
+            "hosted"
+        ));
+    }
 
     #[test]
     fn names_the_package_of_a_module() {

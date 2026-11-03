@@ -1,0 +1,30 @@
+---
+source: tests/cli.rs
+expression: "&value"
+---
+{
+  "confidence": "partial",
+  "confidence_reasons": [
+    "lib/main.dart:5: conditional Dart directive: SCIP does not cover every branch; verify other platform branches separately"
+  ],
+  "legalized": 0,
+  "passed": true,
+  "stale": [],
+  "stats": {
+    "analysis_partial": [
+      {
+        "file": "lib/main.dart",
+        "line": 5,
+        "reason": "conditional Dart directive: SCIP does not cover every branch; verify other platform branches separately"
+      }
+    ],
+    "external_deps": 1,
+    "files": 7,
+    "indexed": 1,
+    "internal_deps": 7,
+    "suppressed": 0,
+    "unmapped_files": 0
+  },
+  "violations": [],
+  "warnings": []
+}

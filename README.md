@@ -70,7 +70,7 @@ In Claude Code it is also a plugin:
 
 ## Status
 
-Go, TypeScript/JavaScript, Python, Rust, PHP, Java, C# and Ruby are resolved by [SCIP](https://scip-code.org/) indexers, so they need the [indexers](#indexers) installed; Kotlin and Swift are read with tree-sitter.
+Go, TypeScript/JavaScript, Python, Rust, PHP, Java, C#, Ruby and Dart are resolved by [SCIP](https://scip-code.org/) indexers, so they need the [indexers](#indexers) installed; Kotlin and Swift are read with tree-sitter. See [Dart and Flutter](#dart-and-flutter) for Dart preparation and coverage.
 
 ## Usage
 
@@ -414,6 +414,8 @@ Symbol rules judge Go, TypeScript and JavaScript, Python, Rust and Ruby. The qua
 - Java and C# (not judged yet): the namespace with `.`;
 - Ruby: the module path with `::` (`ActiveRecord.Rollback`); a method is named by the class or module that defines it (`Shop::Db::Client.connect`) and also counts as a use of it;
 - Rust: the crate and module path.
+- Dart: an internal file without `.dart` (`lib/data/store.Client`) or a canonical
+  external URI (`package:dio/dio.dart.Dio`); private-symbol coverage is partial.
 
 The uses of names that the Java, C# and PHP indexers report are not verified yet, and Kotlin and Swift, which are read with tree-sitter, report none, so easement does not judge them. A `forbid_symbol` that covers files of these languages (the top-level list, or a component's own), and a `public_symbols` component that such a file imports from another component, leave those files unchecked: the report says so as a `symbols` evidence gap that names the rule, the language and the files, with `confidence: partial`, and `--require-evidence` fails.
 
@@ -680,6 +682,7 @@ The baseline still applies, and stale entries are still reported. A rule change 
 | Kotlin | `import`, `import … as`, `import ….*` | top-level declarations indexed by the `package` of their file, like Java; a file may hold several classes |
 | PHP | everything `scip-php` resolves: a class used in a `use` statement or by its qualified name | the Composer autoloader: PSR-4 and classmap, installed packages from `vendor/` |
 | Swift | `import` | modules in the SwiftPM layout: `Sources/<Module>` next to a `Package.swift` |
+| Dart / Flutter | imports, exports, deferred imports and parts through `scip_dart`; SDK diagnostics and directive coverage checks | per-package Pub resolution, including shared workspaces |
 
 Every language but Kotlin and Swift comes from a SCIP index, which is exact but has its own limits.
 
@@ -792,6 +795,122 @@ uncovered_ok:
   - { name: "tools/**", because: build helpers with no go.mod on purpose }
   - { name: ["**/race_on.go", "**/embed_none.go"], because: the other half of a build-tag pair }
 ```
+
+## Dart and Flutter
+
+Dependency analysis supports Dart packages, nested packages, Pub workspaces with
+shared resolution, and the Dart sources of Flutter applications. The tested pair
+is Flutter 3.47.9 with bundled Dart 3.13.7. Install the pinned indexer from this
+repository:
+
+```sh
+mise install flutter
+mise run install-dart-indexer
+export PATH="$PWD/target/dart-indexer:$PATH"
+```
+
+This resolves `scip_dart` 1.8.1 with the checked-in tool lockfile and creates a
+launcher that runs its released source through Dart. It pins `protobuf` 6.1.0;
+6.0.0 does not compile the released generated bindings. The release reports
+`1.7.0` through `--version`, so cache identity uses implementation contents.
+Keep the tool directory and its resolved packages available. A global
+`dart pub global activate scip_dart 1.8.1` installation also works, but unknown
+launchers bypass caching. The pinned shell launcher supports Unix; global Pub
+installation is the Windows alternative.
+
+In the application, prepare dependencies and any generated sources yourself:
+
+```sh
+flutter pub get # dart pub get for a Dart-only package
+# Run the project's normal code generator, when needed.
+easement doctor
+easement init
+easement check
+```
+
+Checks run the indexer and `dart analyze --format=machine`; they never run Pub,
+code generators, Flutter builds, tests, or emulators. Missing prerequisites are
+errors. Analyzer errors, unresolved indexed references and unmatched source
+directives lower confidence. Warnings and lints alone are not architecture
+violations. These limitations appear in text, `confidence_reasons`, and JSON
+`stats.analysis_partial`, including source locations where available.
+Incomplete extraction preserves baseline debt and prevents suggestions from
+removing allowances whose use could be hidden by missing dependencies.
+
+For example, enforce a domain boundary and forbid Flutter in domain code:
+
+```yaml
+version: 1
+components:
+  domain: { in: lib/domain }
+  data: { in: lib/data }
+  presentation: { in: lib/presentation }
+  bootstrap: { in: lib/main.dart }
+tests: auto
+rules:
+  presentation: { may_depend_on: [domain] }
+  data: { may_depend_on: [domain] }
+  domain: { may_use_external: [$std] }
+manifests: true
+```
+
+External names retain Dart spelling: `package:dio/dio.dart` and
+`package:flutter/widgets.dart`. Restrict a whole package with `package:dio` or
+`package:flutter`, or name a submodule. `$std` recognizes `dart:` SDK modules;
+Flutter is an external Pub package. Manifest checks read the nearest owning
+`pubspec.yaml`, accepting `dependencies` and `dev_dependencies`. Overrides and
+transitive installation alone do not declare a direct dependency. This does not
+enforce production-versus-development dependency policy. Packages indexed inside
+the analysis root use component rules; external-only manifest checks do not prove
+their workspace dependency declarations.
+
+A workspace can declare `workspace: [packages/app, packages/domain]` in its root
+manifest and `resolution: workspace` in member manifests. Run Pub once at the
+root, then run easement there with components covering each member's sources.
+Source-free workspace containers are not indexed as source packages.
+Standalone nested/path packages inside the analysis root each need their own
+Pub preparation; run `dart pub get` or `flutter pub get` in each package. A Pub
+workspace instead uses its one shared ancestor configuration.
+
+`tests: auto` selects `*_test.dart`, including widget and integration test files.
+Helpers with other names remain ordinary source files; assign them explicitly,
+for example `helpers: { in: [test/support, integration_test/support] }`.
+Generated `.g.dart` and `.freezed.dart` files receive no automatic exclusion.
+Use `target_only` for generated targets whose outgoing imports should not be
+checked. Gitignored sources are outside the ordinary source walk; missing
+definitions or documents are disclosed rather than certified.
+
+Native project sources keep their existing handling. To analyze only Flutter's
+Dart portion, explicitly add the relevant native directories to `exclude`, such
+as `android/**`, `ios/**`, `macos/**`, `windows/**` and `linux/**`. This does not
+analyze platform channels or certify native code.
+
+Imports, exports, deferred imports, and URI or named parts are supported.
+Conditional directives produce partial confidence because SCIP does not cover
+every branch. Verify other platform branches separately. Public symbol and type
+facts are available. Private coverage warnings require indexed evidence and an
+applicable rule: a private type outside its matching `defines` owners, or a
+cross-file private use that `forbid_symbol` or `public_symbols` could restrict.
+Public-only files, ordinary locals, and unrelated private helpers do not inherit
+a project-wide warning. Missing source ranges, symbol classification, or part
+ownership remain conservative; other extraction gaps are reported independently.
+Dart `unused` enforcement, semantic architecture checks and UI
+composition checks are unsupported in this stage.
+
+Dart cache keys read hidden resolution state, package and workspace metadata,
+sources and resolved local/external package inputs, inherited/included analyzer
+options, SDK artifacts, indexer implementation and environment. Full content
+fingerprinting can cost more than ordinary language keys and is deliberately
+conservative. Analyzer plugins or unverifiable launchers bypass caching.
+`--no-cache` reruns both tools; `--cache-only` runs neither and exits 3 without a
+trustworthy entry. Store the cache outside source and package directories.
+
+For repository tests, run `mise run prepare-dart-fixtures` once before
+`cargo test`; individual fixture preparation then uses offline Pub resolution.
+Linux arm64 has no prebuilt Flutter SDK bundle; use the pinned framework
+bootstrap in [CI](.github/workflows/ci.yml), which downloads the native Dart SDK
+and universal analysis artifacts while keeping the ARM test suite enabled.
+See [Dart extraction evidence](tests/fixtures/dart-basic/README.md).
 
 ## How it works
 

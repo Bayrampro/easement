@@ -16,6 +16,8 @@ use crate::lang::registry::{self, Language};
 use crate::relpath;
 use crate::scip::{self, Document, Documents};
 
+pub(crate) mod dart;
+
 /// The SCIP indexer of a language: how to run it and what its index depends on.
 pub struct Indexer {
     /// The language whose files it reads.
@@ -333,6 +335,21 @@ pub static INDEXERS: &[Indexer] = &[
         inputs: every_file,
         env: rust_env,
     },
+    Indexer {
+        language: &registry::DART,
+        binary: "scip_dart",
+        markers: &["pubspec.yaml"],
+        outermost: false,
+        fallback_root: false,
+        args: |out| vec!["--output".into(), out.display().to_string(), ".".into()],
+        install: "dart pub global activate scip_dart 1.8.1",
+        mise: None,
+        skip_dirs: &[".dart_tool"],
+        writes_in_cwd: None,
+        needs: dart::needs,
+        inputs: every_file,
+        env: |_| true,
+    },
 ];
 
 impl Indexer {
@@ -414,6 +431,7 @@ pub enum CacheUse {
 
 /// What the indexers found, and the source files they did not cover.
 pub struct Indexed {
+    pub analysis_partial: Vec<crate::scan::AnalysisGap>,
     pub documents: Documents,
     /// Indexers that ran, and indexes read from the cache instead.
     pub ran: usize,
@@ -448,11 +466,15 @@ pub fn run(
     jobs: Jobs,
     go_tags: &[String],
 ) -> Result<Indexed> {
+    let mut dart_indexed = dart::run(root, files, excluded, cache)?;
     let (mut ran, mut cached) = (0, 0);
     let keyed: Vec<String> = files.iter().chain(excluded).cloned().collect();
     let mut wanted: Vec<&String> = Vec::new();
     let mut groups = Vec::new();
     for language in INDEXERS {
+        if language.name() == "dart" {
+            continue;
+        }
         wanted.extend(files.iter().filter(|f| language.covers(f)));
         if !files.iter().any(|f| language.covers(f)) {
             continue;
@@ -471,6 +493,16 @@ pub fn run(
             .collect::<Result<Vec<_>>>()
     })?;
     let mut parts = Vec::new();
+    if let Some(indexed) = dart_indexed.take() {
+        ran += indexed.ran;
+        cached += indexed.cached;
+        wanted.extend(files.iter().filter(|f| relpath::extension(f) == "dart"));
+        parts.push(indexed.documents.0);
+        dart_indexed = Some(Indexed {
+            documents: Documents::default(),
+            ..indexed
+        });
+    }
     for (documents, from_cache) in results.into_iter().flatten() {
         parts.push(documents);
         if from_cache {
@@ -491,6 +523,7 @@ pub fn run(
         .cloned()
         .collect();
     Ok(Indexed {
+        analysis_partial: dart_indexed.map_or_else(Vec::new, |d| d.analysis_partial),
         documents,
         ran,
         cached,
@@ -842,6 +875,9 @@ pub fn diagnose(root: &Path, files: &[String]) -> Vec<Diagnosis> {
         .iter()
         .filter(|language| files.iter().any(|f| language.covers(f)))
         .map(|language| {
+            if language.name() == "dart" {
+                return dart::diagnosis(root, files, language);
+            }
             let binary = which::which(language.binary).ok();
             let version = binary.as_deref().and_then(version_of);
             let problems = language

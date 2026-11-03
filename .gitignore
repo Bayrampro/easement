@@ -1,4 +1,8 @@
 /target
+/flutter-demo/
+tools/dart-indexer/.dart_tool/
+tests/fixtures/dart-basic/.dart_tool/
+tests/fixtures/flutter-basic/.dart_tool/
 node_modules/
 .lycheecache
 # Agent skills copied by `mise run skills` and linked by mise; .claude/skills is a link.

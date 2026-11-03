@@ -1,0 +1,30 @@
+---
+source: tests/cli.rs
+expression: "&value"
+---
+{
+  "confidence": "partial",
+  "confidence_reasons": [
+    "lib/other/wrong.dart:1: Dart private declarations use local SCIP symbols; the configured defines naming claims cannot fully verify _WrongEntity"
+  ],
+  "legalized": 0,
+  "passed": true,
+  "stale": [],
+  "stats": {
+    "analysis_partial": [
+      {
+        "file": "lib/other/wrong.dart",
+        "line": 1,
+        "reason": "Dart private declarations use local SCIP symbols; the configured defines naming claims cannot fully verify _WrongEntity"
+      }
+    ],
+    "external_deps": 0,
+    "files": 7,
+    "indexed": 1,
+    "internal_deps": 0,
+    "suppressed": 0,
+    "unmapped_files": 0
+  },
+  "violations": [],
+  "warnings": []
+}
