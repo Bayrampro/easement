@@ -289,6 +289,12 @@ impl Project {
         stats.unused_partial = unused.reasons;
         stats.manifests_partial = undeclared.reasons;
         stats.symbols_partial = check::symbols_partial(&self.config, &map, &scan.unnamed_uses);
+        stats.analysis_partial = scan
+            .analysis_partial
+            .iter()
+            .filter(|gap| scope.contains(&map, &gap.file))
+            .cloned()
+            .collect();
         stats.files = scan
             .paths
             .iter()
@@ -296,6 +302,11 @@ impl Project {
             .count();
         stats.suppressed = suppressed;
         (stats.indexed, stats.from_cache) = scan.indexed;
+        stats.dedicated_dart_cache = !scan.all_files.iter().any(|file| {
+            indexer::INDEXERS
+                .iter()
+                .any(|indexer| indexer.name() != "dart" && indexer.covers(file))
+        });
         stats.uncovered = scan
             .uncovered
             .iter()
@@ -303,6 +314,12 @@ impl Project {
             .cloned()
             .collect();
         Ok(Analysis {
+            uncertain: scan
+                .uncovered
+                .iter()
+                .cloned()
+                .chain(scan.analysis_partial.into_iter().map(|gap| gap.file))
+                .collect(),
             unindexed: scan.uncovered,
             violations,
             all_files: scan.all_files,
@@ -343,6 +360,8 @@ struct Analysis {
     /// leaves the accepted ones out, but nobody saw their imports, so what
     /// `suggest`, `impact`, `why` and `baseline` say about them stays careful.
     unindexed: Vec<String>,
+    /// Missing extraction facts, including gaps inside indexed files.
+    uncertain: Vec<String>,
     /// Every file that is not excluded, source or not.
     all_files: Vec<String>,
     edges: Vec<check::Edge>,
@@ -416,6 +435,11 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
     let mut verdict = Verdict::judge(judged, warnings, &current, baseline.as_ref());
     verdict.owners = project.config.owners();
     verdict.stale.retain(|k| scope.contains(&map, &k.file));
+    // Missing extraction facts can hide graph-level findings, so absence does
+    // not prove that previously baselined debt has been paid.
+    if !stats.analysis_partial.is_empty() {
+        verdict.stale.clear();
+    }
     verdict.sort();
     let changes = changes.as_ref();
     match options.format {
@@ -496,6 +520,9 @@ fn run(cli: Cli) -> Result<bool> {
         Command::Baseline { config, accept_new } => {
             let project = Project::open(&config)?;
             let analysis = project.analyze(&mut fresh(), &scope::Scope::default())?;
+            for reason in report::analysis_reasons(&analysis.stats) {
+                eprintln!("easement: partial: {reason}");
+            }
             let (config_rules, violations): (Vec<_>, Vec<_>) = check::dedupe(analysis.violations)
                 .into_iter()
                 .partition(|v| v.rule.is_config_rule());
@@ -515,7 +542,10 @@ fn run(cli: Cli) -> Result<bool> {
             let unread: Vec<_> = old
                 .iter()
                 .flat_map(|old| &old.violations)
-                .filter(|k| analysis.unindexed.contains(&k.file))
+                .filter(|k| {
+                    analysis.uncertain.contains(&k.file)
+                        || !analysis.stats.analysis_partial.is_empty()
+                })
                 .filter(|k| !baseline.violations.contains(k))
                 .cloned()
                 .collect();
@@ -530,10 +560,17 @@ fn run(cli: Cli) -> Result<bool> {
                 println!("easement: {note}");
             }
             if !unread.is_empty() {
-                println!(
-                    "easement: {} entr(ies) kept for files no indexer covered, so their debt is not known to be paid; `easement check` lists those files",
-                    unread.len()
-                );
+                if analysis.stats.analysis_partial.is_empty() {
+                    println!(
+                        "easement: {} entr(ies) kept for files no indexer covered, so their debt is not known to be paid; `easement check` lists those files",
+                        unread.len()
+                    );
+                } else {
+                    println!(
+                        "easement: {} entr(ies) kept because dependency analysis is incomplete; `easement check` lists its limitations",
+                        unread.len()
+                    );
+                }
             }
             for v in &refused {
                 println!("{}:{}: {} [{}]", v.file, v.line, v.message, v.rule.as_str());
@@ -593,6 +630,10 @@ fn run(cli: Cli) -> Result<bool> {
                 &analysis.unindexed,
             );
             result.cached = report::cache_note(&analysis.stats);
+            result
+                .confidence_reasons
+                .extend(report::analysis_reasons(&analysis.stats));
+            result.confidence = report::Confidence::of(&result.confidence_reasons);
             match format {
                 OutputFormat::Text => print!("{}", impact::render(&result, &analysis.map)),
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
@@ -610,6 +651,9 @@ fn run(cli: Cli) -> Result<bool> {
                 uncovered: &analysis.unindexed,
             };
             print!("{}", impact::why(&project.config, &graph, &from, &to)?);
+            for reason in report::analysis_reasons(&analysis.stats) {
+                println!("easement: partial: {reason}");
+            }
             if let Some(note) = report::cache_note(&analysis.stats) {
                 println!("Cached: {note}");
             }
@@ -670,12 +714,13 @@ fn run(cli: Cli) -> Result<bool> {
                     &project.config,
                     &analysis.map,
                     &analysis.edges,
-                    &analysis.unindexed,
+                    &analysis.uncertain,
                 );
                 let (new, skipped) = patch::remove_allowances(&text, &gone);
                 for note in skipped
                     .into_iter()
                     .chain(report::cache_note(&analysis.stats))
+                    .chain(report::analysis_reasons(&analysis.stats))
                 {
                     eprintln!("easement: {note}");
                 }
@@ -691,18 +736,21 @@ fn run(cli: Cli) -> Result<bool> {
                     &analysis.edges,
                     &analysis.deps,
                     &analysis.files,
-                    &analysis.unindexed,
+                    &analysis.uncertain,
                     &diagram::unused_arrows(&project.config, &project.root, &analysis.edges)?,
                 )
             );
             if let Some(note) = report::cache_note(&analysis.stats) {
                 println!("easement: {note}");
             }
+            for reason in report::analysis_reasons(&analysis.stats) {
+                println!("easement: partial: {reason}");
+            }
             let unused = suggest::removable(
                 &project.config,
                 &analysis.map,
                 &analysis.edges,
-                &analysis.unindexed,
+                &analysis.uncertain,
             );
             Ok(!check || unused.is_empty())
         }
@@ -772,7 +820,7 @@ mod tests {
         let files = [
             "a.go", "a.py", "a.pyi", "a.ts", "a.d.ts", "a.tsx", "a.mts", "a.cts", "a.js", "a.jsx",
             "a.mjs", "a.cjs", "A.java", "A.kt", "a.kts", "A.cs", "a.php", "a.rb", "a.rs",
-            "a.swift", "Makefile", "v1.2/x", "a.json",
+            "a.swift", "Makefile", "v1.2/x", "a.json", "a.dart",
         ];
         let mut table = String::new();
         for file in files {
@@ -813,6 +861,8 @@ mod tests {
             ("a.swift", "Foundation"),
             ("a.ts", "fs"),
             ("a.rb", "json"),
+            ("a.dart", "dart:async"),
+            ("a.dart", "package:flutter/widgets.dart"),
         ] {
             is_std.push_str(&format!(
                 "{file} {module}: {}\n",

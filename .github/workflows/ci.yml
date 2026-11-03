@@ -16,7 +16,7 @@ jobs:
   # Every lint, the same set as `mise run check` locally.
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -77,7 +77,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -90,6 +90,26 @@ jobs:
           install_args: rust go node pnpm java maven dotnet go:github.com/scip-code/scip-go/cmd/scip-go github:sourcegraph/scip-java
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install the Flutter SDK bundle
+        if: runner.arch != 'ARM64' || runner.os != 'Linux'
+        shell: bash
+        run: |
+          mise install flutter
+          echo "$(mise where flutter)/bin" >> "$GITHUB_PATH"
+
+      # Flutter publishes no Linux arm64 SDK bundle. Its pinned framework can
+      # bootstrap the native arm64 Dart SDK and platform-neutral analysis inputs.
+      - name: Bootstrap Flutter on Linux arm64
+        if: runner.arch == 'ARM64' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          git clone --depth 1 --branch 3.47.9 https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter"
+          test "$(git -C "$RUNNER_TEMP/flutter" rev-parse HEAD)" = c197ca5199e9ee5661e865596c9c07294dfab51c
+          "$RUNNER_TEMP/flutter/bin/flutter" --suppress-analytics --version
+          "$RUNNER_TEMP/flutter/bin/flutter" --suppress-analytics precache --universal
+          mise link flutter@3.47.9 "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
 
       # From package.json and the lockfile: the npm backend of mise leaves
       # scip-typescript unable to find its modules on Windows.
@@ -138,5 +158,19 @@ jobs:
         run: |
           dotnet tool install --global scip-dotnet --version 0.2.16
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      - name: Install the pinned Dart indexer
+        working-directory: tools/dart-indexer
+        run: |
+          dart pub get --enforce-lockfile
+          dart bin/install.dart
+
+      - name: Put the Dart indexer on PATH
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/target/dart-indexer" >> "$GITHUB_PATH"
+
+      - name: Prepare the real Flutter fixture
+        working-directory: tests/fixtures/flutter-basic
+        run: flutter pub get --enforce-lockfile
 
       - run: cargo test --locked

@@ -62,6 +62,7 @@ pub struct TypeDef {
 }
 
 pub struct Scan {
+    pub analysis_partial: Vec<AnalysisGap>,
     /// Every file that is not excluded, source or not, relative to the root with `/` separators.
     pub all_files: Vec<String>,
     /// Every checked file, relative to the root with `/` separators.
@@ -84,6 +85,15 @@ pub struct Scan {
     pub unnamed_uses: Vec<String>,
     /// Indexers that ran, and indexes taken from the cache.
     pub indexed: (usize, usize),
+}
+
+/// Analysis limitations within files that may still appear in an index.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct AnalysisGap {
+    pub file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
+    pub reason: String,
 }
 
 /// Project walker: honours .gitignore (even outside a git checkout) and
@@ -224,6 +234,13 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         })
         .collect();
     let facts = scip::facts(&documents, &hidden, config.uses_symbols());
+    let dart_private = indexer::dart::private::coverage(
+        config,
+        &crate::components::ComponentMap::new(config)?,
+        &documents,
+        &hidden,
+        &target_only,
+    )?;
     let is_source = |file: &Path| {
         let file = slash(file);
         project.contains(file.as_str()) && !target_only.is_match(&file)
@@ -258,6 +275,15 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         })
         .collect();
     Ok(Scan {
+        analysis_partial: indexed
+            .analysis_partial
+            .into_iter()
+            .chain(facts.analysis_partial)
+            .chain(dart_private)
+            .filter(|gap| {
+                crate::relpath::extension(&gap.file) != "dart" || paths.contains(&gap.file)
+            })
+            .collect(),
         all_files,
         paths,
         deps,

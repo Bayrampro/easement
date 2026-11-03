@@ -12,6 +12,7 @@ pub enum Manifest {
     Npm,
     Go,
     Cargo,
+    Pub,
 }
 
 impl Manifest {
@@ -20,6 +21,7 @@ impl Manifest {
             Manifest::Npm => "package.json",
             Manifest::Go => "go.mod",
             Manifest::Cargo => "Cargo.toml",
+            Manifest::Pub => "pubspec.yaml",
         }
     }
 }
@@ -160,7 +162,17 @@ pub static RUST: Language = Language {
 };
 
 /// Every language, in the order their test globs are listed.
-pub static LANGUAGES: [&Language; 10] = [
+pub static DART: Language = Language {
+    name: "dart",
+    extensions: &["dart"],
+    tests: &["**/*_test.dart"],
+    std: Some(stdlib::dart),
+    unused: &[],
+    conventional: &[],
+    manifest: Some(Manifest::Pub),
+};
+
+pub static LANGUAGES: [&Language; 11] = [
     &GO,
     &TYPESCRIPT,
     &PYTHON,
@@ -171,6 +183,7 @@ pub static LANGUAGES: [&Language; 10] = [
     &SWIFT,
     &RUBY,
     &RUST,
+    &DART,
 ];
 
 /// The language of a file, by its extension.

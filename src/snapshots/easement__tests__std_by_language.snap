@@ -20,3 +20,5 @@ a.php Symfony\Component: false
 a.swift Foundation: true
 a.ts fs: false
 a.rb json: false
+a.dart dart:async: true
+a.dart package:flutter/widgets.dart: false

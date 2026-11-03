@@ -34,6 +34,12 @@ pub struct Reference {
     /// For a reference into an unnamed npm package (see `UNNAMED_NPM`) that
     /// stands on the string of an import: the module the string spells.
     pub spelled: Option<String>,
+    /// Canonical Dart URI, derived from the resolved package's URI mapping.
+    pub dart_module: Option<String>,
+    pub dart_internal_package: bool,
+    /// A file identity reported by Dart SCIP, mapped through Pub resolution.
+    pub dart_target: Option<String>,
+    pub dart_target_excluded: bool,
 }
 
 /// How scip-typescript begins a symbol defined under a `package.json` with no
@@ -51,6 +57,10 @@ pub struct Document {
     /// The types this file defines (classes, structs, interfaces, traits),
     /// by name and 1-based line.
     pub types: Vec<(String, usize)>,
+    /// Private Dart occurrences retain evidence, not a globally resolvable identity.
+    pub dart_private: Vec<crate::indexer::dart::private::Symbol>,
+    /// The owning library, only when Dart part ownership was verified.
+    pub dart_library: Option<String>,
 }
 
 /// The documents of one or more indexes, merged.
@@ -60,7 +70,7 @@ pub struct Documents(pub Vec<Document>);
 /// Parses an index written by an indexer that ran in `base` (a directory
 /// relative to the project `root`, `""` for the root itself). Documents outside
 /// the project, such as generated files in a build cache, are dropped. The
-/// source of a document is read only for a reference into an unnamed package.
+/// source is read for Dart private occurrences and references into unnamed packages.
 pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
     let index = Index::parse_from_bytes(bytes).context("not a SCIP index")?;
     let prefix = crate::scan::slash(base);
@@ -85,7 +95,34 @@ pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
             path,
             ..Document::default()
         };
-        for occurrence in &document.occurrences {
+        if document.language == "Dart"
+            && crate::relpath::extension(&parsed.path) == "dart"
+            && document
+                .occurrences
+                .iter()
+                .any(|o| o.symbol.starts_with("scip-dart "))
+        {
+            let lines = source.get_or_insert_with(|| {
+                std::fs::read_to_string(root.join(&parsed.path))
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_string)
+                    .collect()
+            });
+            parsed.dart_private = crate::indexer::dart::private::occurrences(document, lines);
+        }
+        for raw in &document.occurrences {
+            let mut normalized;
+            let occurrence = if document.language == "Dart"
+                && crate::relpath::extension(&parsed.path) == "dart"
+                && raw.symbol.starts_with("scip-dart ")
+            {
+                normalized = raw.clone();
+                normalized.symbol = dart_symbol(&raw.symbol);
+                &normalized
+            } else {
+                raw
+            };
             if occurrence.symbol.is_empty() || occurrence.symbol.starts_with("local ") {
                 continue;
             }
@@ -97,7 +134,8 @@ pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
                 }
                 parsed.definitions.push(occurrence.symbol.clone());
             } else {
-                let spelled = match occurrence.symbol.starts_with(UNNAMED_NPM) {
+                let dart = occurrence.symbol.starts_with("scip-dart ");
+                let spelled = match dart || occurrence.symbol.starts_with(UNNAMED_NPM) {
                     true => {
                         let lines = source.get_or_insert_with(|| {
                             std::fs::read_to_string(root.join(&parsed.path))
@@ -107,7 +145,7 @@ pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
                                 .collect()
                         });
                         spelled_module(lines, occurrence, encoding)
-                            .filter(|module| installed(&root.join(&parsed.path), module))
+                            .filter(|module| dart || installed(&root.join(&parsed.path), module))
                     }
                     false => None,
                 };
@@ -115,12 +153,36 @@ pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
                     line: line_of(occurrence) + 1,
                     symbol: occurrence.symbol.clone(),
                     spelled,
+                    dart_module: None,
+                    dart_internal_package: false,
+                    dart_target: None,
+                    dart_target_excluded: false,
                 });
             }
         }
         documents.push(parsed);
     }
     Ok(documents)
+}
+
+/// The released Dart indexer uses `null` for versionless file definitions and
+/// leaves SDK URI namespace descriptors unquoted. Repair only that scheme.
+fn dart_symbol(symbol: &str) -> String {
+    let parts: Vec<&str> = symbol.splitn(5, ' ').collect();
+    let [scheme, manager, package, version, path] = parts.as_slice() else {
+        return symbol.to_string();
+    };
+    let version = if *version == "null" { "." } else { version };
+    let path = if package.starts_with("dart:") {
+        path.strip_prefix(package)
+            .map(|tail| format!("`{package}`{tail}"))
+    } else {
+        None
+    };
+    format!(
+        "{scheme} {manager} {package} {version} {}",
+        path.as_deref().unwrap_or(parts[4])
+    )
 }
 
 /// Whether the npm package of `module` is in a `node_modules` above `file`,
@@ -134,6 +196,35 @@ fn installed(file: &Path, module: &str) -> bool {
         .any(|dir| dir.join("node_modules").join(&package).is_dir())
 }
 
+/// Convert a Dart namespace using the resolved package's actual packageUri.
+pub(crate) fn dart_module(symbol: &str, uri_path: Option<&str>) -> Option<String> {
+    let parsed = split(symbol)?;
+    if parsed.scheme != "scip-dart" {
+        return None;
+    }
+    if parsed.package.starts_with("dart:") {
+        return Some(parsed.package.into());
+    }
+    let namespace = parsed.namespace("/");
+    let base = uri_path?;
+    let path = if base.is_empty() {
+        namespace.as_str()
+    } else {
+        namespace.strip_prefix(&format!("{base}/"))?
+    };
+    Some(format!("package:{}/{path}", parsed.package))
+}
+
+pub(crate) fn dart_file(symbol: &str) -> Option<String> {
+    let parsed = split(symbol)?;
+    (parsed.scheme == "scip-dart" && matches!(parsed.referent(), Referent::Module))
+        .then(|| parsed.namespace("/"))
+}
+
+pub(crate) fn dart_symbol_supported(symbol: &str) -> bool {
+    split(symbol).is_some_and(|parsed| parsed.scheme == "scip-dart")
+}
+
 /// The package an import names when `occurrence` stands on its string
 /// (`"hono"`, `'@scope/pkg/sub'`); `None` for a name, a relative path or a
 /// range over more than one line.
@@ -142,6 +233,25 @@ fn spelled_module(
     occurrence: &Occurrence,
     encoding: PositionEncoding,
 ) -> Option<String> {
+    let quoted = occurrence_text(lines, occurrence, encoding)?;
+    if occurrence.symbol.starts_with("scip-dart ") {
+        return crate::indexer::dart::directives::literal(quoted);
+    }
+    let module = ['"', '\'', '`']
+        .into_iter()
+        .find_map(|quote| quoted.strip_prefix(quote)?.strip_suffix(quote))?;
+    let bare = !module.is_empty()
+        && !module.starts_with(['.', '/'])
+        && !module.contains("${")
+        && !module.contains(['"', '\'', '`']);
+    bare.then(|| module.to_string())
+}
+
+pub(crate) fn occurrence_text<'a>(
+    lines: &'a [String],
+    occurrence: &Occurrence,
+    encoding: PositionEncoding,
+) -> Option<&'a str> {
     let (line, start, end) = match (&occurrence.typed_range, occurrence.range.as_slice()) {
         (Some(Typed_range::SingleLineRange(r)), _) => (r.line, r.start_character, r.end_character),
         (Some(_), _) => return None,
@@ -166,19 +276,11 @@ fn spelled_module(
         }
         (units == column).then_some(text.len())
     };
-    let quoted = text.get(offset(start)?..offset(end)?)?;
-    let module = ['"', '\'', '`']
-        .into_iter()
-        .find_map(|quote| quoted.strip_prefix(quote)?.strip_suffix(quote))?;
-    let bare = !module.is_empty()
-        && !module.starts_with(['.', '/'])
-        && !module.contains("${")
-        && !module.contains(['"', '\'', '`']);
-    bare.then(|| module.to_string())
+    text.get(offset(start)?..offset(end)?)
 }
 
 /// The start line, 0-based, from the typed range or the deprecated one.
-fn line_of(occurrence: &Occurrence) -> usize {
+pub(crate) fn line_of(occurrence: &Occurrence) -> usize {
     let line = match &occurrence.typed_range {
         Some(Typed_range::SingleLineRange(range)) => range.line,
         Some(Typed_range::MultiLineRange(range)) => range.start_line,
@@ -429,6 +531,17 @@ impl Parsed<'_> {
     /// language's import statements and of `forbid_external`.
     fn external_module(&self) -> String {
         match self.scheme {
+            "scip-dart" => {
+                if self.package.starts_with("dart:") {
+                    return self.package.to_string();
+                }
+                let path = self.namespace("/");
+                format!(
+                    "package:{}/{}",
+                    self.package,
+                    path.strip_prefix("lib/").unwrap_or(&path)
+                )
+            }
             // Go: the package path (`fmt`, `net/http`, `github.com/lib/pq`).
             "scip-go" => self.namespace("/"),
             // PHP: the class by its qualified name (`Illuminate\\Support\\Str`).
@@ -582,6 +695,7 @@ fn ruby_use(
 
 /// Dependencies and symbol uses of the documents.
 pub struct Facts {
+    pub analysis_partial: Vec<crate::scan::AnalysisGap>,
     pub deps: Vec<Dep>,
     pub symbols: Vec<SymbolRef>,
     /// With `symbols`, the files that use a name of an unnamed package, whose
@@ -595,6 +709,7 @@ pub struct Facts {
 /// `excluded` are documents of files that `exclude` hides: never read as
 /// sources, they only resolve the names that no document of `documents` defines.
 pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Facts {
+    let mut analysis_partial = Vec::new();
     let mut defined: HashMap<&str, &str> = HashMap::new();
     // Symbols that more than one file defines: a Ruby module reopened in each file under it.
     let mut reopened: HashSet<&str> = HashSet::new();
@@ -703,6 +818,7 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                 || reference.symbol.starts_with("scip-java ")
                 || reference.symbol.starts_with("scip-dotnet ")
                 || reference.symbol.starts_with("scip-ruby ")
+                || reference.symbol.starts_with("scip-dart ")
             {
                 class_symbol(&reference.symbol)
             } else {
@@ -715,6 +831,14 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                 .get(symbol.as_str())
                 .or_else(|| hidden.get(symbol.as_str()))
                 .copied();
+            if internal.is_none()
+                && let Some(target) = &reference.dart_target
+            {
+                internal = Some(target.as_str());
+                if !reference.dart_target_excluded {
+                    analysis_partial.push(crate::scan::AnalysisGap { file: document.path.clone(), line: Some(reference.line), reason: "Dart target has no indexed definition; imports in or of that source were not fully verified".into() });
+                }
+            }
             match parsed.referent() {
                 Referent::Module => {
                     if shadowed(&parsed, reference.line) {
@@ -732,8 +856,14 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                     if internal.is_none()
                         && !unnamed
                         && parsed.scheme != "scip-dotnet"
-                        && own.contains(&parsed.owner())
+                        && (own.contains(&parsed.owner()) || reference.dart_internal_package)
                     {
+                        if parsed.scheme == "scip-dart" {
+                            analysis_partial.push(crate::scan::AnalysisGap {
+                                file: document.path.clone(), line: Some(reference.line),
+                                reason: "an internal Dart reference has no indexed definition; repair resolution or generated sources and run with --no-cache".into(),
+                            });
+                        }
                         continue;
                     }
                     // Only the string of the import names an unnamed package; a name
@@ -742,7 +872,10 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                     let module = match (internal, unnamed) {
                         (Some(_), _) => String::new(),
                         (None, true) => reference.spelled.clone().unwrap_or_default(),
-                        (None, false) => parsed.external_module(),
+                        (None, false) => reference
+                            .dart_module
+                            .clone()
+                            .unwrap_or_else(|| parsed.external_module()),
                     };
                     if internal.is_none() && module.is_empty() {
                         continue;
@@ -756,6 +889,10 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                         continue;
                     }
                     let home = internal;
+                    if home.is_none() && reference.dart_internal_package {
+                        analysis_partial.push(crate::scan::AnalysisGap { file: document.path.clone(), line: Some(reference.line), reason: "an internal Dart symbol has no indexed definition; repair resolution or generated sources and run with --no-cache".into() });
+                        continue;
+                    }
                     if home == Some(document.path.as_str()) {
                         continue;
                     }
@@ -766,12 +903,24 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                     }
                     let target = match home {
                         Some(path) => Target::Internal(PathBuf::from(path)),
-                        None => Target::External(parsed.external_module()),
+                        None => Target::External(
+                            reference
+                                .dart_module
+                                .clone()
+                                .unwrap_or_else(|| parsed.external_module()),
+                        ),
                     };
                     uses.push(SymbolRef {
                         file: PathBuf::from(&document.path),
                         line: reference.line,
-                        specifier: parsed.qualifier(home),
+                        specifier: if parsed.scheme == "scip-dart" && home.is_none() {
+                            reference
+                                .dart_module
+                                .clone()
+                                .unwrap_or_else(|| parsed.external_module())
+                        } else {
+                            parsed.qualifier(home)
+                        },
                         name,
                         method: None,
                         target: Some(target),
@@ -793,6 +942,7 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
         }
     }
     Facts {
+        analysis_partial,
         deps,
         symbols: uses,
         unnamed,
@@ -807,6 +957,7 @@ impl Documents {
                 Some(seen) => {
                     seen.references.extend(document.references);
                     seen.definitions.extend(document.definitions);
+                    seen.dart_private.extend(document.dart_private);
                 }
                 None => {
                     by_path.insert(document.path.clone(), document);
@@ -824,6 +975,116 @@ impl Documents {
 mod tests {
     use super::*;
 
+    #[test]
+    fn private_occurrence_inventory_is_guarded_by_dart_path_language_and_scheme() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("lib")).unwrap();
+        for (language, path, scheme, expected) in [
+            ("Dart", "lib/file.dart", "scip-dart", 1),
+            ("Rust", "lib/file.dart", "scip-dart", 0),
+            ("Dart", "lib/file.rs", "scip-dart", 0),
+            ("Dart", "lib/file.dart", "scip-python", 0),
+        ] {
+            std::fs::write(root.path().join(path), "class _Hidden {}\n").unwrap();
+            let raw = ::scip::types::Document {
+                language: language.into(),
+                relative_path: path.into(),
+                symbols: vec![::scip::types::SymbolInformation {
+                    symbol: "local 0".into(),
+                    kind: ::scip::types::symbol_information::Kind::Class.into(),
+                    ..Default::default()
+                }],
+                occurrences: vec![
+                    Occurrence {
+                        symbol: format!("{scheme} pub example . lib/`file.dart`/"),
+                        symbol_roles: DEFINITION,
+                        range: vec![0, 0, 0],
+                        ..Default::default()
+                    },
+                    Occurrence {
+                        symbol: "local 0".into(),
+                        symbol_roles: DEFINITION,
+                        range: vec![0, 6, 13],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            };
+            let index = Index {
+                documents: vec![raw],
+                ..Default::default()
+            };
+            let documents =
+                parse(&index.write_to_bytes().unwrap(), root.path(), Path::new("")).unwrap();
+            assert_eq!(
+                documents[0].dart_private.len(),
+                expected,
+                "{language} {path} {scheme}"
+            );
+        }
+    }
+
+    #[test]
+    fn dart_uri_ranges_use_utf16_and_decode_raw_literals() {
+        let occurrence = Occurrence {
+            symbol: "scip-dart pub foo 1.0.0 lib/`a.dart`/".into(),
+            range: vec![0, 14, 35],
+            ..Default::default()
+        };
+        let lines = vec!["/*😀*/ import r'package:foo/a.dart';".to_string()];
+        assert_eq!(
+            spelled_module(
+                &lines,
+                &occurrence,
+                PositionEncoding::UnspecifiedPositionEncoding
+            ),
+            Some("package:foo/a.dart".into())
+        );
+        assert!(!dart_symbol_supported("scip-dart pub foo . `unfinished"));
+    }
+
+    #[test]
+    fn dart_versionless_file_symbols_resolve_real_imports() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dart-basic");
+        let documents = parse(
+            include_bytes!("../tests/fixtures/dart-basic/evidence.scip"),
+            &root,
+            Path::new(""),
+        )
+        .unwrap();
+        let facts = facts(&documents, &[], false);
+        assert!(
+            facts
+                .deps
+                .iter()
+                .any(|dep| dep.file == Path::new("lib/main.dart")
+                    && dep.line == 2
+                    && dep.target == Target::Internal(PathBuf::from("lib/other.dart")))
+        );
+        assert!(
+            facts
+                .deps
+                .iter()
+                .any(|dep| dep.file == Path::new("lib/main.dart")
+                    && dep.line == 1
+                    && dep.target == Target::External("dart:async".into()))
+        );
+    }
+
+    #[test]
+    fn flutter_import_keeps_its_pub_uri() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/flutter-basic");
+        let documents = parse(
+            include_bytes!("../tests/fixtures/flutter-basic/evidence.scip"),
+            &root,
+            Path::new(""),
+        )
+        .unwrap();
+        let facts = facts(&documents, &[], false);
+        assert!(facts.deps.iter().any(|dep| dep.line == 1
+            && dep.target == Target::External("package:flutter/widgets.dart".into())));
+    }
+
     fn doc(path: &str, defs: &[&str], refs: &[(usize, &str)]) -> Document {
         Document {
             path: path.to_string(),
@@ -835,8 +1096,13 @@ mod tests {
                     line: *line,
                     symbol: symbol.to_string(),
                     spelled: None,
+                    dart_module: None,
+                    dart_internal_package: false,
+                    dart_target: None,
+                    dart_target_excluded: false,
                 })
                 .collect(),
+            ..Document::default()
         }
     }
 

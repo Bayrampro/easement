@@ -67,6 +67,12 @@ impl Confidence {
 /// What a verdict over cached indexes rests on. Not a reason for `partial`: the
 /// key holds what decides an index, but not dependencies outside the project.
 pub fn cache_note(stats: &Stats) -> Option<String> {
+    if stats.from_cache > 0 && stats.dedicated_dart_cache {
+        return Some(format!(
+            "{} index(es) came from the Dart cache, keyed on resolved package inputs, SDK artifacts, indexer implementation and environment; run with `--no-cache` to index and validate again",
+            stats.from_cache
+        ));
+    }
     (stats.from_cache > 0).then(|| {
         format!(
             "{} index(es) came from the cache, keyed on the project files, the indexer and its environment but not on dependencies outside the project; if those changed without a lock file, run with `--no-cache` to index again",
@@ -101,8 +107,24 @@ fn narrowed_reasons(stats: &Stats, changes: Option<&Changes>) -> Vec<String> {
 }
 
 /// Code the check could not read or judge.
+pub fn analysis_reasons(stats: &Stats) -> Vec<String> {
+    stats
+        .analysis_partial
+        .iter()
+        .map(|gap| {
+            format!(
+                "{}{}: {}",
+                gap.file,
+                gap.line.map(|line| format!(":{line}")).unwrap_or_default(),
+                gap.reason
+            )
+        })
+        .collect()
+}
+
 fn unread_reasons(stats: &Stats) -> Vec<String> {
     let mut reasons = Vec::new();
+    reasons.extend(analysis_reasons(stats));
     reasons.extend(stats.unused_partial.iter().cloned());
     reasons.extend(stats.manifests_partial.iter().cloned());
     reasons.extend(stats.symbols_partial.iter().cloned());
@@ -251,6 +273,20 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
         out.push_str("New dependencies between components in this change:\n");
         for d in &stats.new_dependencies {
             out.push_str(&format!("  {d}\n"));
+        }
+    }
+    if !stats.analysis_partial.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("Incomplete analysis:\n");
+        for gap in &stats.analysis_partial {
+            out.push_str(&format!(
+                "  {}{}: {}\n",
+                gap.file,
+                gap.line.map(|line| format!(":{line}")).unwrap_or_default(),
+                gap.reason
+            ));
         }
     }
     if !stats.uncovered.is_empty() {

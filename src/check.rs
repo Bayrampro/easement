@@ -207,6 +207,10 @@ fn is_zero(n: &usize) -> bool {
 
 #[derive(Debug, Default, Serialize)]
 pub struct Stats {
+    #[serde(skip)]
+    pub dedicated_dart_cache: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub analysis_partial: Vec<crate::scan::AnalysisGap>,
     pub files: usize,
     pub internal_deps: usize,
     pub external_deps: usize,

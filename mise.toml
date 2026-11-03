@@ -3,6 +3,7 @@
 rust = { version = "1.97.0", components = "rustfmt,clippy,rust-analyzer" }
 "aqua:axodotdev/cargo-dist" = "0.33.1"
 node = "24"
+flutter = "3.47.9" # Includes Dart 3.13.7; keep the SDK pair together.
 go = "1.27.3"
 # The SCIP indexers easement runs (rust-analyzer is the Rust one) and what they build with;
 # the tests need them. scip-php and scip-dotnet are installed by composer and dotnet.
@@ -36,6 +37,7 @@ lychee = "0.24.2"
 # scip-php and scip-dotnet, which the tests need; the CI workflow shows how to install them.
 [env]
 _.path = [
+  "{{config_root}}/target/dart-indexer",
   "{{env.HOME}}/.composer/vendor/bin",
   "{{env.HOME}}/.config/composer/vendor/bin",
   "{{env.HOME}}/.dotnet/tools",
@@ -62,6 +64,14 @@ skills add mattpocock/skills --agent claude-code codex --yes --skill \
 [tasks.check]
 description = "Run every check, the same set CI runs"
 run = "hk check --all"
+
+[tasks.install-dart-indexer]
+description = "Install the pinned Dart indexer launcher"
+run = ["cd tools/dart-indexer && dart pub get --enforce-lockfile", "dart tools/dart-indexer/bin/install.dart"]
+
+[tasks.prepare-dart-fixtures]
+description = "Seed Flutter dependencies before offline Dart integration tests"
+run = "cd tests/fixtures/flutter-basic && flutter pub get --enforce-lockfile"
 
 [tasks.fix]
 description = "Apply the automatic fixes"

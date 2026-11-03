@@ -1,7 +1,6 @@
 ---
 source: src/main.rs
-assertion_line: 823
-expression: "crate::config::TEST_PATTERNS.join(\"\\n\")"
+expression: "crate::lang::registry::test_patterns().join(\"\\n\")"
 ---
 **/*_test.go
 **/*.test.*
@@ -17,3 +16,4 @@ expression: "crate::config::TEST_PATTERNS.join(\"\\n\")"
 **/*Tests.cs
 **/*Test.php
 **/*Tests.swift
+**/*_test.dart
