@@ -49,6 +49,22 @@ pub struct Declared {
     pub optional: bool,
 }
 
+impl Declared {
+    /// A dependency of the plain tables, with none of the features of Cargo.
+    pub fn new(line: usize, name: &str, package: &str, source: Source) -> Self {
+        Self {
+            line,
+            name: name.to_string(),
+            package: package.to_string(),
+            source,
+            part: None,
+            target: None,
+            feature: None,
+            optional: false,
+        }
+    }
+}
+
 /// The dependencies a manifest of `kind` declares, with the line of each.
 /// `None` for a manifest that cannot be read, which is not one that declares nothing.
 pub fn declared(kind: Manifest, text: &str) -> Option<Vec<Declared>> {
@@ -64,7 +80,7 @@ pub fn edges(root: &Path, files: &[String], read_as_source: impl Fn(&str) -> boo
     let text_of = |file: &str| std::fs::read_to_string(root.join(file)).ok();
     let mut found = Edges::default();
     let names = Names::of(files, &text_of);
-    found.problems.extend(names.duplicates.clone());
+    found.problems.extend(names.duplicates.iter().cloned());
     for file in files {
         let Some(kind) = registry::manifest_of(file) else {
             continue;
@@ -161,7 +177,14 @@ impl Names {
         let mut sorted: Vec<&String> = files.iter().collect();
         sorted.sort();
         for file in sorted {
-            let Some(kind) = registry::manifest_of(file) else {
+            // Tools skip these directories, and so does the name of a package.
+            if file
+                .split('/')
+                .any(|dir| dir == "vendor" || dir == "testdata")
+            {
+                continue;
+            }
+            let Some(kind) = registry::manifest_of(file).filter(|k| *k != Manifest::Cargo) else {
                 continue;
             };
             let Some(text) = read(file) else {
@@ -202,7 +225,9 @@ pub fn resolve(
     read: &dyn Fn(&str) -> Option<String>,
     names: &Names,
 ) -> (Resolved, Option<String>) {
-    let kind = registry::manifest_of(manifest).unwrap_or(Manifest::Cargo);
+    let Some(kind) = registry::manifest_of(manifest) else {
+        return (Resolved::External(declared.package.clone()), None);
+    };
     let internal = |dir: &str, path: &str| {
         let target = join(dir, path).map(|dir| manifest_in(kind, &dir))?;
         files.contains(&target).then_some(target)
@@ -842,5 +867,23 @@ mod tests {
         assert!(
             names.duplicates[0].contains("dup") && names.duplicates[0].contains("a/package.json")
         );
+    }
+
+    #[test]
+    fn a_vendored_or_test_data_manifest_does_not_count_as_a_package_of_the_project() {
+        let project = [
+            ("a/go.mod", "module example.com/a\n"),
+            ("vendor/x/go.mod", "module example.com/a\n"),
+            ("pkg/testdata/go.mod", "module example.com/a\n"),
+        ];
+        let files: Vec<String> = project.iter().map(|(p, _)| p.to_string()).collect();
+        let read = |path: &str| {
+            project
+                .iter()
+                .find(|(p, _)| *p == path)
+                .map(|(_, t)| t.to_string())
+        };
+        let names = Names::of(&files, &read);
+        assert!(names.duplicates.is_empty(), "{:?}", names.duplicates);
     }
 }

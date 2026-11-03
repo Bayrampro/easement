@@ -1552,6 +1552,53 @@ fn packages_check_the_modules_a_go_mod_requires() {
 }
 
 #[test]
+fn packages_and_manifests_together_judge_a_package_json_once() {
+    let (_tmp, root) = fixture("npm_packages");
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        format!("{config}\nmanifests: true\n"),
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(".json files").not())
+        .stdout(contains("2 violation(s)"));
+}
+
+#[test]
+fn two_package_jsons_that_go_by_one_name_are_said() {
+    let (_tmp, root) = fixture("npm_packages");
+    fs::create_dir_all(root.join("packages/copy")).unwrap();
+    fs::write(
+        root.join("packages/copy/package.json"),
+        "{\n  \"name\": \"@acme/api\"\n}\n",
+    )
+    .unwrap();
+    let out = easement(&root, &["check", "--format", "json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let partial = report["stats"]["packages_partial"].as_array().unwrap();
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    assert!(partial[0].as_str().unwrap().contains("@acme/api"));
+    assert_eq!(report["confidence"], "partial");
+}
+
+#[test]
+fn a_go_mod_that_cannot_be_read_is_said_not_passed_as_clean() {
+    let (_tmp, root) = fixture("go_packages");
+    fs::write(
+        root.join("app/go.mod"),
+        "module example.com/app\n\nrequire (\n\texample.com/lib v1.0.0\n",
+    )
+    .unwrap();
+    let out = easement(&root, &["check", "--format", "json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let partial = report["stats"]["packages_partial"].as_array().unwrap();
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    assert!(partial[0].as_str().unwrap().contains("app/go.mod"));
+}
+
+#[test]
 fn csharp_resolves_namespaces() {
     layered(
         "csharp",

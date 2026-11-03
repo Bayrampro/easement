@@ -23,36 +23,47 @@ pub(super) fn declared(text: &str) -> Option<Vec<Declared>> {
         let Some(version) = json[&section][&name].as_str() else {
             continue;
         };
-        let (package, source) = if let Some(path) = version
-            .strip_prefix("file:")
-            .or_else(|| version.strip_prefix("link:"))
-        {
-            (name.clone(), Source::Path(path.to_string()))
-        } else if let Some(alias) = version.strip_prefix("npm:") {
-            // `npm:real@^1` and `npm:@scope/real@^1`: the package it is an alias of.
-            let real = match alias.rfind('@') {
-                Some(at) if at > 0 => &alias[..at],
-                _ => alias,
-            };
-            (real.to_string(), Source::Package)
-        } else {
-            (name.clone(), Source::Package)
-        };
+        let (package, source) = dependency(&name, version);
         found.push(Declared {
-            line,
-            name,
-            package,
-            source,
             part: (section == "devDependencies").then(|| Part {
                 name: section.clone(),
                 kind: Some(Kind::Test),
             }),
-            target: None,
-            feature: None,
-            optional: false,
+            ..Declared::new(line, &name, &package, source)
         });
     }
     Some(found)
+}
+
+/// The package a dependency is and where it comes from, by what its version says: a
+/// path (`file:`, `link:`, `workspace:../x`), an alias (`npm:real@1`, `workspace:real@*`)
+/// or a range of the package that goes by its name.
+fn dependency(name: &str, version: &str) -> (String, Source) {
+    let alias = |text: &str| match text.rfind('@') {
+        Some(at) if at > 0 => text[..at].to_string(),
+        _ => name.to_string(),
+    };
+    if let Some(path) = version
+        .strip_prefix("file:")
+        .or_else(|| version.strip_prefix("link:"))
+    {
+        return (name.to_string(), Source::Path(path.to_string()));
+    }
+    if let Some(rest) = version.strip_prefix("workspace:") {
+        return if rest.starts_with('.') {
+            (name.to_string(), Source::Path(rest.to_string()))
+        } else {
+            (alias(rest), Source::Package)
+        };
+    }
+    if let Some(rest) = version.strip_prefix("npm:") {
+        let real = match rest.rfind('@') {
+            Some(at) if at > 0 => rest[..at].to_string(),
+            _ => rest.to_string(),
+        };
+        return (real, Source::Package);
+    }
+    (name.to_string(), Source::Package)
 }
 
 /// The name of the package a `package.json` declares.
@@ -180,10 +191,7 @@ mod tests {
 
     #[test]
     fn a_package_json_that_is_no_json_is_unread_not_empty() {
-        assert_eq!(
-            declared("{ \"dependencies\": "),
-            None.map(|v: Vec<Declared>| v)
-        );
+        assert!(declared("{ \"dependencies\": ").is_none());
         assert_eq!(declared("{}").map(|v| v.len()), Some(0));
         assert_eq!(name("{}"), None);
     }
@@ -192,5 +200,21 @@ mod tests {
     fn a_key_with_a_quote_or_a_brace_in_a_string_does_not_confuse_the_lines() {
         let text = "{\n  \"description\": \"a } \\\" { b\",\n  \"dependencies\": {\n    \"x\": \"1\"\n  }\n}\n";
         assert_eq!(rows(text)[0].0, 4);
+    }
+
+    #[test]
+    fn the_workspace_protocol_names_a_path_or_an_alias_as_well_as_a_range() {
+        let text = "{\n  \"dependencies\": {\n    \"a\": \"workspace:^\",\n    \"b\": \"workspace:../b\",\n    \"c\": \"workspace:real@*\",\n    \"d\": \"workspace:@acme/real@^1\"\n  }\n}\n";
+        let got: Vec<_> = rows(text).into_iter().map(|r| (r.1, r.2, r.3)).collect();
+        let n = |x: &str| x.to_string();
+        assert_eq!(
+            got,
+            [
+                (n("a"), n("a"), Source::Package),
+                (n("b"), n("b"), Source::Path(n("../b"))),
+                (n("c"), n("real"), Source::Package),
+                (n("d"), n("@acme/real"), Source::Package),
+            ]
+        );
     }
 }
