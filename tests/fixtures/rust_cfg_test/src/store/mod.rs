@@ -1,6 +1,7 @@
 use testkit::Clock;
 
 pub mod ok;
+mod inner;
 
 pub struct Db(pub Clock);
 

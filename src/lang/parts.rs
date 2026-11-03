@@ -28,21 +28,21 @@ pub struct Span {
 }
 
 impl Span {
-    /// A part that is the file from its first line to its last, as test-only code is.
-    pub fn whole_file(kind: Kind) -> Self {
+    /// Test-only code on `lines`: `1..=usize::MAX` for a whole file.
+    pub fn test(lines: RangeInclusive<usize>) -> Self {
         Self {
-            lines: 1..=usize::MAX,
+            lines,
             part: Part {
                 name: "cfg(test)".to_string(),
-                kind: Some(kind),
+                kind: Some(Kind::Test),
             },
         }
     }
 }
 
-/// The `#[cfg(test)]` items of a Rust source: the attribute, then the item up
-/// to its closing brace (or its `;`). `mod tests;` is no part: its code is in
-/// another file.
+/// The test-only items of a Rust source: the attribute, then the item up to its closing
+/// brace (or its `;`), and the whole file for `#![cfg(test)]`. `mod tests;` is no part
+/// of this file: its code is in another, which `files` names.
 pub fn rust(path: &str, source: &str) -> Found {
     let masked = mask_rust(source.as_bytes());
     let Ok(text) = std::str::from_utf8(&masked) else {
@@ -65,31 +65,33 @@ pub fn rust(path: &str, source: &str) -> Found {
         if !only_a_test_build(content) {
             continue;
         }
-        let part = Part {
-            name: "cfg(test)".to_string(),
-            kind: Some(Kind::Test),
-        };
+        let start = whole.start();
+        // What sits inside an inline module cannot be placed from this file alone.
+        let inside_module = brace_depth(&masked[..start]) > 0;
         // `#![cfg(test)]`: the file is test code from its first line to its last.
         if !found[1].is_empty() {
-            spans.push(Span {
-                lines: 1..=text.lines().count().max(1),
-                part,
-            });
+            if inside_module {
+                doubts.push(Doubt::InsideModule);
+            } else {
+                spans.push(Span::test(1..=text.lines().count().max(1)));
+            }
             continue;
         }
         // An item nested in a part that was found already is part of it.
         if spans
             .last()
-            .is_some_and(|last| *last.lines.end() >= line_of(&masked, whole.start()))
+            .is_some_and(|last| *last.lines.end() >= line_of(&masked, start))
         {
             continue;
         }
         match item_end(&masked, attribute_end) {
-            Item::Ends(end) => spans.push(Span {
-                lines: line_of(&masked, whole.start())..=line_of(&masked, end),
-                part,
-            }),
+            Item::Ends(end) => {
+                spans.push(Span::test(line_of(&masked, start)..=line_of(&masked, end)))
+            }
+            Item::Module(_) if inside_module => doubts.push(Doubt::InsideModule),
+            Item::Module(_) if preceded_by_path(text, start) => doubts.push(Doubt::ModulePath),
             Item::Module(name) => files.push(module_files(path, &name)),
+            Item::ModulePath => doubts.push(Doubt::ModulePath),
             Item::Unbalanced => doubts.push(Doubt::Unbalanced),
             Item::Member => {}
         }
@@ -100,6 +102,24 @@ pub fn rust(path: &str, source: &str) -> Found {
         doubts,
         files,
     }
+}
+
+/// How many `{` of the code before a point are still open.
+fn brace_depth(code: &[u8]) -> usize {
+    code.iter().fold(0_usize, |depth, byte| match byte {
+        b'{' => depth + 1,
+        b'}' => depth.saturating_sub(1),
+        _ => depth,
+    })
+}
+
+/// Whether the attribute that ends just before `start` is a `#[path = ...]`.
+fn preceded_by_path(text: &str, start: usize) -> bool {
+    let before = text[..start].trim_end();
+    before.ends_with(']')
+        && before
+            .rfind("#[")
+            .is_some_and(|at| before[at + 2..].trim_start().starts_with("path"))
 }
 
 /// The files the module `name` declared in the Rust file `path` may be in: a `mod.rs`,
@@ -183,7 +203,7 @@ fn only_a_test_build(predicate: &str) -> bool {
         }
     }
     parts.push(&arguments[start..]);
-    parts.iter().any(|part| part.trim() == "test")
+    parts.iter().any(|argument| argument.trim() == "test")
 }
 
 /// What a finder found in a source, and what it could not tell.
@@ -205,6 +225,10 @@ pub enum Doubt {
     Unbalanced,
     /// `#[cfg(test)] mod name;` names a file the project does not have.
     ModuleInAnotherFile,
+    /// An inner `#![cfg(test)]`, or a `#[cfg(test)] mod name;`, inside an inline module.
+    InsideModule,
+    /// A `#[path]` puts the file of a `#[cfg(test)] mod name;` somewhere else.
+    ModulePath,
 }
 
 impl Doubt {
@@ -216,6 +240,12 @@ impl Doubt {
             ),
             Doubt::Unbalanced => format!(
                 "{files}: easement could not find the end of a `#[cfg(test)]` item (the braces do not match), so it is judged as the file's, not as `tests`"
+            ),
+            Doubt::InsideModule => format!(
+                "{files}: a `#![cfg(test)]` or a `#[cfg(test)] mod name;` inside an inline module is not placed, so it is judged as the file's, not as `tests`"
+            ),
+            Doubt::ModulePath => format!(
+                "{files}: a `#[path]` puts the file of a `#[cfg(test)] mod name;` somewhere easement does not look, so it is judged as its component's, not as `tests`"
             ),
             Doubt::ModuleInAnotherFile => format!(
                 "{files}: `#[cfg(test)] mod name;` names a file that is not in the project, so it is not judged as `tests`; the file is expected next to the module or under a directory of its name"
@@ -229,6 +259,8 @@ enum Item {
     Ends(usize),
     /// `mod name;`
     Module(String),
+    /// `#[path = "..."] mod name;`: its file is not where the name says.
+    ModulePath,
     /// A field, an argument, an arm: no item an attribute governs as a part.
     Member,
     Unbalanced,
@@ -363,6 +395,7 @@ fn line_of(source: &[u8], at: usize) -> usize {
 /// its closing brace, or its `;`.
 fn item_end(code: &[u8], from: usize) -> Item {
     let mut i = from;
+    let mut path_attribute = false;
     // Skip the other attributes of the item.
     loop {
         while code.get(i).is_some_and(u8::is_ascii_whitespace) {
@@ -371,6 +404,12 @@ fn item_end(code: &[u8], from: usize) -> Item {
         if !code[i..].starts_with(b"#[") {
             break;
         }
+        path_attribute |= code[i + 2..]
+            .iter()
+            .skip_while(|b| b.is_ascii_whitespace())
+            .take(4)
+            .copied()
+            .eq(*b"path");
         let mut depth = 0;
         while i < code.len() {
             match code[i] {
@@ -398,6 +437,7 @@ fn item_end(code: &[u8], from: usize) -> Item {
             b')' | b']' => nesting -= 1,
             b';' if nesting == 0 => {
                 return match module_name(&code[item..i]) {
+                    Some(_) if path_attribute => Item::ModulePath,
                     Some(name) => Item::Module(name),
                     None => Item::Ends(i),
                 };
@@ -460,14 +500,19 @@ fn starts_item(code: &[u8]) -> bool {
 /// The name of the module, when the text of an item up to its `;` is `mod name`, with a
 /// visibility.
 fn module_name(item: &[u8]) -> Option<String> {
+    static GROUP: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\([^)]*\)").expect("valid regex"));
     let text = String::from_utf8_lossy(item);
+    // `pub(crate)` and `pub(in crate::a)` are one word of visibility.
+    let text = GROUP.replace_all(&text, " ");
     let words: Vec<&str> = text.split_whitespace().collect();
     let keyword = words.iter().position(|w| *w == "mod")?;
     words[..keyword]
         .iter()
-        .all(|w| w.starts_with("pub"))
-        .then(|| words.get(keyword + 1).map(|name| name.to_string()))
+        .all(|word| *word == "pub")
+        .then(|| words.get(keyword + 1))
         .flatten()
+        .map(|name| name.trim_start_matches("r#").to_string())
 }
 
 #[cfg(test)]
@@ -631,5 +676,47 @@ mod tests {
             files("src/store/db.rs"),
             [["src/store/db/t.rs", "src/store/db/t/mod.rs"]]
         );
+    }
+
+    #[test]
+    fn odd_forms_of_a_cfg_are_told_apart() {
+        let source = concat!(
+            "#[cfg_attr(test, derive(Debug))]\nstruct A;\n",
+            "#[cfg(all())]\nmod b {\n}\n",
+            "#[cfg (all (test, unix))]\nmod c {\n}\n",
+            "#[cfg(not(all(test, unix)))]\nmod d {\n}\n",
+            "#[cfg(all(test))]\nmod e {\n}\n",
+        );
+        assert_eq!(lines(source), [6..=8, 12..=14]);
+    }
+
+    #[test]
+    fn a_module_with_a_raw_name_or_a_scoped_visibility_still_names_its_file() {
+        let found = rust(
+            "src/lib.rs",
+            "#[cfg(test)]\nmod r#type;\n#[cfg(test)]\npub(in crate::a) mod scoped;\n#[cfg(test)]\npub  mod  spaced ;\n",
+        );
+        let names: Vec<_> = found.files.iter().map(|f| f[0].clone()).collect();
+        assert_eq!(names, ["src/type.rs", "src/scoped.rs", "src/spaced.rs"]);
+    }
+
+    #[test]
+    fn what_cannot_be_placed_from_the_file_alone_is_said() {
+        // An inner attribute of an inline module, a module file declared in one, and
+        // a module file that a `#[path]` puts somewhere else.
+        let nested = rust(
+            "src/lib.rs",
+            "mod m {\n    #![cfg(test)]\n    fn a() {}\n}\n",
+        );
+        assert!(nested.spans.is_empty());
+        assert_eq!(nested.doubts, [Doubt::InsideModule]);
+        let declared = rust("src/lib.rs", "mod a {\n    #[cfg(test)]\n    mod t;\n}\n");
+        assert!(declared.files.is_empty());
+        assert_eq!(declared.doubts, [Doubt::InsideModule]);
+        let before = rust("src/lib.rs", "#[path = \"x.rs\"]\n#[cfg(test)]\nmod t;\n");
+        assert!(before.files.is_empty());
+        assert_eq!(before.doubts, [Doubt::ModulePath]);
+        let after = rust("src/lib.rs", "#[cfg(test)]\n#[path = \"x.rs\"]\nmod t;\n");
+        assert_eq!(after.doubts, [Doubt::ModulePath]);
     }
 }

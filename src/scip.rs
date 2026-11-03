@@ -621,14 +621,19 @@ fn ruby_use(
     })
 }
 
-/// The node of `document` that `line` is in: a part of the file, or the file.
-fn unit_at(document: &Document, line: usize) -> Unit {
-    match document
+/// The part of `document` that `line` is in.
+fn part_at(document: &Document, line: usize) -> Option<&Part> {
+    document
         .parts
         .iter()
         .find(|span| span.lines.contains(&line))
-    {
-        Some(span) => Unit::in_part(Path::new(&document.path), span.part.clone()),
+        .map(|span| &span.part)
+}
+
+/// The node of `document` that `line` is in: a part of the file, or the file.
+fn unit_at(document: &Document, line: usize) -> Unit {
+    match part_at(document, line) {
+        Some(part) => Unit::in_part(Path::new(&document.path), part.clone()),
         None => Unit::from(document.path.as_str()),
     }
 }
@@ -831,11 +836,7 @@ pub fn facts_watching(
                     if internal.is_none() && module.is_empty() {
                         continue;
                     }
-                    let part = document
-                        .parts
-                        .iter()
-                        .find(|span| span.lines.contains(&reference.line))
-                        .map(|span| &span.part);
+                    let part = part_at(document, reference.line);
                     let line = first
                         .entry((internal, module, part))
                         .or_insert(reference.line);

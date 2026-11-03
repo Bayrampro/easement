@@ -1386,6 +1386,8 @@ fn a_cfg_test_module_in_another_file_is_tests_too() {
     easement(&root, &["check"])
         .code(1)
         .stdout(contains("src/store/extra.rs").not())
+        // `inner.rs` opens with `#![cfg(test)]`: all of it is test code.
+        .stdout(contains("src/store/inner.rs").not())
         .stdout(contains("1 violation(s)"));
 }
 

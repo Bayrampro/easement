@@ -241,7 +241,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         match candidates.iter().find(|c| project.contains(c.as_str())) {
             Some(file) => {
                 if let Some(document) = documents.iter_mut().find(|d| d.path == *file) {
-                    document.parts = vec![lang::parts::Span::whole_file(lang::parts::Kind::Test)];
+                    document.parts = vec![lang::parts::Span::test(1..=usize::MAX)];
                 }
             }
             None => parts_doubts.push((declaring, lang::parts::Doubt::ModuleInAnotherFile)),
