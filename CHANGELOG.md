@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.8](https://github.com/mokevnin/easement/compare/v0.4.7...v0.4.8) (2026-11-03)
+
+
+### Features
+
+* forbid_symbol at the top level, for every checked file ([8e4d64c](https://github.com/mokevnin/easement/commit/8e4d64cf58c4dd35a7077f2f4aa81d89081b1465)), closes [#57](https://github.com/mokevnin/easement/issues/57)
+
+
+### Bug Fixes
+
+* say how to judge an npm package under a nameless package.json ([d6e5e98](https://github.com/mokevnin/easement/commit/d6e5e9876369c060c54127b57f2aeb0fa0615a32)), closes [#66](https://github.com/mokevnin/easement/issues/66)
+
 ## [0.4.7](https://github.com/mokevnin/easement/compare/v0.4.6...v0.4.7) (2026-11-03)
 
 
