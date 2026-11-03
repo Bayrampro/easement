@@ -101,6 +101,11 @@ pub struct Config {
     /// Per component: what it may depend on and use.
     #[serde(default)]
     pub rules: BTreeMap<String, Rule>,
+    /// Names that no checked file may use, components and files that belong to none alike,
+    /// as `package.Name` or `import/path.Name`. A component's own `forbid_symbol` adds to
+    /// it. An item may carry its own reason.
+    #[serde(default)]
+    pub forbid_symbol: Vec<Listed>,
     /// Globs of paths to skip.
     #[serde(default)]
     pub exclude: Vec<String>,
@@ -477,14 +482,19 @@ impl Config {
     /// Whether any rule needs the uses of names, not only the imports.
     pub fn uses_symbols(&self) -> bool {
         self.components.values().any(|c| c.public_symbols.is_some())
+            || !self.forbid_symbol.is_empty()
             || self.rules.values().any(|r| !r.forbid_symbol.is_empty())
     }
 
     /// The names that `forbid_symbol` lists, without the qualifier: `locale` of `I18n.locale`.
     pub fn forbidden_symbol_names(&self) -> std::collections::HashSet<String> {
-        self.rules
-            .values()
-            .flat_map(|rule| rule.forbid_symbol.iter())
+        self.forbid_symbol
+            .iter()
+            .chain(
+                self.rules
+                    .values()
+                    .flat_map(|rule| rule.forbid_symbol.iter()),
+            )
             .filter_map(|listed| listed.name().rsplit_once('.'))
             .map(|(_, name)| name.to_string())
             .collect()
@@ -571,6 +581,11 @@ impl Config {
         };
         for name in &self.common {
             check(name, "common")?;
+        }
+        for symbol in self.forbid_symbol.iter().map(Listed::name) {
+            if !symbol.contains('.') {
+                bail!("forbid_symbol `{symbol}` must look like `package.Name`");
+            }
         }
         for (from, rule) in &self.rules {
             check(from, "rules")?;
@@ -986,6 +1001,35 @@ rules:
         write("loop.yml", "extends: loop.yml\nversion: 1\n");
         let err = Config::load(&dir.path().join("loop.yml")).unwrap_err();
         assert!(err.to_string().contains("extends itself"));
+    }
+
+    #[test]
+    fn a_top_level_forbid_symbol_counts_as_a_use_of_names_and_must_name_a_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("easement.yml");
+        std::fs::write(
+            &path,
+            "version: 1
+components:
+  a: { in: a }
+forbid_symbol: [\"d.T\"]
+",
+        )
+        .unwrap();
+        let c = Config::load(&path).unwrap();
+        assert!(c.uses_symbols());
+        assert!(c.forbidden_symbol_names().contains("T"));
+        std::fs::write(
+            &path,
+            "version: 1
+components:
+  a: { in: a }
+forbid_symbol: [T]
+",
+        )
+        .unwrap();
+        let error = format!("{:#}", Config::load(&path).unwrap_err());
+        assert!(error.contains("must look like `package.Name`"), "{error}");
     }
 
     #[test]

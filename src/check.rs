@@ -984,9 +984,9 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
     let mut found = Vec::new();
     for used in uses {
         let file = slash(&used.file);
-        let Some(from) = map.component_of(&file) else {
-            continue;
-        };
+        let owner = map.component_of(&file);
+        // A file that belongs to no component is judged by the top-level list alone.
+        let from = owner.unwrap_or_default();
         let mut report = |message: String, target: String, to: &str, because: Option<&str>| {
             found.push(Violation {
                 rule: RuleId::Symbol,
@@ -1001,25 +1001,42 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
                 specifier: used.specifier.clone(),
             });
         };
-        if let Some(rule) = config.rules.get(from) {
-            for listed in &rule.forbid_symbol {
-                let pattern = listed.name();
-                if names_symbol(pattern, &used.specifier, &used.name)
-                    || used
-                        .method
-                        .as_ref()
-                        .is_some_and(|(owner, method)| names_symbol(pattern, owner, method))
-                {
-                    report(
-                        format!("{from} must not use {}", listed.name()),
-                        listed.name().to_string(),
-                        "",
-                        listed.because().or(rule.because.as_deref()),
-                    );
+        let own = owner
+            .and_then(|component| config.rules.get(component))
+            .into_iter()
+            .flat_map(|rule| {
+                rule.forbid_symbol
+                    .iter()
+                    .map(move |listed| (listed, rule.because.as_deref()))
+            });
+        let global = config.forbid_symbol.iter().map(|listed| (listed, None));
+        let mut seen = std::collections::BTreeSet::new();
+        for (listed, fallback) in global.chain(own) {
+            let pattern = listed.name();
+            if names_symbol(pattern, &used.specifier, &used.name)
+                || used
+                    .method
+                    .as_ref()
+                    .is_some_and(|(owner, method)| names_symbol(pattern, owner, method))
+            {
+                // A name in both lists is one violation.
+                if !seen.insert(pattern) {
+                    continue;
                 }
+                let who = match owner {
+                    Some(component) => component.to_string(),
+                    None => "unowned files".to_string(),
+                };
+                report(
+                    format!("{who} must not use {pattern}"),
+                    pattern.to_string(),
+                    "",
+                    listed.because().or(fallback),
+                );
             }
         }
-        if let Some(Target::Internal(path)) = &used.target
+        if owner.is_some()
+            && let Some(Target::Internal(path)) = &used.target
             && let Some(to) = map.component_of(&slash(path))
             && to != from
             && let Some(public) = &config.components[to].public_symbols
@@ -1043,16 +1060,19 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
 /// Why `forbid_symbol` left uses of names unchecked: the files in `unnamed`
 /// use names of an npm package that the indexer left unnamed, because a
 /// `package.json` with no `name` inside it (`{"type": "module"}`) hides it.
-/// Only files of a component with `forbid_symbol` count.
+/// Only files that a `forbid_symbol` list covers count: all of them for the top-level
+/// list, else those of a component with its own.
 pub fn symbols_partial(config: &Config, map: &ComponentMap, unnamed: &[String]) -> Vec<String> {
     const SHOWN: usize = 3;
     let unnamed: Vec<&str> = unnamed
         .iter()
         .map(String::as_str)
         .filter(|file| {
-            map.component_of(file)
-                .and_then(|component| config.rules.get(component))
-                .is_some_and(|rule| !rule.forbid_symbol.is_empty())
+            !config.forbid_symbol.is_empty()
+                || map
+                    .component_of(file)
+                    .and_then(|component| config.rules.get(component))
+                    .is_some_and(|rule| !rule.forbid_symbol.is_empty())
         })
         .collect();
     if unnamed.is_empty() {
@@ -1083,8 +1103,14 @@ pub fn symbols_unmatched(
         return Vec::new();
     }
     let mut found = Vec::new();
-    for (component, rule) in &config.rules {
-        for listed in &rule.forbid_symbol {
+    let lists = std::iter::once(("the top level", &config.forbid_symbol)).chain(
+        config
+            .rules
+            .iter()
+            .map(|(component, rule)| (component.as_str(), &rule.forbid_symbol)),
+    );
+    for (component, list) in lists {
+        for listed in list {
             let pattern = listed.name();
             let Some((qualifier, wanted)) = pattern.rsplit_once('.') else {
                 continue;

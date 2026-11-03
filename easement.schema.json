@@ -67,6 +67,13 @@
         }
       ]
     },
+    "forbid_symbol": {
+      "description": "Names that no checked file may use, components and files that belong to none alike, as `package.Name` or `import/path.Name`. A component's own `forbid_symbol` adds to it. An item may carry its own reason.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Listed"
+      }
+    },
     "go": {
       "description": "How the Go indexer builds the project.",
       "allOf": [

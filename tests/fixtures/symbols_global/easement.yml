@@ -1,0 +1,20 @@
+version: 1
+
+strict: true
+unowned: [internal/lib]
+
+# Applies to every checked file: components and the unowned `internal/lib` alike.
+forbid_symbol:
+  - { name: "db.Client", because: use db.Scoped so every query is tenant-bound }
+
+components:
+  handler:
+    in: internal/handlers
+  db:
+    in: internal/db
+
+rules:
+  handler:
+    may_depend_on: [db]
+    forbid_symbol:
+      - { name: "db.Raw", because: raw access skips the tenant filter }

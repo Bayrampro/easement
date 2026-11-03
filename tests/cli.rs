@@ -1635,6 +1635,30 @@ fn symbols_are_checked_through_imports() {
 }
 
 #[test]
+fn a_top_level_forbid_symbol_covers_every_file_unowned_included() {
+    let (_tmp, root) = fixture("symbols_global");
+    easement(&root, &["check"])
+        .code(1)
+        // A component gets the global ban and its own.
+        .stdout(contains(
+            "internal/handlers/books.go:5: handler must not use db.Client [symbol]",
+        ))
+        .stdout(contains(
+            "internal/handlers/books.go:6: handler must not use db.Raw [symbol]",
+        ))
+        // A file no component owns is judged too, and an inline suppression holds there.
+        .stdout(contains(
+            "internal/lib/util.go:6: unowned files must not use db.Client [symbol]",
+        ))
+        .stdout(contains("internal/lib/util.go:3").not())
+        // db.Raw is only forbidden to the handler.
+        .stdout(contains("internal/lib/util.go:11").not())
+        .stdout(contains(
+            "because: use db.Scoped so every query is tenant-bound",
+        ));
+}
+
+#[test]
 fn forbid_symbol_catches_every_way_to_use_a_type() {
     let (_tmp, root) = fixture("symbol_uses");
     // One file per way of using db.Client, and a file that uses it twice: every use is reported.
