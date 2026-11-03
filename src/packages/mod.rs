@@ -3,6 +3,8 @@
 //! dev-dependency is test code, so `tests: auto` takes it.
 
 mod cargo;
+mod go;
+mod npm;
 
 use std::path::{Path, PathBuf};
 
@@ -18,6 +20,9 @@ pub enum Source {
     Path(String),
     /// `workspace = true`: what the workspace manifest declares under the name.
     Workspace,
+    /// A package by its name: a package of the project that goes by it, else a
+    /// third-party one.
+    Package,
     /// A registry or a repository: a third-party package.
     Registry,
     /// The manifest itself: an item of a feature that names another feature of it.
@@ -46,21 +51,22 @@ pub struct Declared {
 
 /// The dependencies a manifest of `kind` declares, with the line of each.
 /// `None` for a manifest that cannot be read, which is not one that declares nothing.
-/// A kind of manifest whose reader is not written yet declares none.
 pub fn declared(kind: Manifest, text: &str) -> Option<Vec<Declared>> {
     match kind {
         Manifest::Cargo => cargo::declared(text),
-        Manifest::Npm | Manifest::Go => Some(Vec::new()),
+        Manifest::Npm => npm::declared(text),
+        Manifest::Go => go::declared(text),
     }
 }
 
 /// The dependencies the manifests among `files` declare, as edges.
-/// A manifest of a kind whose reader is not written yet is left out.
 pub fn edges(root: &Path, files: &[String], read_as_source: impl Fn(&str) -> bool) -> Edges {
     let text_of = |file: &str| std::fs::read_to_string(root.join(file)).ok();
     let mut found = Edges::default();
+    let names = Names::of(files, &text_of);
+    found.problems.extend(names.duplicates.clone());
     for file in files {
-        let Some(kind) = registry::manifest_of(file).filter(|kind| *kind == Manifest::Cargo) else {
+        let Some(kind) = registry::manifest_of(file) else {
             continue;
         };
         if !read_as_source(file) {
@@ -81,7 +87,7 @@ pub fn edges(root: &Path, files: &[String], read_as_source: impl Fn(&str) -> boo
             continue;
         };
         for declared in list {
-            let (resolved, problem) = resolve(file, &declared, files, &text_of);
+            let (resolved, problem) = resolve(file, &declared, files, &text_of, &names);
             found.problems.extend(problem);
             let from = match &declared.part {
                 Some(part) => Unit::in_part(Path::new(file), part.clone()),
@@ -140,6 +146,53 @@ pub enum Resolved {
     External(String),
 }
 
+/// The packages of the project by the name they are known by, for the kinds of manifest
+/// that name them: `package.json` by `name`, `go.mod` by `module`.
+#[derive(Debug, Default)]
+pub struct Names {
+    by_name: std::collections::BTreeMap<(Manifest, String), String>,
+    /// Names two manifests of a kind declare.
+    pub duplicates: Vec<String>,
+}
+
+impl Names {
+    pub fn of(files: &[String], read: &dyn Fn(&str) -> Option<String>) -> Self {
+        let mut names = Self::default();
+        let mut sorted: Vec<&String> = files.iter().collect();
+        sorted.sort();
+        for file in sorted {
+            let Some(kind) = registry::manifest_of(file) else {
+                continue;
+            };
+            let Some(text) = read(file) else {
+                continue;
+            };
+            let name = match kind {
+                Manifest::Npm => npm::name(&text),
+                Manifest::Go => go::name(&text),
+                Manifest::Cargo => None,
+            };
+            let Some(name) = name else {
+                continue;
+            };
+            match names.by_name.get(&(kind, name.clone())) {
+                Some(first) => names.duplicates.push(format!(
+                    "two `{}` go by `{name}`, {first} and {file}: a dependency on it is taken for the first",
+                    kind.file_name()
+                )),
+                None => {
+                    names.by_name.insert((kind, name), file.clone());
+                }
+            }
+        }
+        names
+    }
+
+    fn get(&self, kind: Manifest, name: &str) -> Option<&String> {
+        self.by_name.get(&(kind, name.to_string()))
+    }
+}
+
 /// Resolves what the manifest at `manifest` declares as `declared`. `files` are
 /// the project's files; `read` gives the text of one of them.
 pub fn resolve(
@@ -147,9 +200,11 @@ pub fn resolve(
     declared: &Declared,
     files: &[String],
     read: &dyn Fn(&str) -> Option<String>,
+    names: &Names,
 ) -> (Resolved, Option<String>) {
+    let kind = registry::manifest_of(manifest).unwrap_or(Manifest::Cargo);
     let internal = |dir: &str, path: &str| {
-        let target = join(dir, path).map(|dir| manifest_in(&dir))?;
+        let target = join(dir, path).map(|dir| manifest_in(kind, &dir))?;
         files.contains(&target).then_some(target)
     };
     let dir = parent(manifest);
@@ -157,6 +212,10 @@ pub fn resolve(
     let mut problem = None;
     let found = match &declared.source {
         Source::Path(path) => internal(dir, path),
+        Source::Package => names
+            .get(kind, &declared.package)
+            .filter(|file| file.as_str() != manifest)
+            .cloned(),
         Source::Workspace => match cargo::workspace_dependency(dir, &declared.name, read) {
             Ok(Some(entry)) => {
                 if let Some(real) = entry.package {
@@ -177,7 +236,13 @@ pub fn resolve(
         Source::Registry => None,
     };
     let resolved = found.map_or_else(
-        || Resolved::External(package.replace('-', "_")),
+        || {
+            Resolved::External(match kind {
+                // Rust spells a crate with `_` in an import.
+                Manifest::Cargo => package.replace('-', "_"),
+                Manifest::Npm | Manifest::Go => package,
+            })
+        },
         Resolved::Internal,
     );
     (resolved, problem)
@@ -188,9 +253,9 @@ fn parent(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
-/// The manifest of the package in `dir`.
-fn manifest_in(dir: &str) -> String {
-    let name = Manifest::Cargo.file_name();
+/// The manifest of `kind` of the package in `dir`.
+pub(super) fn manifest_in(kind: Manifest, dir: &str) -> String {
+    let name = kind.file_name();
     if dir.is_empty() {
         name.to_string()
     } else {
@@ -370,6 +435,7 @@ mod tests {
             &dep("local", Source::Path("../local".into())),
             &files,
             &read,
+            &Names::default(),
         )
         .0;
         assert_eq!(got, Resolved::Internal("crates/local/Cargo.toml".into()));
@@ -379,6 +445,7 @@ mod tests {
             &dep("gone", Source::Path("../gone".into())),
             &files,
             &read,
+            &Names::default(),
         )
         .0;
         assert_eq!(missing, Resolved::External("gone".into()));
@@ -389,11 +456,25 @@ mod tests {
         let (files, read) = project();
         let from = "crates/chunk-store/Cargo.toml";
         assert_eq!(
-            resolve(from, &dep("storage-api", Source::Workspace), &files, &read).0,
+            resolve(
+                from,
+                &dep("storage-api", Source::Workspace),
+                &files,
+                &read,
+                &Names::default()
+            )
+            .0,
             Resolved::Internal("crates/storage-api/Cargo.toml".into())
         );
         assert_eq!(
-            resolve(from, &dep("serde", Source::Workspace), &files, &read).0,
+            resolve(
+                from,
+                &dep("serde", Source::Workspace),
+                &files,
+                &read,
+                &Names::default()
+            )
+            .0,
             Resolved::External("serde".into())
         );
     }
@@ -416,6 +497,7 @@ mod tests {
             &dep("http", Source::Workspace),
             &files,
             &read,
+            &Names::default(),
         );
         assert_eq!(got, Resolved::External("real_http".into()));
         assert_eq!(problem, None);
@@ -430,6 +512,7 @@ mod tests {
             &dep("api", Source::Workspace),
             &files,
             &read,
+            &Names::default(),
         );
         assert_eq!(got, Resolved::External("api".into()));
         assert!(problem.unwrap().contains("Cargo.toml"));
@@ -441,7 +524,14 @@ mod tests {
         let mut renamed = dep("json", Source::Registry);
         renamed.package = "serde-json".into();
         assert_eq!(
-            resolve("crates/local/Cargo.toml", &renamed, &files, &read).0,
+            resolve(
+                "crates/local/Cargo.toml",
+                &renamed,
+                &files,
+                &read,
+                &Names::default()
+            )
+            .0,
             Resolved::External("serde_json".into())
         );
     }
@@ -646,5 +736,111 @@ mod tests {
     fn an_item_that_names_no_dependency_is_no_edge() {
         let rows = edges_of("[features]\nf = [\"typo/g\", \"dep:typo\"]\n");
         assert!(rows.is_empty(), "{rows:?}");
+    }
+
+    /// Resolves each dependency a manifest of a project declares.
+    fn resolved(
+        kind: Manifest,
+        manifest: &str,
+        project: &[(&str, &str)],
+    ) -> Vec<(String, Resolved)> {
+        let files: Vec<String> = project.iter().map(|(p, _)| p.to_string()).collect();
+        let read = |path: &str| {
+            project
+                .iter()
+                .find(|(p, _)| *p == path)
+                .map(|(_, t)| t.to_string())
+        };
+        let names = Names::of(&files, &read);
+        let text = read(manifest).unwrap();
+        declared(kind, &text)
+            .unwrap()
+            .iter()
+            .map(|d| {
+                (
+                    d.name.clone(),
+                    resolve(manifest, d, &files, &read, &names).0,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_npm_dependency_is_the_package_json_that_goes_by_its_name_or_its_path() {
+        let got = resolved(
+            Manifest::Npm,
+            "packages/web/package.json",
+            &[
+                ("packages/api/package.json", "{\"name\": \"@acme/api\"}"),
+                ("packages/local/package.json", "{\"name\": \"local\"}"),
+                (
+                    "packages/web/package.json",
+                    "{\"name\": \"web\", \"dependencies\": {\"@acme/api\": \"workspace:*\", \"lodash\": \"^4\", \"loc\": \"file:../local\"}}",
+                ),
+            ],
+        );
+        let internal = |p: &str| Resolved::Internal(p.to_string());
+        assert_eq!(
+            got,
+            [
+                (
+                    "@acme/api".to_string(),
+                    internal("packages/api/package.json")
+                ),
+                (
+                    "lodash".to_string(),
+                    Resolved::External("lodash".to_string())
+                ),
+                ("loc".to_string(), internal("packages/local/package.json")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_go_module_is_the_go_mod_that_declares_its_path_or_replaces_it() {
+        let got = resolved(
+            Manifest::Go,
+            "app/go.mod",
+            &[
+                (
+                    "app/go.mod",
+                    "module example.com/app\n\nrequire (\n\texample.com/lib v1.0.0\n\tgithub.com/lib/pq v1.10.0\n\texample.com/moved v1.0.0\n)\n\nreplace example.com/moved => ../moved\n",
+                ),
+                ("lib/go.mod", "module example.com/lib\n"),
+                ("moved/go.mod", "module example.com/moved\n"),
+            ],
+        );
+        let internal = |p: &str| Resolved::Internal(p.to_string());
+        assert_eq!(
+            got,
+            [
+                ("example.com/lib".to_string(), internal("lib/go.mod")),
+                (
+                    "github.com/lib/pq".to_string(),
+                    Resolved::External("github.com/lib/pq".to_string())
+                ),
+                ("example.com/moved".to_string(), internal("moved/go.mod")),
+            ]
+        );
+    }
+
+    #[test]
+    fn two_manifests_that_go_by_one_name_are_said() {
+        let project = [
+            ("a/package.json", "{\"name\": \"dup\"}"),
+            ("b/package.json", "{\"name\": \"dup\"}"),
+        ];
+        let files: Vec<String> = project.iter().map(|(p, _)| p.to_string()).collect();
+        let read = |path: &str| {
+            project
+                .iter()
+                .find(|(p, _)| *p == path)
+                .map(|(_, t)| t.to_string())
+        };
+        let names = Names::of(&files, &read);
+        assert_eq!(names.duplicates.len(), 1);
+        assert!(
+            names.duplicates[0].contains("dup") && names.duplicates[0].contains("a/package.json")
+        );
     }
 }

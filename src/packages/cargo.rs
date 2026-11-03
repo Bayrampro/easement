@@ -6,6 +6,7 @@ use regex::Regex;
 
 use super::{Declared, Source, manifest_in, parent};
 use crate::lang::parts::{Kind, Part};
+use crate::lang::registry::Manifest;
 
 /// What a workspace manifest declares under a name.
 pub(super) struct WorkspaceEntry {
@@ -24,7 +25,7 @@ pub(super) fn workspace_dependency(
 ) -> Result<Option<WorkspaceEntry>, String> {
     let mut here = Some(dir);
     while let Some(current) = here {
-        let manifest = manifest_in(current);
+        let manifest = manifest_in(Manifest::Cargo, current);
         if let Some(text) = read(&manifest) {
             match toml::from_str::<toml::Table>(&text) {
                 Ok(table) => {

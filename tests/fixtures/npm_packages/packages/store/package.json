@@ -1,0 +1,10 @@
+{
+  "name": "@acme/store",
+  "dependencies": {
+    "@acme/api": "workspace:*",
+    "axios": "^1"
+  },
+  "devDependencies": {
+    "@acme/testkit": "workspace:*"
+  }
+}

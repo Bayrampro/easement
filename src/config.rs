@@ -167,10 +167,10 @@ pub struct Config {
     /// languages are not checked.
     #[serde(default)]
     pub manifests: bool,
-    /// Manifests are checked files: each dependency a `Cargo.toml` declares is a dependency of
-    /// the component that owns it, on a package of the project or on an external module, so
-    /// the rules apply to it. A dev-dependency is test code, which `tests: auto` takes. Other
-    /// manifests are not read yet.
+    /// Manifests are checked files: each dependency a `Cargo.toml`, `package.json` or `go.mod`
+    /// declares is a dependency of the component that owns it, on a package of the project or
+    /// on an external module, so the rules apply to it. A dev-dependency is test code, which
+    /// `tests: auto` takes. Other manifests are not read yet.
     #[serde(default)]
     pub packages: bool,
     /// Rules whose violations are reported as warnings and do not fail the check. Rules about

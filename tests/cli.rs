@@ -1522,6 +1522,36 @@ fn a_part_that_matches_no_part_is_said_not_silent() {
 }
 
 #[test]
+fn packages_check_the_dependencies_a_package_json_declares() {
+    let (_tmp, root) = fixture("npm_packages");
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "packages/store/package.json:5: store -> external axios is forbidden",
+        ))
+        .stdout(contains(
+            "packages/web/package.json:5: web -> kit is not allowed (imports packages/testkit/package.json)",
+        ))
+        // `@acme/testkit` is a devDependency of store: the tests', not the package's.
+        .stdout(contains("packages/store/package.json:8").not())
+        .stdout(contains("2 violation(s)"));
+}
+
+#[test]
+fn packages_check_the_modules_a_go_mod_requires() {
+    let (_tmp, root) = fixture("go_packages");
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "app/go.mod:7: app -> external github.com/lib/pq is forbidden",
+        ))
+        .stdout(contains(
+            "app/go.mod:8: app -> internal is not allowed (imports internal/go.mod)",
+        ))
+        .stdout(contains("2 violation(s)"));
+}
+
+#[test]
 fn csharp_resolves_namespaces() {
     layered(
         "csharp",

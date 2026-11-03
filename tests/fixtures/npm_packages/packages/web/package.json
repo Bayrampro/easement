@@ -1,0 +1,7 @@
+{
+  "name": "@acme/web",
+  "dependencies": {
+    "@acme/store": "workspace:*",
+    "@acme/testkit": "workspace:*"
+  }
+}

@@ -1,0 +1,13 @@
+version: 1
+
+packages: true
+
+components:
+  app: { in: app/go.mod }
+  lib: { in: lib/go.mod }
+  internal: { in: internal/go.mod }
+
+rules:
+  app:
+    may_depend_on: [lib]
+    forbid_external: [github.com/lib/pq]
