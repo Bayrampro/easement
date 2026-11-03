@@ -804,7 +804,8 @@ fn an_external_module_the_manifest_does_not_declare_fails() {
 #[test]
 fn a_package_whose_types_sit_under_a_marker_package_json_is_judged_by_its_name() {
     // `{"type": "module"}` in a subdirectory of a package (zod, hono, @simplewebauthn/browser)
-    // hides the package from scip-typescript: what is defined under it has no package.
+    // hid the package from scip-typescript before 0.6.1. Now the index names it, and the
+    // directory is part of the module, as `dist/` is for any package.
     let marker = "{\"type\": \"module\"}\n";
     let stub = "declare const stub: any;\nexport default stub;\n";
     let nested = |name: &'static str| {
@@ -884,7 +885,7 @@ fn a_package_whose_types_sit_under_a_marker_package_json_is_judged_by_its_name()
     assert_eq!(
         found,
         [
-            ("external".to_string(), 5, "nested-ok".to_string()),
+            ("external".to_string(), 5, "nested-ok/esm".to_string()),
             ("undeclared".to_string(), 3, "nested-a".to_string()),
             ("undeclared".to_string(), 4, "nested-b".to_string()),
         ]
@@ -921,7 +922,9 @@ fn an_alias_into_a_project_with_a_nameless_package_json_is_no_package() {
 }
 
 #[test]
-fn a_name_of_a_package_the_index_left_unnamed_is_flagged_as_unjudged() {
+fn forbid_symbol_judges_a_name_of_a_package_under_a_marker_package_json() {
+    // scip-typescript before 0.6.1 left such a name unnamed, and easement said it could not
+    // judge it (`a_name_of_an_unnamed_package_...` in src/scip.rs); now the index names it.
     let (_tmp, root) = project(&[
         (
             "easement.yml",
@@ -954,17 +957,27 @@ fn a_name_of_a_package_the_index_left_unnamed_is_flagged_as_unjudged() {
         ),
     ]);
     let out = easement(&root, &["check", "--format", "json"])
-        .success()
+        .code(1)
         .get_output()
         .stdout
         .clone();
     let report: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    let partial = report["stats"]["symbols_partial"][0].as_str().unwrap();
-    assert!(partial.contains("src/web/a.ts"), "{partial}");
-    assert!(!partial.contains("src/api/b.ts"), "{partial}");
-    easement(&root, &["check"]).success().stdout(contains(
-        "`forbid_symbol` cannot tell the npm package of the names used in src/web/a.ts",
-    ));
+    let files: Vec<&str> = report["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["file"].as_str().unwrap())
+        .collect();
+    // `api` has no rule on names; `web` is judged, and nothing is left unjudged.
+    assert!(
+        !files.is_empty() && files.iter().all(|f| *f == "src/web/a.ts"),
+        "{files:?}"
+    );
+    assert!(report["stats"]["symbols_partial"].is_null(), "{report}");
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("web must not use nested.Thing"))
+        .stdout(contains("cannot tell the npm package").not());
 }
 
 #[test]

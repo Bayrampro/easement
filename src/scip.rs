@@ -1170,6 +1170,23 @@ mod tests {
     }
 
     #[test]
+    fn a_name_of_an_unnamed_package_is_no_symbol_use_but_is_reported_as_unjudged() {
+        // scip-typescript before 0.6.1 indexes what sits under a `package.json` without
+        // `name` (`{"type": "module"}` in `esm/`) as the unnamed package `. .`.
+        let documents = vec![doc(
+            "src/web/a.ts",
+            &[],
+            &[(1, "scip-typescript npm . . esm/`index.d.ts`/Thing#")],
+        )];
+        let facts = facts(&documents, &[], true);
+        assert!(facts.symbols.is_empty());
+        assert_eq!(
+            facts.unnamed.into_iter().collect::<Vec<_>>(),
+            ["src/web/a.ts"]
+        );
+    }
+
+    #[test]
     fn an_unnamed_package_is_what_the_string_of_its_import_spells() {
         let at = |line: i32, start: i32, end: i32| {
             let mut occurrence = Occurrence::new();
