@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use globset::{Glob, GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
 
-use crate::config::Config;
+use crate::config::{Config, TESTS};
+use crate::lang::Unit;
 use crate::stdlib::{STD, is_std};
 
 /// Maps repository-relative paths (files or directories, `/`-separated) to components.
@@ -13,6 +14,8 @@ use crate::stdlib::{STD, is_std};
 /// component skips the files its `except` patterns match.
 pub struct ComponentMap {
     entries: Vec<Entry>,
+    /// Whether `tests: auto` made a `tests` component.
+    tests: bool,
     /// Component -> matchers of the paths it gives up, for components with `except`.
     except: std::collections::HashMap<String, Vec<[GlobMatcher; 3]>>,
     /// Files that may belong to no component in strict mode.
@@ -231,6 +234,7 @@ impl ComponentMap {
         }
         Ok(Self {
             entries,
+            tests: config.components.contains_key(TESTS),
             except,
             unowned: crate::scan::glob_set(&config.unowned, "unowned")?,
             excluded: crate::scan::glob_set(&config.exclude, "exclude")?,
@@ -338,6 +342,15 @@ impl ComponentMap {
             })
             .map(|e| (e.component.as_str(), e.pattern.as_str()))
             .collect()
+    }
+
+    /// The component of a node of the graph: code only a test build has belongs to
+    /// the `tests` of `tests: auto`, whatever file it sits in.
+    pub fn component_of_unit(&self, unit: &Unit) -> Option<&str> {
+        if self.tests && unit.is_test() {
+            return Some(TESTS);
+        }
+        self.component_of(&unit.key())
     }
 
     pub fn component_of(&self, rel_path: &str) -> Option<&str> {

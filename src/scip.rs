@@ -18,6 +18,7 @@ use protobuf::Message;
 use scip::types::{Index, Occurrence, PositionEncoding, occurrence::Typed_range};
 
 use crate::check::SymbolRef;
+use crate::lang::parts::Part;
 use crate::lang::registry::Manifest;
 use crate::lang::{Target, Unit};
 use crate::scan::Dep;
@@ -53,6 +54,8 @@ pub struct Document {
     pub types: Vec<(String, usize)>,
     /// The methods and functions this file defines that the index gave a range.
     pub scopes: Vec<Scope>,
+    /// The parts of the file that a dependency can belong to instead of the file.
+    pub parts: Vec<crate::lang::parts::Span>,
 }
 
 /// A method or function with the lines it spans, 1-based and inclusive.
@@ -752,8 +755,8 @@ pub fn facts_watching(
                     })
                 })
         };
-        // (target, module) -> first line
-        let mut first: BTreeMap<(Option<&str>, String), usize> = BTreeMap::new();
+        // (target, module, part the line is in) -> first line
+        let mut first: BTreeMap<(Option<&str>, String, Option<&Part>), usize> = BTreeMap::new();
         let mine: HashSet<&str> = document.definitions.iter().map(String::as_str).collect();
         for reference in &document.references {
             if symbols && reference.symbol.starts_with("scip-ruby ") {
@@ -815,7 +818,14 @@ pub fn facts_watching(
                     if internal.is_none() && module.is_empty() {
                         continue;
                     }
-                    let line = first.entry((internal, module)).or_insert(reference.line);
+                    let part = document
+                        .parts
+                        .iter()
+                        .find(|span| span.lines.contains(&reference.line))
+                        .map(|span| &span.part);
+                    let line = first
+                        .entry((internal, module, part))
+                        .or_insert(reference.line);
                     *line = (*line).min(reference.line);
                 }
                 Referent::Package => {}
@@ -847,13 +857,16 @@ pub fn facts_watching(
                 }
             }
         }
-        for ((internal, module), line) in first {
+        for ((internal, module, part), line) in first {
             let (specifier, target) = match internal {
                 Some(path) => (path.to_string(), Target::Internal(Unit::from(path))),
                 None => (module.clone(), Target::External(module)),
             };
             deps.push(Dep {
-                from: Unit::from(document.path.as_str()),
+                from: match part {
+                    Some(part) => Unit::in_part(Path::new(&document.path), part.clone()),
+                    None => Unit::from(document.path.as_str()),
+                },
                 file: PathBuf::from(&document.path),
                 line,
                 specifier,
@@ -922,6 +935,7 @@ mod tests {
             definitions: defs.iter().map(|s| s.to_string()).collect(),
             types: Vec::new(),
             scopes: Vec::new(),
+            parts: Vec::new(),
             references: refs
                 .iter()
                 .map(|(line, symbol)| Reference {
@@ -935,6 +949,24 @@ mod tests {
 
     const DB: &str = "scip-go gomod example.com/app . `example.com/app/internal/db`/";
     const FMT: &str = "scip-go gomod github.com/golang/go/src go1.25 fmt/";
+
+    #[test]
+    fn a_use_in_a_cfg_test_part_is_a_dependency_of_that_part_apart_from_the_file() {
+        let testkit = "rust-analyzer cargo testkit 0.1.0 crate/";
+        let mut document = doc("src/blob_db.rs", &[], &[(1, testkit), (9, testkit)]);
+        document.parts = crate::lang::parts::rust(
+            "pub fn open() {}\n\n#[cfg(test)]\nmod tests {\n    fn a() {}\n    fn b() {}\n    fn c() {}\n    fn d() {}\n    fn e() {}\n}\n",
+        );
+        let deps = facts(&[document], &[], false).deps;
+        let found: Vec<_> = deps
+            .iter()
+            .map(|d| (d.line, d.from.is_test(), d.file.to_str().unwrap()))
+            .collect();
+        assert_eq!(
+            found,
+            [(1, false, "src/blob_db.rs"), (9, true, "src/blob_db.rs")]
+        );
+    }
 
     #[test]
     fn ruby_depends_on_the_deepest_constant_of_a_line() {

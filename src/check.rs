@@ -297,7 +297,7 @@ pub fn evaluate(
             Target::Internal(unit) => unit.key(),
             Target::External(module) => {
                 stats.external_deps += usize::from(counted);
-                if let Some(from) = map.component_of(&file)
+                if let Some(from) = map.component_of_unit(&dep.from)
                     && counted
                     && map.uses_std(from)
                     && !crate::stdlib::knows(&file)
@@ -307,7 +307,7 @@ pub fn evaluate(
                         stats.std_unknown.push(ext);
                     }
                 }
-                if let Some(from) = map.component_of(&file)
+                if let Some(from) = map.component_of_unit(&dep.from)
                     && let Some(problem) = map.external_problem(from, &file, module)
                 {
                     found.push(Violation {
@@ -330,7 +330,7 @@ pub fn evaluate(
             }
         };
         stats.internal_deps += usize::from(counted);
-        let Some(from) = map.component_of(&file) else {
+        let Some(from) = map.component_of_unit(&dep.from) else {
             if counted {
                 unmapped.insert(file);
             }

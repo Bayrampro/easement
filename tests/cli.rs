@@ -1348,6 +1348,31 @@ fn rust_resolves_the_module_tree() {
     layered("rust", "src/web/mod.rs", "src/infra/repo.rs", 8);
 }
 
+/// A crate's unit tests sit in the file they test, and the dev-dependency they use
+/// is not a dependency of the crate: only the line outside `#[cfg(test)]` is judged
+/// as the file's.
+#[test]
+fn rust_cfg_test_code_is_tests_not_the_file_it_sits_in() {
+    let (_tmp, root) = fixture("rust_cfg_test");
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"shop\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dev-dependencies]\ntestkit = { path = \"testkit\" }\n\n[dependencies]\ntestkit = { path = \"testkit\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("testkit/Cargo.toml"),
+        "[package]\nname = \"testkit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "src/store/mod.rs:1: store -> kit is not allowed (imports testkit/src/lib.rs)",
+        ))
+        .stdout(contains("src/store/ok.rs").not())
+        .stdout(contains("1 violation(s)"));
+}
+
 #[test]
 fn csharp_resolves_namespaces() {
     layered(

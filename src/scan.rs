@@ -208,12 +208,19 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
     let project: HashSet<&str> = all_files.iter().map(String::as_str).collect();
     // Excluded files are never read as sources, but what they define stays
     // resolvable, so an import of one is seen and fails as `excluded`.
-    let (documents, hidden): (Vec<scip::Document>, Vec<scip::Document>) = indexed
+    let (mut documents, hidden): (Vec<scip::Document>, Vec<scip::Document>) = indexed
         .documents
         .0
         .into_iter()
         .filter(|d| project.contains(d.path.as_str()) || excluded.contains(&d.path))
         .partition(|d| project.contains(d.path.as_str()));
+    for document in &mut documents {
+        if let Some(find) = lang::registry::of(&document.path).and_then(|language| language.parts)
+            && let Ok(source) = std::fs::read_to_string(root.join(&document.path))
+        {
+            document.parts = find(&source);
+        }
+    }
     for document in documents
         .iter()
         .filter(|d| !target_only.is_match(d.path.as_str()))

@@ -5,6 +5,7 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, Tree};
 
 pub mod kotlin;
+pub mod parts;
 pub mod registry;
 pub mod swift;
 
@@ -24,9 +25,25 @@ pub struct Import {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Unit {
     path: PathBuf,
+    part: Option<parts::Part>,
 }
 
 impl Unit {
+    /// A part of the file at `path`.
+    pub fn in_part(path: &Path, part: parts::Part) -> Self {
+        Self {
+            path: path.into(),
+            part: Some(part),
+        }
+    }
+
+    /// Whether the unit is code that only a test build has.
+    pub fn is_test(&self) -> bool {
+        self.part
+            .as_ref()
+            .is_some_and(|part| part.kind == Some(parts::Kind::Test))
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -39,19 +56,25 @@ impl Unit {
 
 impl From<PathBuf> for Unit {
     fn from(path: PathBuf) -> Self {
-        Self { path }
+        Self { path, part: None }
     }
 }
 
 impl From<&Path> for Unit {
     fn from(path: &Path) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            part: None,
+        }
     }
 }
 
 impl From<&str> for Unit {
     fn from(path: &str) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            part: None,
+        }
     }
 }
 
