@@ -44,6 +44,11 @@ impl Unit {
             .is_some_and(|part| part.kind == Some(parts::Kind::Test))
     }
 
+    /// The name of the part of the file, when it is one.
+    pub fn part_name(&self) -> Option<&str> {
+        self.part.as_ref().map(|part| part.name.as_str())
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

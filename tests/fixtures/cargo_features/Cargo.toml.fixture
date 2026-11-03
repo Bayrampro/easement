@@ -1,0 +1,7 @@
+[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+storage-api = { path = "crates/storage-api" }
+telegram = { path = "crates/telegram" }
+testkit = { path = "crates/testkit" }

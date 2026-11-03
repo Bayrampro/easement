@@ -1,0 +1,13 @@
+[package]
+name = "telegram"
+version = "0.1.0"
+
+[dependencies]
+storage-api = { workspace = true }
+
+[dev-dependencies]
+testkit = { workspace = true }
+
+[features]
+# The in-memory channel: tests, the browser demo, never a release build.
+fake = ["storage-api/fake"]

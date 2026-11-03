@@ -21,6 +21,8 @@ pub enum Source {
     Workspace,
     /// A registry or a repository: a third-party package.
     Registry,
+    /// The manifest itself: an item of a feature that names another feature of it.
+    Own,
 }
 
 /// One dependency a manifest declares.
@@ -37,6 +39,10 @@ pub struct Declared {
     pub part: Option<Part>,
     /// The `cfg` of the `[target.<cfg>.dependencies]` table it is in, when it is in one.
     pub target: Option<String>,
+    /// The feature of the package it reaches, when it is not the package itself.
+    pub feature: Option<String>,
+    /// Whether the table declares it `optional = true`: a feature turns it on.
+    pub optional: bool,
 }
 
 /// The dependencies a manifest of `kind` declares, with the line of each.
@@ -78,19 +84,34 @@ pub fn edges(root: &Path, files: &[String], read_as_source: impl Fn(&str) -> boo
         for declared in list {
             let (resolved, problem) = resolve(file, &declared, files, &text_of);
             found.problems.extend(problem);
-            let (specifier, target) = match resolved {
-                // A package that names itself (`path = "."`) is no dependency.
-                Resolved::Internal(path) if path == *file => continue,
-                Resolved::Internal(path) => {
-                    (path.clone(), Target::Internal(Unit::from(path.as_str())))
+            let from = match &declared.part {
+                Some(part) => Unit::in_part(Path::new(file), part.clone()),
+                None => Unit::from(file.as_str()),
+            };
+            let (specifier, target) = match (resolved, &declared.feature) {
+                (Resolved::Internal(path), feature) => {
+                    let unit = match feature {
+                        Some(feature) => Unit::in_part(
+                            Path::new(&path),
+                            Part {
+                                name: format!("feature/{feature}"),
+                                kind: None,
+                            },
+                        ),
+                        None => Unit::from(path.as_str()),
+                    };
+                    // A package that names itself (`path = "."`) is no dependency.
+                    if unit == from {
+                        continue;
+                    }
+                    (path, Target::Internal(unit))
                 }
-                Resolved::External(module) => (module.clone(), Target::External(module)),
+                // A feature of a third-party package is the package's own business.
+                (Resolved::External(_), Some(_)) => continue,
+                (Resolved::External(module), None) => (module.clone(), Target::External(module)),
             };
             found.deps.push(Dep {
-                from: match declared.part {
-                    Some(part) => Unit::in_part(Path::new(file), part),
-                    None => Unit::from(file.as_str()),
-                },
+                from,
                 file: PathBuf::from(file),
                 line: declared.line,
                 specifier,
@@ -153,6 +174,7 @@ pub fn resolve(
                 None
             }
         },
+        Source::Own => Some(manifest.to_string()),
         Source::Registry => None,
     };
     let resolved = found.map_or_else(
@@ -253,12 +275,19 @@ fn cargo(text: &str) -> Option<Vec<Declared>> {
     let manifest = toml::from_str::<toml::Table>(text).ok()?;
     let mut found: Vec<Declared> = Vec::new();
     let mut table: Option<Table> = None;
+    // `[features]`: the items of each feature, with their lines.
+    let mut items: Vec<(usize, String, String)> = Vec::new();
+    let mut in_features = false;
+    let mut feature: Option<String> = None;
     // How many `{` and `[` of a value are still open: its lines are no keys.
     let mut open = 0_i32;
     for (index, line) in text.lines().enumerate() {
         let line_number = index + 1;
         let trimmed = line.trim();
         if open > 0 {
+            if in_features && let Some(feature) = &feature {
+                items.extend(strings(trimmed).map(|item| (line_number, feature.clone(), item)));
+            }
             open += brackets(trimmed);
             continue;
         }
@@ -273,6 +302,7 @@ fn cargo(text: &str) -> Option<Vec<Declared>> {
                 rest => (None, rest),
             };
             table = None;
+            in_features = target.is_none() && rest == ["features"];
             if let Some(kind) = rest
                 .first()
                 .and_then(|name| CARGO_TABLES.iter().find(|kind| *kind == name))
@@ -285,6 +315,12 @@ fn cargo(text: &str) -> Option<Vec<Declared>> {
                     _ => {}
                 }
             }
+        } else if in_features && let Some(caps) = KEY.captures(line) {
+            let name = caps[1].trim_matches(['"', '\'']).to_string();
+            let value = trimmed.split_once('=').map_or("", |(_, value)| value);
+            items.extend(strings(value).map(|item| (line_number, name.clone(), item)));
+            open = brackets(value);
+            feature = Some(name);
         } else if let Some(here) = &table
             && let Some(caps) = KEY.captures(line)
         {
@@ -298,7 +334,168 @@ fn cargo(text: &str) -> Option<Vec<Declared>> {
             open = brackets(trimmed.split_once('=').map_or("", |(_, value)| value));
         }
     }
-    Some(found)
+    Some(with_features(found, &items))
+}
+
+/// The strings of the value of a TOML line, without its comment.
+fn strings(text: &str) -> impl Iterator<Item = String> + '_ {
+    static STRING: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#""([^"]*)""#).expect("valid regex"));
+    let code = text.split('#').next().unwrap_or_default();
+    STRING
+        .captures_iter(code)
+        .map(|caps| caps[1].to_string())
+        .collect::<Vec<_>>()
+        .into_iter()
+}
+
+/// What a feature item turns on.
+enum Item<'a> {
+    /// `dep:x`: the dependency.
+    Dependency(&'a str),
+    /// `x/f`, or `x?/f` when weak: the dependency, and its feature.
+    Reaches {
+        name: &'a str,
+        feature: &'a str,
+        weak: bool,
+    },
+    /// `other`: a feature of the manifest.
+    Feature(&'a str),
+}
+
+fn item(text: &str) -> Item<'_> {
+    if let Some(name) = text.strip_prefix("dep:") {
+        return Item::Dependency(name);
+    }
+    match text.split_once('/') {
+        Some((name, feature)) => match name.strip_suffix('?') {
+            Some(name) => Item::Reaches {
+                name,
+                feature,
+                weak: true,
+            },
+            None => Item::Reaches {
+                name,
+                feature,
+                weak: false,
+            },
+        },
+        None => Item::Feature(text),
+    }
+}
+
+/// The part a feature is, `default` being the package itself.
+fn feature_part(feature: &str) -> Option<Part> {
+    (feature != "default").then(|| Part {
+        name: format!("feature/{feature}"),
+        kind: None,
+    })
+}
+
+/// The dependencies of the tables, put where the features say they belong: an optional
+/// one is a dependency of what turns it on, and of its implicit feature when nothing
+/// names it with `dep:`; and the items of the features, which are edges of their own.
+fn with_features(declared: Vec<Declared>, items: &[(usize, String, String)]) -> Vec<Declared> {
+    let named = |name: &str| {
+        items
+            .iter()
+            .any(|(_, _, text)| matches!(item(text), Item::Dependency(n) if n == name))
+    };
+    // The features whose items reach a dependency.
+    let owners = |name: &str| {
+        let mut owners: Vec<&str> = Vec::new();
+        for (_, feature, text) in items {
+            let hit = match item(text) {
+                Item::Dependency(n) => n == name,
+                Item::Reaches { name: n, .. } => n == name,
+                Item::Feature(_) => false,
+            };
+            if hit && !owners.contains(&feature.as_str()) {
+                owners.push(feature);
+            }
+        }
+        owners
+    };
+    let mut out: Vec<Declared> = Vec::new();
+    for d in &declared {
+        if !d.optional {
+            out.push(d.clone());
+        } else if !named(&d.name) {
+            // The implicit feature `name` turns it on.
+            out.push(Declared {
+                part: feature_part(&d.name),
+                ..d.clone()
+            });
+        } else if d.feature.is_some() {
+            for owner in owners(&d.name) {
+                out.push(Declared {
+                    part: feature_part(owner),
+                    ..d.clone()
+                });
+            }
+        }
+    }
+    let table_dependency = |name: &str| {
+        declared
+            .iter()
+            .find(|d| d.name == name && d.feature.is_none())
+    };
+    for (line, feature, text) in items {
+        let from = feature_part(feature);
+        let base = |name: &str| {
+            table_dependency(name).map_or_else(
+                || Declared {
+                    line: *line,
+                    name: name.to_string(),
+                    package: name.to_string(),
+                    source: Source::Registry,
+                    part: None,
+                    target: None,
+                    feature: None,
+                    optional: false,
+                },
+                |d| Declared {
+                    line: *line,
+                    part: None,
+                    feature: None,
+                    optional: false,
+                    ..d.clone()
+                },
+            )
+        };
+        let mut edge = |name: &str, feature: Option<&str>| {
+            out.push(Declared {
+                part: from.clone(),
+                feature: feature.map(str::to_string),
+                ..base(name)
+            });
+        };
+        match item(text) {
+            Item::Dependency(name) => edge(name, None),
+            Item::Reaches {
+                name,
+                feature,
+                weak,
+            } => {
+                if !weak {
+                    edge(name, None);
+                }
+                edge(name, Some(feature));
+            }
+            Item::Feature(name) => out.push(Declared {
+                line: *line,
+                name: name.to_string(),
+                package: name.to_string(),
+                source: Source::Own,
+                part: from.clone(),
+                target: None,
+                feature: Some(name.to_string()),
+                optional: false,
+            }),
+        }
+    }
+    out.sort_by_key(|d| d.line);
+    out
 }
 
 /// `{` and `[` opened by `text` minus the ones it closes, outside strings.
@@ -320,22 +517,23 @@ fn brackets(text: &str) -> i32 {
 }
 
 /// The dependency `name` of `table`, from the parsed manifest, on `line`.
-fn cargo_declared(
-    manifest: &toml::Table,
-    table: &Table,
-    name: &str,
-    line: usize,
-) -> Option<Declared> {
+fn cargo_declared(manifest: &toml::Table, table: &Table, name: &str, line: usize) -> Vec<Declared> {
     let section = match &table.target {
-        Some(cfg) => manifest.get("target")?.get(cfg)?.get(table.kind)?,
-        None => manifest.get(table.kind)?,
+        Some(cfg) => manifest
+            .get("target")
+            .and_then(|target| target.get(cfg))
+            .and_then(|target| target.get(table.kind)),
+        None => manifest.get(table.kind),
     };
-    let spec = section.get(name)?;
+    let Some(spec) = section.and_then(|section| section.get(name)) else {
+        return Vec::new();
+    };
     let package = spec
         .get("package")
         .and_then(toml::Value::as_str)
         .unwrap_or(name)
         .to_string();
+    let optional = spec.get("optional").and_then(toml::Value::as_bool) == Some(true);
     let source = if spec.get("workspace").and_then(toml::Value::as_bool) == Some(true) {
         Source::Workspace
     } else if let Some(path) = spec.get("path").and_then(toml::Value::as_str) {
@@ -343,14 +541,29 @@ fn cargo_declared(
     } else {
         Source::Registry
     };
-    Some(Declared {
+    let own = Declared {
         line,
         name: name.to_string(),
         package,
         source,
         part: part_of(table.kind),
         target: table.target.clone(),
-    })
+        feature: None,
+        optional,
+    };
+    // `features = ["f"]` also reaches the feature `f` of the package.
+    let features: Vec<Declared> = spec
+        .get("features")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_str)
+        .map(|f| Declared {
+            feature: Some(f.to_string()),
+            ..own.clone()
+        })
+        .collect();
+    std::iter::once(own).chain(features).collect()
 }
 
 /// The part of a manifest a table of dependencies is: none for the plain one.
@@ -502,6 +715,8 @@ mod tests {
             source,
             part: None,
             target: None,
+            feature: None,
+            optional: false,
         }
     }
 
@@ -612,6 +827,146 @@ mod tests {
         assert_eq!(
             resolve("crates/local/Cargo.toml", &renamed, &files, &read).0,
             Resolved::External("serde_json".into())
+        );
+    }
+
+    /// (line, name, the part it leaves, the feature it reaches, where it comes from)
+    type Row = (usize, String, Option<String>, Option<String>, Source);
+
+    fn edges_of(text: &str) -> Vec<Row> {
+        declared(Manifest::Cargo, text)
+            .unwrap()
+            .into_iter()
+            .map(|d| (d.line, d.name, d.part.map(|p| p.name), d.feature, d.source))
+            .collect()
+    }
+
+    #[test]
+    fn features_declare_what_they_turn_on_and_an_optional_dependency_belongs_to_it() {
+        let text = concat!(
+            "[features]\n",                                                 // 1
+            "default = [\"fake\"]\n",                                       // 2
+            "fake = [\"storage-api/fake\", \"dep:serde\", \"other\"]\n",    // 3
+            "other = [\"tls?/rustls\"]\n",                                  // 4
+            "\n",                                                           // 5
+            "[dependencies]\n",                                             // 6
+            "storage-api = { workspace = true, features = [\"extra\"] }\n", // 7
+            "serde = { version = \"1\", optional = true }\n",               // 8
+            "tls = { version = \"1\", optional = true }\n",                 // 9
+            "gzip = { version = \"1\", optional = true }\n",                // 10
+        );
+        let s = |x: &str| Some(x.to_string());
+        let n = |x: &str| x.to_string();
+        assert_eq!(
+            edges_of(text),
+            [
+                // `default` is the package itself.
+                (2, n("fake"), None, s("fake"), Source::Own),
+                (
+                    3,
+                    n("storage-api"),
+                    s("feature/fake"),
+                    None,
+                    Source::Workspace
+                ),
+                (
+                    3,
+                    n("storage-api"),
+                    s("feature/fake"),
+                    s("fake"),
+                    Source::Workspace
+                ),
+                (3, n("serde"), s("feature/fake"), None, Source::Registry),
+                (3, n("other"), s("feature/fake"), s("other"), Source::Own),
+                // A weak item reaches the feature of `tls`, not `tls`.
+                (
+                    4,
+                    n("tls"),
+                    s("feature/other"),
+                    s("rustls"),
+                    Source::Registry
+                ),
+                (7, n("storage-api"), None, None, Source::Workspace),
+                (7, n("storage-api"), None, s("extra"), Source::Workspace),
+                // `serde` is named by `dep:serde`, so it has no feature of its own;
+                // `tls` and `gzip` have the implicit one.
+                (9, n("tls"), s("feature/tls"), None, Source::Registry),
+                (10, n("gzip"), s("feature/gzip"), None, Source::Registry),
+            ]
+        );
+    }
+
+    /// (line, the part it leaves, what it reaches and the part of it) for each edge.
+    fn edge_list(files: &[(&str, &str)]) -> Vec<(usize, Option<String>, String, Option<String>)> {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut names = Vec::new();
+        for (path, text) in files {
+            let full = dir.path().join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, text).unwrap();
+            names.push(path.to_string());
+        }
+        let found = edges(dir.path(), &names, |_| true);
+        assert!(found.problems.is_empty(), "{:?}", found.problems);
+        found
+            .deps
+            .into_iter()
+            .filter(|dep| dep.file.to_str() == Some("crates/telegram/Cargo.toml"))
+            .map(|dep| {
+                let (key, part) = match &dep.target {
+                    Target::Internal(unit) => (unit.key(), unit.part_name().map(str::to_string)),
+                    Target::External(module) => (module.clone(), None),
+                };
+                (
+                    dep.line,
+                    dep.from.part_name().map(str::to_string),
+                    key,
+                    part,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_feature_item_reaches_the_feature_of_another_manifest_of_the_project() {
+        let s = |x: &str| Some(x.to_string());
+        let n = |x: &str| x.to_string();
+        let got = edge_list(&[
+            (
+                "Cargo.toml",
+                "[workspace]\n\n[workspace.dependencies]\nstorage-api = { path = \"crates/storage-api\" }\n",
+            ),
+            (
+                "crates/storage-api/Cargo.toml",
+                "[package]\nname = \"storage-api\"\n",
+            ),
+            (
+                "crates/telegram/Cargo.toml",
+                concat!(
+                    "[features]\n",                                      // 1
+                    "default = [\"fake\"]\n",                            // 2
+                    "fake = [\"storage-api/fake\", \"serde/derive\"]\n", // 3
+                    "\n",                                                // 4
+                    "[dependencies]\n",                                  // 5
+                    "storage-api = { workspace = true }\n",              // 6
+                    "serde = \"1\"\n",                                   // 7
+                ),
+            ),
+        ]);
+        let kit = n("crates/storage-api/Cargo.toml");
+        let own = n("crates/telegram/Cargo.toml");
+        assert_eq!(
+            got,
+            [
+                // `default` is the package itself, and `fake` a feature of the manifest.
+                (2, None, own, s("feature/fake")),
+                (3, s("feature/fake"), kit.clone(), None),
+                (3, s("feature/fake"), kit.clone(), s("feature/fake")),
+                // An external package has no part of the project to reach.
+                (3, s("feature/fake"), n("serde"), None),
+                (6, None, kit, None),
+                (7, None, n("serde"), None),
+            ]
         );
     }
 }

@@ -1,0 +1,6 @@
+[package]
+name = "bad"
+version = "0.1.0"
+
+[dependencies]
+telegram = { workspace = true, features = ["fake"] }

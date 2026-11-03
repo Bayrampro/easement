@@ -336,6 +336,11 @@ pub struct Component {
     /// read from the index; Kotlin and Swift are not seen.
     #[serde(default)]
     pub defines: Vec<String>,
+    /// With `packages`, the part of the files `in` matches that the component owns, as the
+    /// language or manifest names it: `feature/fake` for the Cargo feature `fake`. The file
+    /// itself stays with the component that has no `part`.
+    #[serde(default)]
+    pub part: Option<String>,
 }
 
 /// One layer of `layers`: a component, sibling components that do not
@@ -549,6 +554,7 @@ impl Config {
                 optional: true,
                 owner: None,
                 defines: Vec::new(),
+                part: None,
             },
         );
         Ok(self)

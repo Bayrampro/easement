@@ -359,7 +359,10 @@ pub fn evaluate(
             });
             continue;
         }
-        let Some(to) = map.component_of(&target) else {
+        let Target::Internal(to_unit) = &dep.target else {
+            continue;
+        };
+        let Some(to) = map.component_of_unit(to_unit) else {
             continue;
         };
         if from == to {

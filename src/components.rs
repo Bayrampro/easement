@@ -138,6 +138,8 @@ struct Entry {
     parts: usize,
     priority: i32,
     isolated: bool,
+    /// The part of a file it owns, when it owns a part and not the file.
+    part: Option<String>,
     matchers: [GlobMatcher; 3],
 }
 
@@ -200,6 +202,7 @@ impl ComponentMap {
                     parts: glob.split('/').count(),
                     priority: component.priority,
                     isolated: component.isolated,
+                    part: component.part.clone(),
                     matchers: module_matchers(name, &glob)?,
                 });
             }
@@ -350,6 +353,11 @@ impl ComponentMap {
         if self.tests && unit.is_test() {
             return Some(TESTS);
         }
+        if let Some(part) = unit.part_name()
+            && let Some(entry) = self.matching_part(&unit.key(), Some(part))
+        {
+            return Some(entry.component.as_str());
+        }
         self.component_of(&unit.key())
     }
 
@@ -364,8 +372,14 @@ impl ComponentMap {
     }
 
     fn matching(&self, rel_path: &str) -> Option<&Entry> {
+        self.matching_part(rel_path, None)
+    }
+
+    /// The entry that owns `part` of `rel_path`, or the file itself for `None`.
+    fn matching_part(&self, rel_path: &str, part: Option<&str>) -> Option<&Entry> {
         self.entries
             .iter()
+            .filter(|e| e.part.as_deref() == part)
             .filter(|e| e.matchers.iter().any(|m| m.is_match(rel_path)))
             .filter(|e| {
                 !self
@@ -469,6 +483,30 @@ components:
 tests: auto
 ");
         assert_eq!(auto.component_of_unit(&unit), Some("tests"));
+    }
+
+    #[test]
+    fn a_component_with_a_part_owns_only_that_part_of_a_file() {
+        use crate::lang::parts::Part;
+        let m = map("version: 1
+components:
+  crate: { in: crates/a/Cargo.toml }
+  fakes: { in: 'crates/**/Cargo.toml', part: feature/fake }
+");
+        let part = |name: &str| {
+            Unit::in_part(
+                Path::new("crates/a/Cargo.toml"),
+                Part {
+                    name: name.to_string(),
+                    kind: None,
+                },
+            )
+        };
+        assert_eq!(m.component_of_unit(&part("feature/fake")), Some("fakes"));
+        assert_eq!(m.component_of_unit(&part("feature/other")), Some("crate"));
+        // The file itself is not the part: another crate's manifest has no owner.
+        assert_eq!(m.component_of("crates/a/Cargo.toml"), Some("crate"));
+        assert_eq!(m.component_of("crates/b/Cargo.toml"), None);
     }
 
     #[test]

@@ -306,6 +306,14 @@
           ],
           "default": null
         },
+        "part": {
+          "description": "With `packages`, the part of the files `in` matches that the component owns, as the language or manifest names it: `feature/fake` for the Cargo feature `fake`. The file itself stays with the component that has no `part`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "priority": {
           "description": "Which component wins when several match a file: the higher priority, then the longer pattern. Default 0.",
           "type": "integer",

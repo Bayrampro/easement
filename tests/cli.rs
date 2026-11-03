@@ -1396,7 +1396,11 @@ fn a_cfg_test_module_in_another_file_is_flagged_as_not_seen() {
 /// The manifests of a Cargo workspace are stored as `Cargo.toml.fixture`: tools that
 /// walk the repository would take a `Cargo.toml` for a crate.
 fn cargo_packages_fixture() -> (TempDir, PathBuf) {
-    let (tmp, root) = fixture("cargo_packages");
+    cargo_workspace_fixture("cargo_packages")
+}
+
+fn cargo_workspace_fixture(name: &str) -> (TempDir, PathBuf) {
+    let (tmp, root) = fixture(name);
     for entry in ignore::WalkBuilder::new(&root).build().flatten() {
         if entry.file_name() == "Cargo.toml.fixture" {
             fs::rename(entry.path(), entry.path().with_file_name("Cargo.toml")).unwrap();
@@ -1450,6 +1454,27 @@ fn packages_and_manifests_together_add_no_unjudged_toml() {
     easement(&root, &["check"])
         .code(1)
         .stdout(contains(".toml files").not())
+        .stdout(contains("2 violation(s)"));
+}
+
+/// The feature that must stay out of a release build: only the web build and the tests
+/// may turn it on, and no crate does by default.
+#[test]
+fn a_cargo_feature_is_a_part_that_a_component_owns() {
+    let (_tmp, root) = cargo_workspace_fixture("cargo_features");
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "crates/bad/Cargo.toml:6: bad -> fakes: fakes may be imported only from web, tests",
+        ))
+        .stdout(contains(
+            "crates/core/Cargo.toml:6: core -> fakes: fakes may be imported only from web, tests",
+        ))
+        .stdout(contains(
+            "because: the fake channel never gets into a release build",
+        ))
+        .stdout(contains("crates/web/Cargo.toml:").not())
+        .stdout(contains("crates/telegram/Cargo.toml:").not())
         .stdout(contains("2 violation(s)"));
 }
 
