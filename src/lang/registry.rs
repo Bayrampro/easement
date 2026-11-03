@@ -195,6 +195,14 @@ pub fn of(file: &str) -> Option<&'static Language> {
         .find(|language| language.extensions.contains(&ext))
 }
 
+/// The kind of manifest a file is, by its name.
+pub fn manifest_of(file: &str) -> Option<Manifest> {
+    let name = file.rsplit('/').next().unwrap_or(file);
+    [Manifest::Npm, Manifest::Go, Manifest::Cargo]
+        .into_iter()
+        .find(|manifest| manifest.file_name() == name)
+}
+
 /// Whether the file at `path` is of `language`.
 pub fn is(path: &std::path::Path, language: &Language) -> bool {
     path.to_str()

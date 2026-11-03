@@ -266,6 +266,12 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
     let (sources, unread_deps): (Vec<Dep>, Vec<Dep>) =
         facts.deps.into_iter().partition(|dep| is_source(&dep.file));
     deps.extend(sources);
+    if config.packages {
+        let (manifests, edges) =
+            crate::packages::edges(root, &all_files, |file| !target_only.is_match(file));
+        paths.extend(manifests);
+        deps.extend(edges);
+    }
     let mut unread_deps = unread_deps;
     unread_deps.extend(scip::facts(&hidden, &documents, false).deps);
     let mut unread: Vec<String> = excluded.iter().cloned().collect();

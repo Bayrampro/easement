@@ -102,6 +102,11 @@
         }
       ]
     },
+    "packages": {
+      "description": "Manifests are checked files: each dependency a `Cargo.toml` declares is a dependency of the component that owns it, on a package of the project or on an external module, so the rules apply to it. A dev-dependency is test code, which `tests: auto` takes. Other manifests are not read yet.",
+      "type": "boolean",
+      "default": false
+    },
     "reach": {
       "description": "What `must_not_reach` follows: `files` (the default) takes an import for everything its file imports; `symbols` follows the definitions a call references, so calling one pure method does not reach what another method of its file uses. A file the index gave no ranges keeps reaching as a whole.",
       "allOf": [

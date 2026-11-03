@@ -1,0 +1,3 @@
+[package]
+name = "storage-api"
+version = "0.1.0"

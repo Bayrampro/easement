@@ -1393,6 +1393,34 @@ fn a_cfg_test_module_in_another_file_is_flagged_as_not_seen() {
     assert!(partial[0].as_str().unwrap().contains("src/store/mod.rs"));
 }
 
+/// The manifests of a Cargo workspace are stored as `Cargo.toml.fixture`: tools that
+/// walk the repository would take a `Cargo.toml` for a crate.
+fn cargo_packages_fixture() -> (TempDir, PathBuf) {
+    let (tmp, root) = fixture("cargo_packages");
+    for entry in ignore::WalkBuilder::new(&root).build().flatten() {
+        if entry.file_name() == "Cargo.toml.fixture" {
+            fs::rename(entry.path(), entry.path().with_file_name("Cargo.toml")).unwrap();
+        }
+    }
+    (tmp, root)
+}
+
+#[test]
+fn packages_check_the_dependencies_a_cargo_manifest_declares() {
+    let (_tmp, root) = cargo_packages_fixture();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "crates/chunk-store/Cargo.toml:7: store -> external axum is forbidden",
+        ))
+        .stdout(contains(
+            "crates/web/Cargo.toml:7: web -> kit is not allowed (imports crates/testkit/Cargo.toml)",
+        ))
+        // `testkit` is a dev-dependency of chunk-store: the tests', not the crate's.
+        .stdout(contains("crates/chunk-store/Cargo.toml:10").not())
+        .stdout(contains("2 violation(s)"));
+}
+
 #[test]
 fn csharp_resolves_namespaces() {
     layered(

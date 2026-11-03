@@ -13,6 +13,7 @@ mod indexer;
 mod init;
 mod lang;
 mod manifests;
+mod packages;
 mod patch;
 mod relpath;
 mod report;

@@ -1,0 +1,10 @@
+[package]
+name = "chunk-store"
+version = "0.1.0"
+
+[dependencies]
+storage-api = { workspace = true }
+axum = { workspace = true }
+
+[dev-dependencies]
+testkit = { workspace = true }
