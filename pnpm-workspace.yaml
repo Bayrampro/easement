@@ -1,0 +1,4 @@
+# scip-typescript 0.6.1 fixes a bug that easement ran into; it is newer than
+# minimumReleaseAge. Drop this exception once the release is old enough.
+minimumReleaseAgeExclude:
+  - '@sourcegraph/scip-typescript@0.6.1'
