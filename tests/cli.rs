@@ -2566,7 +2566,7 @@ fn an_import_of_an_excluded_file_fails() {
         ),
     ]);
     easement(&root, &["check"]).code(1).stdout(contains(
-        "src/app/a.ts:1: app imports src/legacy/api.ts, which `exclude` hides, so no rule checks it",
+        "src/app/a.ts:1: app imports src/legacy/api.ts, which `exclude` hides, so no rule checks it; list it in `target_only` if it is generated, in a component or `unowned` if it is part of the project, else do not import it",
     ));
     // Resolved by a tree-sitter adapter.
     let (_tmp, root) = project(&[

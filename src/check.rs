@@ -338,7 +338,7 @@ pub fn evaluate(
                 file,
                 line: dep.line,
                 message: format!(
-                    "{from} imports {target}, which `exclude` hides, so no rule checks it; list it in `target_only` if it is generated, else do not import it"
+                    "{from} imports {target}, which `exclude` hides, so no rule checks it; list it in `target_only` if it is generated, in a component or `unowned` if it is part of the project, else do not import it"
                 ),
                 because: None,
                 from: from.to_string(),
