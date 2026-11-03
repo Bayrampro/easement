@@ -587,6 +587,11 @@ pub struct Facts {
     /// With `symbols`, the files that use a name of an unnamed package, whose
     /// uses are left out of `symbols`.
     pub unnamed: BTreeSet<String>,
+    /// With `watched`, the qualifier and name of every symbol the index defines or
+    /// references whose name is one of `watched`: what a `forbid_symbol` name can mean.
+    pub known: Vec<(String, String)>,
+    /// Whether `known` is whole: false when the index left some definitions unnamed.
+    pub known_whole: bool,
 }
 
 /// One `Dep` per file and module it refers to, at the first line that does:
@@ -595,6 +600,16 @@ pub struct Facts {
 /// `excluded` are documents of files that `exclude` hides: never read as
 /// sources, they only resolve the names that no document of `documents` defines.
 pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Facts {
+    facts_watching(documents, excluded, symbols, &HashSet::new())
+}
+
+/// [`facts`] that also collects `Facts::known` for the names in `watched`.
+pub fn facts_watching(
+    documents: &[Document],
+    excluded: &[Document],
+    symbols: bool,
+    watched: &HashSet<String>,
+) -> Facts {
     let mut defined: HashMap<&str, &str> = HashMap::new();
     // Symbols that more than one file defines: a Ruby module reopened in each file under it.
     let mut reopened: HashSet<&str> = HashSet::new();
@@ -656,7 +671,23 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
     let mut deps = Vec::new();
     let mut uses = Vec::new();
     let mut unnamed = BTreeSet::new();
-    for document in documents {
+    // What the index defines is read as if a file of no project referenced it, so that
+    // a definition no one uses still tells what a name can mean.
+    let definitions = (symbols && !watched.is_empty()).then(|| Document {
+        path: String::new(),
+        references: defined
+            .keys()
+            .chain(hidden.keys())
+            .enumerate()
+            .map(|(line, symbol)| Reference {
+                line: line + 1,
+                symbol: (*symbol).to_string(),
+                spelled: None,
+            })
+            .collect(),
+        ..Document::default()
+    });
+    for document in documents.iter().chain(definitions.as_ref()) {
         // Rust writes `crate::domain::order::Order` as a reference to every module on
         // the path, and Ruby `Shop::Domain::Order` as one to every module and the class;
         // only the deepest one is what the line depends on.
@@ -792,10 +823,33 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
             });
         }
     }
+    let known_whole = !unnamed.remove("");
+    deps.retain(|dep| !dep.file.as_os_str().is_empty());
+    let mut known = Vec::new();
+    uses.retain(|used| {
+        if !used.file.as_os_str().is_empty() {
+            return true;
+        }
+        known.push(used.clone());
+        false
+    });
+    let known = known
+        .iter()
+        .chain(&uses)
+        .flat_map(|used| {
+            let method = used.method.clone();
+            std::iter::once((used.specifier.clone(), used.name.clone())).chain(method)
+        })
+        .filter(|(_, name)| watched.contains(name))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     Facts {
         deps,
         symbols: uses,
         unnamed,
+        known,
+        known_whole,
     }
 }
 

@@ -232,6 +232,10 @@ pub struct Stats {
     /// Why `forbid_symbol` left some uses of names unchecked.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub symbols_partial: Vec<String>,
+    /// `forbid_symbol` names that match no symbol of the index, though one of the
+    /// same name sits deeper under the qualifier: the rule can never fire.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub symbols_unmatched: Vec<String>,
     /// Why `unused` took some files as used without judging them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unused_partial: Vec<String>,
@@ -1063,6 +1067,55 @@ pub fn symbols_partial(config: &Config, map: &ComponentMap, unnamed: &[String]) 
     )]
 }
 
+/// The `forbid_symbol` names that no symbol of the index matches, though a symbol
+/// of the same name sits in a namespace under the qualifier (`I18n.locale` is
+/// defined as `I18n::Base.locale`): such a rule cannot fire. A name the index has
+/// never seen stays silent, since banning what the code does not use yet is what
+/// the rule is for. `known` is what the index knows under the names that
+/// `forbid_symbol` lists; `complete` is false when the index is not whole, and then
+/// nothing is said.
+pub fn symbols_unmatched(
+    config: &Config,
+    known: &[(String, String)],
+    complete: bool,
+) -> Vec<String> {
+    if !complete {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for (component, rule) in &config.rules {
+        for listed in &rule.forbid_symbol {
+            let pattern = listed.name();
+            let Some((qualifier, wanted)) = pattern.rsplit_once('.') else {
+                continue;
+            };
+            if known
+                .iter()
+                .any(|(specifier, name)| names_symbol(pattern, specifier, name))
+            {
+                continue;
+            }
+            let nested = known
+                .iter()
+                .map(|(specifier, _)| specifier)
+                .find(|specifier| {
+                    known.contains(&((*specifier).clone(), wanted.to_string()))
+                        && specifier.strip_prefix(qualifier).is_some_and(|rest| {
+                            rest.starts_with("::") || rest.starts_with('.') || rest.starts_with('/')
+                        })
+                });
+            if let Some(specifier) = nested {
+                found.push(format!(
+                    "`forbid_symbol` `{pattern}` of {component} matches no symbol of the index, so it can never fire; did you mean `{specifier}.{wanted}`?"
+                ));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
 /// Whether `pattern` (`pkg.Name` or `import/path.Name`) names the symbol
 /// `name` used through the import `specifier`.
 fn names_symbol(pattern: &str, specifier: &str, name: &str) -> bool {
@@ -1453,6 +1506,67 @@ components:
             file: format!("{from}/x"),
             line: 1,
         }
+    }
+
+    fn forbidding(names: &[&str]) -> Config {
+        let list: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+        serde_norway::from_str(&format!(
+            "version: 1
+components:
+  web: {{ in: web }}
+rules:
+  web: {{ forbid_symbol: [{}] }}
+",
+            list.join(", ")
+        ))
+        .unwrap()
+    }
+
+    fn known(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(q, n)| (q.to_string(), n.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_name_defined_only_deeper_under_its_qualifier_is_flagged_with_the_candidate() {
+        let config = forbidding(&["I18n.locale"]);
+        let notes = symbols_unmatched(&config, &known(&[("I18n::Base", "locale")]), true);
+        assert_eq!(
+            notes,
+            [
+                "`forbid_symbol` `I18n.locale` of web matches no symbol of the index, so it can never fire; did you mean `I18n::Base.locale`?"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_that_matches_or_that_nothing_defines_stays_silent() {
+        let known = known(&[("I18n::Base", "locale"), ("log", "Println")]);
+        for pattern in [
+            // Matches exactly.
+            "I18n::Base.locale",
+            // Banned before anyone uses it, with another package of the same name around.
+            "fmt.Println",
+            // Not a nested namespace of the qualifier.
+            "Time.locale",
+            // Not defined at all.
+            "I18n.deploy",
+        ] {
+            let config = forbidding(&[pattern]);
+            assert!(
+                symbols_unmatched(&config, &known, true).is_empty(),
+                "{pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_is_said_when_the_index_is_not_whole() {
+        let config = forbidding(&["I18n.locale"]);
+        let known = known(&[("I18n::Base", "locale")]);
+        assert!(symbols_unmatched(&config, &known, false).is_empty());
     }
 
     fn config(no_cycles: &str) -> Config {

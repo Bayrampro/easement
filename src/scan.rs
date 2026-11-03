@@ -82,6 +82,9 @@ pub struct Scan {
     /// Checked files that use a name of a package the indexer left unnamed,
     /// which no rule on names judged.
     pub unnamed_uses: Vec<String>,
+    /// The qualifier and name of the symbols the index knows under a name that
+    /// `forbid_symbol` lists, and whether that list is whole.
+    pub known_symbols: (Vec<(String, String)>, bool),
     /// Indexers that ran, and indexes taken from the cache.
     pub indexed: (usize, usize),
 }
@@ -223,7 +226,12 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
             })
         })
         .collect();
-    let facts = scip::facts(&documents, &hidden, config.uses_symbols());
+    let facts = scip::facts_watching(
+        &documents,
+        &hidden,
+        config.uses_symbols(),
+        &config.forbidden_symbol_names(),
+    );
     let is_source = |file: &Path| {
         let file = slash(file);
         project.contains(file.as_str()) && !target_only.is_match(&file)
@@ -241,6 +249,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
             .cloned(),
     );
     unread.sort();
+    let known_symbols = (facts.known, facts.known_whole);
     let unnamed_uses = facts
         .unnamed
         .iter()
@@ -268,6 +277,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         suppressions,
         uncovered: indexed.uncovered,
         unnamed_uses,
+        known_symbols,
         indexed: (indexed.ran, indexed.cached),
     })
 }

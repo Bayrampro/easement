@@ -289,6 +289,17 @@ impl Project {
         stats.unused_partial = unused.reasons;
         stats.manifests_partial = undeclared.reasons;
         stats.symbols_partial = check::symbols_partial(&self.config, &map, &scan.unnamed_uses);
+        // Only a whole index can tell a name that matches nothing: files it did not
+        // cover, names it left unnamed and languages without an index may hold it.
+        let indexed_whole = scan.uncovered.is_empty()
+            && scan.unnamed_uses.is_empty()
+            && scan.known_symbols.1
+            && scan
+                .paths
+                .iter()
+                .all(|f| indexer::INDEXERS.iter().any(|l| l.covers(f)));
+        stats.symbols_unmatched =
+            check::symbols_unmatched(&self.config, &scan.known_symbols.0, indexed_whole);
         stats.files = scan
             .paths
             .iter()

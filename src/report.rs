@@ -280,6 +280,15 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
         out.push_str(&paint(color, YELLOW, &naming_unseen(stats)));
         out.push('\n');
     }
+    if !stats.symbols_unmatched.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        for note in &stats.symbols_unmatched {
+            out.push_str(&paint(color, YELLOW, note));
+            out.push('\n');
+        }
+    }
     if !stats.unused_partial.is_empty()
         || !stats.manifests_partial.is_empty()
         || !stats.symbols_partial.is_empty()

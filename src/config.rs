@@ -480,6 +480,16 @@ impl Config {
             || self.rules.values().any(|r| !r.forbid_symbol.is_empty())
     }
 
+    /// The names that `forbid_symbol` lists, without the qualifier: `locale` of `I18n.locale`.
+    pub fn forbidden_symbol_names(&self) -> std::collections::HashSet<String> {
+        self.rules
+            .values()
+            .flat_map(|rule| rule.forbid_symbol.iter())
+            .filter_map(|listed| listed.name().rsplit_once('.'))
+            .map(|(_, name)| name.to_string())
+            .collect()
+    }
+
     /// Adds the `tests` component when `tests: auto` asks for it.
     fn with_tests(mut self) -> Result<Self> {
         if self.tests.is_none() {
