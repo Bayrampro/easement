@@ -3,6 +3,7 @@
 //! dev-dependency is test code, so `tests: auto` takes it.
 
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use regex::Regex;
 
@@ -34,27 +35,25 @@ pub struct Declared {
     pub source: Source,
     /// The table it is in, when that is not the plain dependencies.
     pub part: Option<Part>,
+    /// The `cfg` of the `[target.<cfg>.dependencies]` table it is in, when it is in one.
+    pub target: Option<String>,
 }
 
 /// The dependencies a manifest of `kind` declares, with the line of each.
+/// `None` for a manifest that cannot be read, which is not one that declares nothing.
 /// A kind of manifest whose reader is not written yet declares none.
-pub fn declared(kind: Manifest, text: &str) -> Vec<Declared> {
+pub fn declared(kind: Manifest, text: &str) -> Option<Vec<Declared>> {
     match kind {
         Manifest::Cargo => cargo(text),
-        Manifest::Npm | Manifest::Go => Vec::new(),
+        Manifest::Npm | Manifest::Go => Some(Vec::new()),
     }
 }
 
-/// The manifests among `files` that are read, and the dependencies they declare as edges.
+/// The dependencies the manifests among `files` declare, as edges.
 /// A manifest of a kind whose reader is not written yet is left out.
-pub fn edges(
-    root: &Path,
-    files: &[String],
-    read_as_source: impl Fn(&str) -> bool,
-) -> (Vec<String>, Vec<Dep>) {
+pub fn edges(root: &Path, files: &[String], read_as_source: impl Fn(&str) -> bool) -> Edges {
     let text_of = |file: &str| std::fs::read_to_string(root.join(file)).ok();
-    let mut manifests = Vec::new();
-    let mut deps = Vec::new();
+    let mut found = Edges::default();
     for file in files {
         let Some(kind) = registry::manifest_of(file).filter(|kind| *kind == Manifest::Cargo) else {
             continue;
@@ -62,18 +61,32 @@ pub fn edges(
         if !read_as_source(file) {
             continue;
         }
+        found.manifests.push(file.clone());
         let Some(text) = text_of(file) else {
+            found.problems.push(format!(
+                "{file}: cannot be read, so what it declares is not checked"
+            ));
             continue;
         };
-        manifests.push(file.clone());
-        for declared in declared(kind, &text) {
-            let (specifier, target) = match resolve(file, &declared, files, &text_of) {
+        let Some(list) = declared(kind, &text) else {
+            found.problems.push(format!(
+                "{file}: is not valid {}, so what it declares is not checked",
+                kind.file_name()
+            ));
+            continue;
+        };
+        for declared in list {
+            let (resolved, problem) = resolve(file, &declared, files, &text_of);
+            found.problems.extend(problem);
+            let (specifier, target) = match resolved {
+                // A package that names itself (`path = "."`) is no dependency.
+                Resolved::Internal(path) if path == *file => continue,
                 Resolved::Internal(path) => {
                     (path.clone(), Target::Internal(Unit::from(path.as_str())))
                 }
                 Resolved::External(module) => (module.clone(), Target::External(module)),
             };
-            deps.push(Dep {
+            found.deps.push(Dep {
                 from: match declared.part {
                     Some(part) => Unit::in_part(Path::new(file), part),
                     None => Unit::from(file.as_str()),
@@ -85,7 +98,17 @@ pub fn edges(
             });
         }
     }
-    (manifests, deps)
+    found
+}
+
+/// What the manifests of a project declare.
+#[derive(Debug, Default)]
+pub struct Edges {
+    /// The manifests that were read, which are checked files.
+    pub manifests: Vec<String>,
+    pub deps: Vec<Dep>,
+    /// Why a manifest, or a dependency of one, was not judged as it declares.
+    pub problems: Vec<String>,
 }
 
 /// What a declared dependency is, once resolved against the project.
@@ -104,20 +127,47 @@ pub fn resolve(
     declared: &Declared,
     files: &[String],
     read: &dyn Fn(&str) -> Option<String>,
-) -> Resolved {
-    let external = || Resolved::External(declared.package.replace('-', "_"));
+) -> (Resolved, Option<String>) {
     let internal = |dir: &str, path: &str| {
         let target = join(dir, path).map(|dir| manifest_in(&dir))?;
         files.contains(&target).then_some(target)
     };
     let dir = parent(manifest);
+    let mut package = declared.package.clone();
+    let mut problem = None;
     let found = match &declared.source {
         Source::Path(path) => internal(dir, path),
-        Source::Workspace => workspace_path(dir, &declared.name, read)
-            .and_then(|(root, path)| internal(&root, &path)),
+        Source::Workspace => match workspace_dependency(dir, &declared.name, read) {
+            Ok(Some(entry)) => {
+                if let Some(real) = entry.package {
+                    package = real;
+                }
+                entry.path.and_then(|path| internal(&entry.dir, &path))
+            }
+            Ok(None) => None,
+            Err(workspace) => {
+                problem = Some(format!(
+                    "{manifest}: `{}` is `workspace = true`, but {workspace} cannot be read, so it is taken for an external crate",
+                    declared.name
+                ));
+                None
+            }
+        },
         Source::Registry => None,
     };
-    found.map_or_else(external, Resolved::Internal)
+    let resolved = found.map_or_else(
+        || Resolved::External(package.replace('-', "_")),
+        Resolved::Internal,
+    );
+    (resolved, problem)
+}
+
+/// What a workspace manifest declares under a name.
+struct WorkspaceEntry {
+    /// The directory of the workspace manifest.
+    dir: String,
+    path: Option<String>,
+    package: Option<String>,
 }
 
 /// The directory a manifest is in, `""` for the root.
@@ -127,10 +177,11 @@ fn parent(path: &str) -> &str {
 
 /// The manifest of the package in `dir`.
 fn manifest_in(dir: &str) -> String {
+    let name = Manifest::Cargo.file_name();
     if dir.is_empty() {
-        "Cargo.toml".to_string()
+        name.to_string()
     } else {
-        format!("{dir}/Cargo.toml")
+        format!("{dir}/{name}")
     }
 }
 
@@ -149,29 +200,40 @@ fn join(dir: &str, path: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-/// What the closest workspace manifest above `dir` declares under `name` as a
-/// path: the directory of that manifest and the path.
-fn workspace_path(
+/// What the closest workspace manifest above `dir` declares under `name`. `Err` names a
+/// manifest that holds `[workspace]` text it cannot read as TOML.
+fn workspace_dependency(
     dir: &str,
     name: &str,
     read: &dyn Fn(&str) -> Option<String>,
-) -> Option<(String, String)> {
+) -> Result<Option<WorkspaceEntry>, String> {
     let mut here = Some(dir);
     while let Some(current) = here {
-        if let Some(text) = read(&manifest_in(current))
-            && let Ok(table) = toml::from_str::<toml::Table>(&text)
-            && let Some(workspace) = table.get("workspace")
-        {
-            let path = workspace
-                .get("dependencies")?
-                .get(name)?
-                .get("path")?
-                .as_str()?;
-            return Some((current.to_string(), path.to_string()));
+        let manifest = manifest_in(current);
+        if let Some(text) = read(&manifest) {
+            match toml::from_str::<toml::Table>(&text) {
+                Ok(table) => {
+                    if let Some(workspace) = table.get("workspace") {
+                        let spec = workspace.get("dependencies").and_then(|d| d.get(name));
+                        let text_of = |key: &str| {
+                            spec.and_then(|s| s.get(key))
+                                .and_then(toml::Value::as_str)
+                                .map(str::to_string)
+                        };
+                        return Ok(spec.map(|_| WorkspaceEntry {
+                            dir: current.to_string(),
+                            path: text_of("path"),
+                            package: text_of("package"),
+                        }));
+                    }
+                }
+                Err(_) if text.contains("[workspace") => return Err(manifest),
+                Err(_) => {}
+            }
         }
         here = (!current.is_empty()).then(|| parent(current));
     }
-    None
+    Ok(None)
 }
 
 const CARGO_TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
@@ -184,16 +246,22 @@ struct Table<'a> {
     target: Option<String>,
 }
 
-fn cargo(text: &str) -> Vec<Declared> {
-    let Ok(manifest) = toml::from_str::<toml::Table>(text) else {
-        return Vec::new();
-    };
-    let key = Regex::new(r#"^\s*("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*[.=]"#).expect("valid regex");
-    let mut found = Vec::new();
+fn cargo(text: &str) -> Option<Vec<Declared>> {
+    static KEY: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"^\s*("[^"]+"|'[^']+'|[A-Za-z0-9_-]+)\s*[.=]"#).expect("valid regex")
+    });
+    let manifest = toml::from_str::<toml::Table>(text).ok()?;
+    let mut found: Vec<Declared> = Vec::new();
     let mut table: Option<Table> = None;
+    // How many `{` and `[` of a value are still open: its lines are no keys.
+    let mut open = 0_i32;
     for (index, line) in text.lines().enumerate() {
         let line_number = index + 1;
         let trimmed = line.trim();
+        if open > 0 {
+            open += brackets(trimmed);
+            continue;
+        }
         if trimmed.starts_with('[') && !trimmed.starts_with("[[") {
             let header = trimmed
                 .split_once(']')
@@ -218,18 +286,37 @@ fn cargo(text: &str) -> Vec<Declared> {
                 }
             }
         } else if let Some(here) = &table
-            && let Some(caps) = key.captures(line)
+            && let Some(caps) = KEY.captures(line)
         {
             let name = caps[1].trim_matches(['"', '\'']);
             if !found
                 .iter()
-                .any(|d: &Declared| d.name == name && d.part == part_of(here.kind))
+                .any(|d| d.name == name && d.part == part_of(here.kind) && d.target == here.target)
             {
                 found.extend(cargo_declared(&manifest, here, name, line_number));
             }
+            open = brackets(trimmed.split_once('=').map_or("", |(_, value)| value));
         }
     }
-    found
+    Some(found)
+}
+
+/// `{` and `[` opened by `text` minus the ones it closes, outside strings.
+fn brackets(text: &str) -> i32 {
+    let mut quote: Option<char> = None;
+    let mut open = 0;
+    for c in text.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '#') => break,
+            (None, '{' | '[') => open += 1,
+            (None, '}' | ']') => open -= 1,
+            _ => {}
+        }
+    }
+    open
 }
 
 /// The dependency `name` of `table`, from the parsed manifest, on `line`.
@@ -239,11 +326,11 @@ fn cargo_declared(
     name: &str,
     line: usize,
 ) -> Option<Declared> {
-    let tables = match &table.target {
-        Some(cfg) => manifest.get("target")?.get(cfg)?,
-        None => &toml::Value::Table(manifest.clone()),
+    let section = match &table.target {
+        Some(cfg) => manifest.get("target")?.get(cfg)?.get(table.kind)?,
+        None => manifest.get(table.kind)?,
     };
-    let spec = tables.get(table.kind)?.get(name)?;
+    let spec = section.get(name)?;
     let package = spec
         .get("package")
         .and_then(toml::Value::as_str)
@@ -262,6 +349,7 @@ fn cargo_declared(
         package,
         source,
         part: part_of(table.kind),
+        target: table.target.clone(),
     })
 }
 
@@ -303,6 +391,7 @@ mod tests {
 
     fn found(text: &str) -> Vec<(usize, String, String, Source, Option<String>)> {
         declared(Manifest::Cargo, text)
+            .unwrap_or_default()
             .into_iter()
             .map(|d| {
                 (
@@ -373,6 +462,7 @@ mod tests {
             ]
         );
         let kinds: Vec<_> = declared(Manifest::Cargo, text)
+            .unwrap_or_default()
             .into_iter()
             .map(|d| d.part.and_then(|part| part.kind))
             .collect();
@@ -381,8 +471,27 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_that_is_no_toml_declares_nothing() {
-        assert!(found("[dependencies\nx = ").is_empty());
+    fn a_manifest_that_is_no_toml_is_unread_not_empty() {
+        assert_eq!(declared(Manifest::Cargo, "[dependencies\nx = "), None);
+        assert_eq!(
+            declared(Manifest::Cargo, "[package]\nname = \"a\"\n"),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn the_same_name_in_two_tables_is_two_dependencies() {
+        let text =
+            "[dependencies]\nlibc = \"0.2\"\n\n[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n";
+        let lines: Vec<_> = found(text).iter().map(|d| d.0).collect();
+        assert_eq!(lines, [2, 5]);
+    }
+
+    #[test]
+    fn the_lines_of_a_multi_line_table_are_no_dependencies() {
+        let text = "[dependencies]\nfoo = {\n    version = \"1\",\n    path = \"../foo\",\n}\nversion = \"2\"\n";
+        let names: Vec<_> = found(text).iter().map(|d| (d.0, d.1.clone())).collect();
+        assert_eq!(names, [(2, "foo".to_string()), (6, "version".to_string())]);
     }
 
     fn dep(name: &str, source: Source) -> Declared {
@@ -392,6 +501,7 @@ mod tests {
             package: name.to_string(),
             source,
             part: None,
+            target: None,
         }
     }
 
@@ -429,7 +539,8 @@ mod tests {
             &dep("local", Source::Path("../local".into())),
             &files,
             &read,
-        );
+        )
+        .0;
         assert_eq!(got, Resolved::Internal("crates/local/Cargo.toml".into()));
         // A path with no manifest of the project there names nothing of it.
         let missing = resolve(
@@ -437,7 +548,8 @@ mod tests {
             &dep("gone", Source::Path("../gone".into())),
             &files,
             &read,
-        );
+        )
+        .0;
         assert_eq!(missing, Resolved::External("gone".into()));
     }
 
@@ -446,13 +558,50 @@ mod tests {
         let (files, read) = project();
         let from = "crates/chunk-store/Cargo.toml";
         assert_eq!(
-            resolve(from, &dep("storage-api", Source::Workspace), &files, &read),
+            resolve(from, &dep("storage-api", Source::Workspace), &files, &read).0,
             Resolved::Internal("crates/storage-api/Cargo.toml".into())
         );
         assert_eq!(
-            resolve(from, &dep("serde", Source::Workspace), &files, &read),
+            resolve(from, &dep("serde", Source::Workspace), &files, &read).0,
             Resolved::External("serde".into())
         );
+    }
+
+    #[test]
+    fn a_renamed_workspace_dependency_is_spelled_as_its_package() {
+        let manifests = [(
+            "Cargo.toml",
+            "[workspace]\n\n[workspace.dependencies]\nhttp = { package = \"real-http\", version = \"1\" }\n",
+        )];
+        let read = |path: &str| {
+            manifests
+                .iter()
+                .find(|(p, _)| *p == path)
+                .map(|(_, t)| t.to_string())
+        };
+        let files = vec!["Cargo.toml".to_string(), "crates/a/Cargo.toml".to_string()];
+        let (got, problem) = resolve(
+            "crates/a/Cargo.toml",
+            &dep("http", Source::Workspace),
+            &files,
+            &read,
+        );
+        assert_eq!(got, Resolved::External("real_http".into()));
+        assert_eq!(problem, None);
+    }
+
+    #[test]
+    fn a_workspace_manifest_that_cannot_be_read_is_said() {
+        let read = |path: &str| (path == "Cargo.toml").then(|| "[workspace\n".to_string());
+        let files = vec!["Cargo.toml".to_string(), "crates/a/Cargo.toml".to_string()];
+        let (got, problem) = resolve(
+            "crates/a/Cargo.toml",
+            &dep("api", Source::Workspace),
+            &files,
+            &read,
+        );
+        assert_eq!(got, Resolved::External("api".into()));
+        assert!(problem.unwrap().contains("Cargo.toml"));
     }
 
     #[test]
@@ -461,7 +610,7 @@ mod tests {
         let mut renamed = dep("json", Source::Registry);
         renamed.package = "serde-json".into();
         assert_eq!(
-            resolve("crates/local/Cargo.toml", &renamed, &files, &read),
+            resolve("crates/local/Cargo.toml", &renamed, &files, &read).0,
             Resolved::External("serde_json".into())
         );
     }

@@ -205,6 +205,10 @@ pub fn undeclared(
             continue;
         };
         let file = crate::scan::slash(&dep.file);
+        // What a manifest declares is `packages`' to judge, not an import to look up.
+        if registry::manifest_of(&file).is_some() {
+            continue;
+        }
         let Some(kind) = registry::of(&file).and_then(|language| language.manifest) else {
             unjudged.insert(relpath::extension(&file).to_string());
             continue;

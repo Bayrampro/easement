@@ -233,6 +233,9 @@ pub struct Stats {
     /// Test code that `tests: auto` could not take out of the file it sits in.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub parts_partial: Vec<String>,
+    /// Manifests, or dependencies of one, that `packages` could not judge as declared.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub packages_partial: Vec<String>,
     /// Why `forbid_symbol` left some uses of names unchecked.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub symbols_partial: Vec<String>,

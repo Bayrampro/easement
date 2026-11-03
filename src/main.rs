@@ -291,6 +291,9 @@ impl Project {
         }
         stats.unused_partial = unused.reasons;
         stats.manifests_partial = undeclared.reasons;
+        if self.config.packages {
+            stats.packages_partial = scan.packages_problems.clone();
+        }
         if self.config.tests.is_some() {
             stats.parts_partial = parts_reasons(&scan.parts_doubts);
         }

@@ -88,6 +88,8 @@ pub struct Scan {
     pub unnamed_uses: Vec<String>,
     /// Files whose test code a finder of parts could not tell from the file's.
     pub parts_doubts: Vec<(String, lang::parts::Doubt)>,
+    /// Manifests, or dependencies of one, that `packages` could not judge as declared.
+    pub packages_problems: Vec<String>,
     /// The qualifier and name of the symbols the index knows under a name that
     /// `forbid_symbol` lists, and whether that list is whole.
     pub known_symbols: (Vec<(String, String)>, bool),
@@ -266,11 +268,12 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
     let (sources, unread_deps): (Vec<Dep>, Vec<Dep>) =
         facts.deps.into_iter().partition(|dep| is_source(&dep.file));
     deps.extend(sources);
+    let mut packages_problems = Vec::new();
     if config.packages {
-        let (manifests, edges) =
-            crate::packages::edges(root, &all_files, |file| !target_only.is_match(file));
-        paths.extend(manifests);
-        deps.extend(edges);
+        let edges = crate::packages::edges(root, &all_files, |file| !target_only.is_match(file));
+        paths.extend(edges.manifests);
+        deps.extend(edges.deps);
+        packages_problems = edges.problems;
     }
     let mut unread_deps = unread_deps;
     unread_deps.extend(scip::facts(&hidden, &documents, false).deps);
@@ -311,6 +314,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         uncovered: indexed.uncovered,
         unnamed_uses,
         parts_doubts,
+        packages_problems,
         known_symbols,
         indexed: (indexed.ran, indexed.cached),
         flow,

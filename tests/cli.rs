@@ -1422,6 +1422,38 @@ fn packages_check_the_dependencies_a_cargo_manifest_declares() {
 }
 
 #[test]
+fn a_manifest_packages_cannot_read_is_said_not_passed_as_clean() {
+    let (_tmp, root) = cargo_packages_fixture();
+    fs::write(root.join("crates/web/Cargo.toml"), "[dependencies\nx = ").unwrap();
+    let out = easement(&root, &["check", "--format", "json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let partial = report["stats"]["packages_partial"].as_array().unwrap();
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    assert!(
+        partial[0]
+            .as_str()
+            .unwrap()
+            .contains("crates/web/Cargo.toml")
+    );
+    assert_eq!(report["confidence"], "partial");
+}
+
+#[test]
+fn packages_and_manifests_together_add_no_unjudged_toml() {
+    let (_tmp, root) = cargo_packages_fixture();
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        format!("{config}\nmanifests: true\n"),
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(".toml files").not())
+        .stdout(contains("2 violation(s)"));
+}
+
+#[test]
 fn csharp_resolves_namespaces() {
     layered(
         "csharp",
