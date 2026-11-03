@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.6](https://github.com/mokevnin/easement/compare/v0.4.5...v0.4.6) (2026-11-03)
+
+
+### Bug Fixes
+
+* **deps:** update scip-typescript to 0.6.1 and the cargo lockfile ([5a33e94](https://github.com/mokevnin/easement/commit/5a33e949f3f1c49fc413781bceabe6f69d7e61ca))
+
 ## [0.4.5](https://github.com/mokevnin/easement/compare/v0.4.4...v0.4.5) (2026-11-02)
 
 
