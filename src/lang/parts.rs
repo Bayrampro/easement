@@ -2,6 +2,7 @@
 //! code a language only builds for its tests, for example.
 
 use std::ops::RangeInclusive;
+use std::sync::LazyLock;
 
 use regex::Regex;
 
@@ -26,47 +27,163 @@ pub struct Span {
     pub part: Part,
 }
 
+impl Span {
+    /// A part that is the file from its first line to its last, as test-only code is.
+    pub fn whole_file(kind: Kind) -> Self {
+        Self {
+            lines: 1..=usize::MAX,
+            part: Part {
+                name: "cfg(test)".to_string(),
+                kind: Some(kind),
+            },
+        }
+    }
+}
+
 /// The `#[cfg(test)]` items of a Rust source: the attribute, then the item up
 /// to its closing brace (or its `;`). `mod tests;` is no part: its code is in
 /// another file.
-pub fn rust(source: &str) -> Found {
+pub fn rust(path: &str, source: &str) -> Found {
     let masked = mask_rust(source.as_bytes());
     let Ok(text) = std::str::from_utf8(&masked) else {
         return Found {
             spans: Vec::new(),
             doubts: vec![Doubt::Unreadable],
+            files: Vec::new(),
         };
     };
-    let attribute = Regex::new(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]").expect("valid regex");
-    let whole_file = Regex::new(r"#!\[\s*cfg\s*\(\s*test\s*\)\s*\]").expect("valid regex");
+    static ATTRIBUTE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"#(!?)\[\s*cfg\s*\(").expect("valid regex"));
     let mut spans: Vec<Span> = Vec::new();
     let mut doubts: Vec<Doubt> = Vec::new();
-    if whole_file.is_match(text) {
-        doubts.push(Doubt::WholeFile);
-    }
-    for found in attribute.find_iter(text) {
+    let mut files: Vec<Vec<String>> = Vec::new();
+    for found in ATTRIBUTE.captures_iter(text) {
+        let whole = found.get(0).expect("the whole match");
+        let Some((content, attribute_end)) = cfg_attribute(text, whole.end()) else {
+            continue;
+        };
+        if !only_a_test_build(content) {
+            continue;
+        }
+        let part = Part {
+            name: "cfg(test)".to_string(),
+            kind: Some(Kind::Test),
+        };
+        // `#![cfg(test)]`: the file is test code from its first line to its last.
+        if !found[1].is_empty() {
+            spans.push(Span {
+                lines: 1..=text.lines().count().max(1),
+                part,
+            });
+            continue;
+        }
         // An item nested in a part that was found already is part of it.
         if spans
             .last()
-            .is_some_and(|last| *last.lines.end() >= line_of(&masked, found.start()))
+            .is_some_and(|last| *last.lines.end() >= line_of(&masked, whole.start()))
         {
             continue;
         }
-        match item_end(&masked, found.end()) {
+        match item_end(&masked, attribute_end) {
             Item::Ends(end) => spans.push(Span {
-                lines: line_of(&masked, found.start())..=line_of(&masked, end),
-                part: Part {
-                    name: "cfg(test)".to_string(),
-                    kind: Some(Kind::Test),
-                },
+                lines: line_of(&masked, whole.start())..=line_of(&masked, end),
+                part,
             }),
-            Item::Module => doubts.push(Doubt::ModuleInAnotherFile),
+            Item::Module(name) => files.push(module_files(path, &name)),
             Item::Unbalanced => doubts.push(Doubt::Unbalanced),
             Item::Member => {}
         }
     }
     doubts.dedup();
-    Found { spans, doubts }
+    Found {
+        spans,
+        doubts,
+        files,
+    }
+}
+
+/// The files the module `name` declared in the Rust file `path` may be in: a `mod.rs`,
+/// `lib.rs` or `main.rs` owns its directory, any other file one named after it.
+fn module_files(path: &str, name: &str) -> Vec<String> {
+    let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));
+    let base = match file {
+        "mod.rs" | "lib.rs" | "main.rs" => dir.to_string(),
+        other => {
+            let stem = other.strip_suffix(".rs").unwrap_or(other);
+            if dir.is_empty() {
+                stem.to_string()
+            } else {
+                format!("{dir}/{stem}")
+            }
+        }
+    };
+    let join = |rest: String| {
+        if base.is_empty() {
+            rest
+        } else {
+            format!("{base}/{rest}")
+        }
+    };
+    vec![join(format!("{name}.rs")), join(format!("{name}/mod.rs"))]
+}
+
+/// The content of the `cfg(...)` whose parentheses open just before `from`, and the byte
+/// after the `]` that closes the attribute; `None` when it does not end as one.
+fn cfg_attribute(text: &str, from: usize) -> Option<(&str, usize)> {
+    let mut depth = 1;
+    let mut end = None;
+    for (offset, byte) in text.as_bytes()[from..].iter().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(from + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let end = end?;
+    let rest = &text[end + 1..];
+    let after = rest.trim_start();
+    after
+        .starts_with(']')
+        .then(|| (&text[from..end], end + 1 + (rest.len() - after.len()) + 1))
+}
+
+/// Whether a `cfg` predicate holds only in a test build: `test`, or `all(…)` with `test`
+/// among its arguments. `any` and `not` do not.
+fn only_a_test_build(predicate: &str) -> bool {
+    let predicate = predicate.trim();
+    if predicate == "test" {
+        return true;
+    }
+    let Some(arguments) = predicate
+        .strip_prefix("all")
+        .map(str::trim_start)
+        .and_then(|rest| rest.strip_prefix('('))
+        .and_then(|rest| rest.strip_suffix(')'))
+    else {
+        return false;
+    };
+    let mut depth = 0;
+    let mut start = 0;
+    let mut parts = Vec::new();
+    for (i, c) in arguments.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&arguments[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&arguments[start..]);
+    parts.iter().any(|part| part.trim() == "test")
 }
 
 /// What a finder found in a source, and what it could not tell.
@@ -74,6 +191,9 @@ pub fn rust(source: &str) -> Found {
 pub struct Found {
     pub spans: Vec<Span>,
     pub doubts: Vec<Doubt>,
+    /// `#[cfg(test)] mod name;`: for each, the files its code may be in, of which the one
+    /// that exists is test code as a whole.
+    pub files: Vec<Vec<String>>,
 }
 
 /// Why test code of a file may be judged as the file's.
@@ -83,10 +203,8 @@ pub enum Doubt {
     Unreadable,
     /// An item whose end was not found (the braces do not match).
     Unbalanced,
-    /// `#[cfg(test)] mod name;`: the code is in another file.
+    /// `#[cfg(test)] mod name;` names a file the project does not have.
     ModuleInAnotherFile,
-    /// `#![cfg(test)]`: the whole file is test code.
-    WholeFile,
 }
 
 impl Doubt {
@@ -100,10 +218,7 @@ impl Doubt {
                 "{files}: easement could not find the end of a `#[cfg(test)]` item (the braces do not match), so it is judged as the file's, not as `tests`"
             ),
             Doubt::ModuleInAnotherFile => format!(
-                "{files}: `#[cfg(test)] mod name;` names a file that is judged as its component's, not as `tests`; put the test code in the file itself to have it judged as `tests`"
-            ),
-            Doubt::WholeFile => format!(
-                "{files}: `#![cfg(test)]` makes the whole file test code, but it is judged as its component's, not as `tests`"
+                "{files}: `#[cfg(test)] mod name;` names a file that is not in the project, so it is not judged as `tests`; the file is expected next to the module or under a directory of its name"
             ),
         }
     }
@@ -113,7 +228,7 @@ impl Doubt {
 enum Item {
     Ends(usize),
     /// `mod name;`
-    Module,
+    Module(String),
     /// A field, an argument, an arm: no item an attribute governs as a part.
     Member,
     Unbalanced,
@@ -282,10 +397,9 @@ fn item_end(code: &[u8], from: usize) -> Item {
             b'(' | b'[' => nesting += 1,
             b')' | b']' => nesting -= 1,
             b';' if nesting == 0 => {
-                return if is_module(&code[item..i]) {
-                    Item::Module
-                } else {
-                    Item::Ends(i)
+                return match module_name(&code[item..i]) {
+                    Some(name) => Item::Module(name),
+                    None => Item::Ends(i),
                 };
             }
             b'}' if nesting == 0 => return Item::Unbalanced,
@@ -343,12 +457,17 @@ fn starts_item(code: &[u8]) -> bool {
     KEYWORDS.contains(&first)
 }
 
-/// Whether the text of an item up to its `;` is `mod name`, with a visibility.
-fn is_module(item: &[u8]) -> bool {
+/// The name of the module, when the text of an item up to its `;` is `mod name`, with a
+/// visibility.
+fn module_name(item: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(item);
     let words: Vec<&str> = text.split_whitespace().collect();
-    let keyword = words.iter().position(|w| *w == "mod");
-    keyword.is_some_and(|at| words[..at].iter().all(|w| w.starts_with("pub")))
+    let keyword = words.iter().position(|w| *w == "mod")?;
+    words[..keyword]
+        .iter()
+        .all(|w| w.starts_with("pub"))
+        .then(|| words.get(keyword + 1).map(|name| name.to_string()))
+        .flatten()
 }
 
 #[cfg(test)]
@@ -356,7 +475,7 @@ mod tests {
     use super::*;
 
     fn lines(source: &str) -> Vec<RangeInclusive<usize>> {
-        rust(source)
+        rust("src/lib.rs", source)
             .spans
             .into_iter()
             .map(|span| span.lines)
@@ -366,7 +485,7 @@ mod tests {
     #[test]
     fn a_cfg_test_module_is_a_test_part_from_its_attribute_to_its_closing_brace() {
         let source = "pub fn run() {}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n}\n\npub fn after() {}\n";
-        let spans = rust(source).spans;
+        let spans = rust("src/lib.rs", source).spans;
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].lines, 3..=6);
         assert_eq!(spans[0].part.name, "cfg(test)");
@@ -442,22 +561,75 @@ mod tests {
     #[test]
     fn what_the_finder_could_not_tell_it_says() {
         assert_eq!(
-            rust("#[cfg(test)]\nmod tests {\n    fn a() {\n}\n").doubts,
+            rust("src/lib.rs", "#[cfg(test)]\nmod tests {\n    fn a() {\n}\n").doubts,
             [Doubt::Unbalanced]
         );
-        assert_eq!(
-            rust("#[cfg(test)]\nmod tests;\n").doubts,
-            [Doubt::ModuleInAnotherFile]
-        );
-        assert_eq!(
-            rust("#![cfg(test)]\nfn a() {}\n").doubts,
-            [Doubt::WholeFile]
-        );
-        assert!(rust("#[cfg(test)]\nmod tests {\n}\n").doubts.is_empty());
         assert!(
-            rust("struct S {\n    #[cfg(test)]\n    f: u8,\n}\n")
+            rust("src/lib.rs", "#[cfg(test)]\nmod tests {\n}\n")
                 .doubts
                 .is_empty()
+        );
+        assert!(
+            rust(
+                "src/lib.rs",
+                "struct S {\n    #[cfg(test)]\n    f: u8,\n}\n"
+            )
+            .doubts
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_cfg_test_module_in_another_file_names_the_files_it_may_be_in() {
+        let found = rust(
+            "src/lib.rs",
+            "#[cfg(test)]\nmod tests;\n\n#[cfg(test)]\npub(crate) mod helpers;\nmod real;\n",
+        );
+        assert_eq!(
+            found.files,
+            [
+                ["src/tests.rs", "src/tests/mod.rs"],
+                ["src/helpers.rs", "src/helpers/mod.rs"]
+            ]
+        );
+        assert!(found.spans.is_empty() && found.doubts.is_empty());
+    }
+
+    #[test]
+    fn an_inner_cfg_test_makes_the_whole_file_a_test_part() {
+        let found = rust("src/lib.rs", "//! docs\n#![cfg(test)]\n\nfn a() {}\n");
+        let lines: Vec<_> = found.spans.iter().map(|s| s.lines.clone()).collect();
+        assert_eq!(lines, [1..=4]);
+        assert_eq!(found.spans[0].part.kind, Some(Kind::Test));
+        assert!(found.doubts.is_empty());
+    }
+
+    #[test]
+    fn a_cfg_that_only_a_test_build_satisfies_is_a_test_part() {
+        let source = concat!(
+            "#[cfg(all(test, feature = \"x\"))]\nmod a {\n}\n",
+            "#[cfg(all(test, not(windows)))]\nmod b {\n}\n",
+            "#[cfg(any(test, unix))]\nmod c {\n}\n",
+            "#[cfg(all(unix, not(test)))]\nmod d {\n}\n",
+            "#[cfg(all(unix, test))]\nmod e {\n}\n",
+        );
+        assert_eq!(lines(source), [1..=3, 4..=6, 13..=15]);
+    }
+
+    #[test]
+    fn a_module_file_is_next_to_its_declaring_file_or_under_it() {
+        let files = |path: &str| rust(path, "#[cfg(test)]\nmod t;\n").files;
+        // A `mod.rs`, `lib.rs` or `main.rs` owns its directory.
+        assert_eq!(
+            files("src/store/mod.rs"),
+            [["src/store/t.rs", "src/store/t/mod.rs"]]
+        );
+        assert_eq!(files("src/lib.rs"), [["src/t.rs", "src/t/mod.rs"]]);
+        assert_eq!(files("lib.rs"), [["t.rs", "t/mod.rs"]]);
+        // Any other file has a directory of its own name.
+        assert_eq!(
+            files("src/store/db.rs"),
+            [["src/store/db/t.rs", "src/store/db/t/mod.rs"]]
         );
     }
 }

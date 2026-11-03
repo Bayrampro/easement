@@ -1378,14 +1378,22 @@ fn rust_cfg_test_code_is_tests_not_the_file_it_sits_in() {
         .stdout(contains("1 violation(s)"));
 }
 
-/// Test code the finder cannot see is said, not silently judged as the file's.
+/// A `#[cfg(test)] mod name;` is test code as a whole: its file is `tests`, not the
+/// component of the file that declares it.
 #[test]
-fn a_cfg_test_module_in_another_file_is_flagged_as_not_seen() {
+fn a_cfg_test_module_in_another_file_is_tests_too() {
     let (_tmp, root) = rust_cfg_test_fixture();
     easement(&root, &["check"])
         .code(1)
-        .stdout(contains("src/store/mod.rs"))
-        .stdout(contains("`#[cfg(test)] mod name;`"));
+        .stdout(contains("src/store/extra.rs").not())
+        .stdout(contains("1 violation(s)"));
+}
+
+/// A module file easement cannot find is said, not silently judged as the file's.
+#[test]
+fn a_cfg_test_module_whose_file_is_missing_is_flagged_as_not_seen() {
+    let (_tmp, root) = rust_cfg_test_fixture();
+    fs::remove_file(root.join("src/store/extra.rs")).unwrap();
     let out = easement(&root, &["check", "--format", "json"]);
     let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
     let partial = report["stats"]["parts_partial"].as_array().unwrap();

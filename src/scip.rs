@@ -612,12 +612,25 @@ fn ruby_use(
     };
     Some(SymbolRef {
         file: PathBuf::from(path),
+        from: Unit::from(path),
         line: reference.line,
         specifier: outer.join("::"),
         name: name.to_string(),
         method: method.map(|method| (qualified, method)),
         target,
     })
+}
+
+/// The node of `document` that `line` is in: a part of the file, or the file.
+fn unit_at(document: &Document, line: usize) -> Unit {
+    match document
+        .parts
+        .iter()
+        .find(|span| span.lines.contains(&line))
+    {
+        Some(span) => Unit::in_part(Path::new(&document.path), span.part.clone()),
+        None => Unit::from(document.path.as_str()),
+    }
 }
 
 /// Dependencies and symbol uses of the documents.
@@ -848,6 +861,7 @@ pub fn facts_watching(
                     };
                     uses.push(SymbolRef {
                         file: PathBuf::from(&document.path),
+                        from: unit_at(document, reference.line),
                         line: reference.line,
                         specifier: parsed.qualifier(home),
                         name,
@@ -955,6 +969,7 @@ mod tests {
         let testkit = "rust-analyzer cargo testkit 0.1.0 crate/";
         let mut document = doc("src/blob_db.rs", &[], &[(1, testkit), (9, testkit)]);
         document.parts = crate::lang::parts::rust(
+            "src/blob_db.rs",
             "pub fn open() {}\n\n#[cfg(test)]\nmod tests {\n    fn a() {}\n    fn b() {}\n    fn c() {}\n    fn d() {}\n    fn e() {}\n}\n",
         )
         .spans;
@@ -967,6 +982,20 @@ mod tests {
             found,
             [(1, false, "src/blob_db.rs"), (9, true, "src/blob_db.rs")]
         );
+    }
+
+    #[test]
+    fn a_symbol_used_in_a_cfg_test_part_leaves_the_part() {
+        let tablet = "rust-analyzer cargo testkit 0.1.0 tablet().";
+        let mut document = doc("src/blob_db.rs", &[], &[(1, tablet), (9, tablet)]);
+        document.parts = crate::lang::parts::rust(
+            "src/blob_db.rs",
+            "pub fn open() {}\n\n#[cfg(test)]\nmod tests {\n    fn a() {}\n    fn b() {}\n    fn c() {}\n    fn d() {}\n    fn e() {}\n}\n",
+        )
+        .spans;
+        let uses = facts(&[document], &[], true).symbols;
+        let found: Vec<_> = uses.iter().map(|u| (u.line, u.from.is_test())).collect();
+        assert_eq!(found, [(1, false), (9, true)]);
     }
 
     #[test]

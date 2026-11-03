@@ -45,7 +45,7 @@ pub struct Language {
     pub manifest: Option<Manifest>,
     /// Finds the parts of a source file that a dependency belongs to instead of the
     /// file, for example the code of a test build. `None` when the file is one unit.
-    pub parts: Option<fn(&str) -> Found>,
+    pub parts: Option<fn(&str, &str) -> Found>,
 }
 
 const TYPESCRIPT_EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"];

@@ -263,6 +263,8 @@ pub struct Stats {
 pub struct SymbolRef {
     pub file: std::path::PathBuf,
     pub line: usize,
+    /// The node the use is in: the file, or a part of it that only a test build has.
+    pub from: crate::lang::Unit,
     pub specifier: String,
     pub name: String,
     /// The method of `name` that is called, with what `forbid_symbol` names it
@@ -1069,7 +1071,7 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
     let mut found = Vec::new();
     for used in uses {
         let file = slash(&used.file);
-        let owner = map.component_of(&file);
+        let owner = map.component_of_unit(&used.from);
         // A file that belongs to no component is judged by the top-level list alone.
         let from = owner.unwrap_or_default();
         let mut report = |message: String, target: String, to: &str, because: Option<&str>| {
@@ -1996,5 +1998,47 @@ rules:
         );
         assert!(cycles(&config("[a, b]"), &edges).is_empty());
         assert!(cycles(&config("false"), &edges).is_empty());
+    }
+
+    #[test]
+    fn a_symbol_used_in_test_code_is_judged_as_tests_not_as_the_file() {
+        use crate::lang::parts::{Kind, Part};
+        let config: Config = serde_norway::from_str(
+            "version: 1
+components:
+  store: { in: src/store.rs }
+tests: auto
+rules:
+  store: { forbid_symbol: [testkit.Clock] }
+",
+        )
+        .unwrap();
+        let map = ComponentMap::new(&config).unwrap();
+        let used = |from: crate::lang::Unit| SymbolRef {
+            file: "src/store.rs".into(),
+            from,
+            line: 3,
+            specifier: "testkit".into(),
+            name: "Clock".into(),
+            method: None,
+            target: Some(Target::External("testkit".into())),
+        };
+        let test_code = crate::lang::Unit::in_part(
+            std::path::Path::new("src/store.rs"),
+            Part {
+                name: "cfg(test)".into(),
+                kind: Some(Kind::Test),
+            },
+        );
+        assert_eq!(
+            symbols(
+                &config,
+                &map,
+                &[used(crate::lang::Unit::from("src/store.rs"))]
+            )
+            .len(),
+            1
+        );
+        assert!(symbols(&config, &map, &[used(test_code)]).is_empty());
     }
 }

@@ -219,6 +219,8 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         .filter(|d| project.contains(d.path.as_str()) || excluded.contains(&d.path))
         .partition(|d| project.contains(d.path.as_str()));
     let mut parts_doubts: Vec<(String, lang::parts::Doubt)> = Vec::new();
+    // (the file that declares them, the files a test-only module may be in)
+    let mut declared_files: Vec<(String, Vec<String>)> = Vec::new();
     for document in &mut documents {
         let Some(find) = lang::registry::of(&document.path).and_then(|language| language.parts)
         else {
@@ -226,11 +228,23 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         };
         match std::fs::read_to_string(root.join(&document.path)) {
             Ok(source) => {
-                let found = find(&source);
+                let found = find(&document.path, &source);
                 document.parts = found.spans;
                 parts_doubts.extend(found.doubts.into_iter().map(|d| (document.path.clone(), d)));
+                declared_files.extend(found.files.into_iter().map(|f| (document.path.clone(), f)));
             }
             Err(_) => parts_doubts.push((document.path.clone(), lang::parts::Doubt::Unreadable)),
+        }
+    }
+    // A module that only a test build has is test code as a whole, in its own file.
+    for (declaring, candidates) in declared_files {
+        match candidates.iter().find(|c| project.contains(c.as_str())) {
+            Some(file) => {
+                if let Some(document) = documents.iter_mut().find(|d| d.path == *file) {
+                    document.parts = vec![lang::parts::Span::whole_file(lang::parts::Kind::Test)];
+                }
+            }
+            None => parts_doubts.push((declaring, lang::parts::Doubt::ModuleInAnotherFile)),
         }
     }
     for document in documents
