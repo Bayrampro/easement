@@ -17,11 +17,49 @@ pub struct Import {
     pub line: usize,
 }
 
+/// A node of the dependency graph: a file or a package directory inside the
+/// project (what a Go import names), relative to the root. A dependency leaves
+/// one and reaches one; the file and line it is written at are its place, kept
+/// apart in [`crate::scan::Dep`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Unit {
+    path: PathBuf,
+}
+
+impl Unit {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The path with `/` separators, as components and rules read it.
+    pub fn key(&self) -> String {
+        crate::scan::slash(&self.path)
+    }
+}
+
+impl From<PathBuf> for Unit {
+    fn from(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl From<&Path> for Unit {
+    fn from(path: &Path) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+impl From<&str> for Unit {
+    fn from(path: &str) -> Self {
+        Self { path: path.into() }
+    }
+}
+
 /// Where an import points to after resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    /// A file or package directory inside the project, relative to the root.
-    Internal(PathBuf),
+    /// A file or package directory inside the project.
+    Internal(Unit),
     /// A third-party or standard-library module.
     External(String),
 }

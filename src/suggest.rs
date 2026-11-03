@@ -4,7 +4,7 @@ use crate::check::Edge;
 use crate::components::ComponentMap;
 use crate::config::Config;
 use crate::lang::Target;
-use crate::scan::{Dep, slash};
+use crate::scan::Dep;
 
 /// What the current dependency graph says about the config: allowances nothing
 /// uses, imports nothing allows, and components that look isolated already.
@@ -223,7 +223,7 @@ fn isolation_candidates(
         let Target::Internal(target) = &dep.target else {
             continue;
         };
-        let (file, target) = (slash(&dep.file), slash(target));
+        let (file, target) = (dep.from.key(), target.key());
         let Some((key, here)) = locate(&file) else {
             continue;
         };
@@ -261,10 +261,11 @@ mod tests {
 
     fn dep(file: &str, target: &str) -> Dep {
         Dep {
+            from: file.into(),
             file: PathBuf::from(file),
             line: 1,
             specifier: String::new(),
-            target: Target::Internal(PathBuf::from(target)),
+            target: Target::Internal(target.into()),
         }
     }
 

@@ -9,17 +9,21 @@ use ignore::WalkBuilder;
 use crate::check::SymbolRef;
 use crate::config::Config;
 use crate::indexer;
-use crate::lang::{self, Import, Target};
+use crate::lang::{self, Import, Target, Unit};
 use crate::scip;
 use crate::suppress::{self, Suppression};
 
 /// A resolved dependency of one project file.
 #[derive(Debug, Clone)]
 pub struct Dep {
+    /// Where it is written: diff mode, suppressions, the baseline and the
+    /// report read the file and the line.
     pub file: PathBuf,
     pub line: usize,
     pub specifier: String,
     pub target: Target,
+    /// The node it leaves: the file itself.
+    pub from: Unit,
 }
 
 /// What was read from a file, valid while its size and modification time stay the same.
@@ -181,6 +185,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         suppressions.extend(parsed.suppressions.iter().cloned());
         for import in &parsed.imports {
             deps.push(Dep {
+                from: Unit::from(rel.as_path()),
                 file: rel.clone(),
                 line: import.line,
                 specifier: import.specifier.clone(),
@@ -268,7 +273,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         // A use of a name an excluded file defines adds nothing: its import
         // already fails as `excluded`.
         .filter(|symbol| {
-            !matches!(&symbol.target, Some(Target::Internal(path)) if exclude.is_match(path))
+            !matches!(&symbol.target, Some(Target::Internal(unit)) if exclude.is_match(unit.path()))
         })
         .collect();
     Ok(Scan {

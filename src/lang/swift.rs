@@ -101,7 +101,7 @@ impl Adapter for Swift {
     fn resolve(&self, _file: &Path, specifier: &str) -> Target {
         let module = specifier.split('.').next().unwrap_or(specifier);
         match self.modules.get(module) {
-            Some(dir) => Target::Internal(dir.clone()),
+            Some(dir) => Target::Internal(dir.clone().into()),
             None => Target::External(specifier.to_string()),
         }
     }

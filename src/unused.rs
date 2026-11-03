@@ -371,6 +371,7 @@ mod tests {
         assert!(reached.contains("pkg/sub/__init__.py"));
         assert!(reached.contains("pkg/__init__.py"));
         let deps = [Dep {
+            from: "x.go".into(),
             file: "x.go".into(),
             line: 1,
             specifier: String::new(),

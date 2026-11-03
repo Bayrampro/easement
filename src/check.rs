@@ -294,7 +294,7 @@ pub fn evaluate(
         // Violations and edges come from the whole project; the counters follow the scope.
         let counted = scope.contains(map, &file);
         let target = match &dep.target {
-            Target::Internal(path) => slash(path),
+            Target::Internal(unit) => unit.key(),
             Target::External(module) => {
                 stats.external_deps += usize::from(counted);
                 if let Some(from) = map.component_of(&file)
@@ -694,11 +694,11 @@ pub fn file_graph(deps: &[Dep], files: &[String]) -> BTreeMap<String, BTreeSet<(
     let files = Files::new(files);
     let mut graph: BTreeMap<String, BTreeSet<(String, usize)>> = BTreeMap::new();
     for dep in deps {
-        let Target::Internal(path) = &dep.target else {
+        let Target::Internal(unit) = &dep.target else {
             continue;
         };
-        let out = graph.entry(slash(&dep.file)).or_default();
-        for target in files.targets(&slash(path)) {
+        let out = graph.entry(dep.from.key()).or_default();
+        for target in files.targets(&unit.key()) {
             out.insert((target.to_string(), dep.line));
         }
     }
@@ -729,14 +729,14 @@ fn symbol_graph(
             .insert((edge.to.key(), edge.line));
     }
     for dep in deps {
-        let Target::Internal(path) = &dep.target else {
+        let Target::Internal(unit) = &dep.target else {
             continue;
         };
-        let file = slash(&dep.file);
+        let file = dep.from.key();
         // Each file the import names that no reference at its line reaches is reached
         // whole, as the other files of a Go package are: they run on import too.
         let targets: Vec<&str> = files
-            .targets(&slash(path))
+            .targets(&unit.key())
             .into_iter()
             .filter(|target| !covered.contains(&(file.as_str(), dep.line, *target)))
             .collect();
@@ -945,7 +945,7 @@ pub fn required(
         }
     }
     for dep in deps {
-        let file = slash(&dep.file);
+        let file = dep.from.key();
         let Some(component) = map.component_of(&file) else {
             continue;
         };
@@ -954,7 +954,7 @@ pub fn required(
         };
         match &dep.target {
             Target::Internal(target) => {
-                if let Some(to) = map.component_of(&slash(target)) {
+                if let Some(to) = map.component_of(&target.key()) {
                     unit.components.insert(to.to_string());
                 }
             }
@@ -1112,8 +1112,8 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
             }
         }
         if owner.is_some()
-            && let Some(Target::Internal(path)) = &used.target
-            && let Some(to) = map.component_of(&slash(path))
+            && let Some(Target::Internal(unit)) = &used.target
+            && let Some(to) = map.component_of(&unit.key())
             && to != from
             && let Some(public) = &config.components[to].public_symbols
             && !public.contains(&used.name)
@@ -1730,6 +1730,7 @@ rules:
         .unwrap();
         let map = ComponentMap::new(&config).unwrap();
         let dep = |from: &str, to: &str, line| Dep {
+            from: from.into(),
             file: from.into(),
             line,
             specifier: String::new(),
@@ -1773,6 +1774,7 @@ rules:
         .unwrap();
         let map = ComponentMap::new(&config).unwrap();
         let dep = |from: &str, to: &str, line| Dep {
+            from: from.into(),
             file: from.into(),
             line,
             specifier: String::new(),
@@ -1850,6 +1852,7 @@ rules:
         .unwrap();
         let map = ComponentMap::new(&config).unwrap();
         let dep = |from: &str, to: &str, line| Dep {
+            from: from.into(),
             file: from.into(),
             line,
             specifier: String::new(),

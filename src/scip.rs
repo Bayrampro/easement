@@ -18,8 +18,8 @@ use protobuf::Message;
 use scip::types::{Index, Occurrence, PositionEncoding, occurrence::Typed_range};
 
 use crate::check::SymbolRef;
-use crate::lang::Target;
 use crate::lang::registry::Manifest;
+use crate::lang::{Target, Unit};
 use crate::scan::Dep;
 
 /// `SymbolRole::Definition` in the bitset of an occurrence.
@@ -603,7 +603,7 @@ fn ruby_use(
     }
     let qualified = names.join("::");
     let target = match home {
-        Some(file) => Some(Target::Internal(PathBuf::from(file))),
+        Some(file) => Some(Target::Internal(Unit::from(*file))),
         None if defined.contains_key(class.as_str()) => None,
         None => Some(Target::External(qualified.clone())),
     };
@@ -833,7 +833,7 @@ pub fn facts_watching(
                         continue;
                     }
                     let target = match home {
-                        Some(path) => Target::Internal(PathBuf::from(path)),
+                        Some(path) => Target::Internal(Unit::from(path)),
                         None => Target::External(parsed.external_module()),
                     };
                     uses.push(SymbolRef {
@@ -849,10 +849,11 @@ pub fn facts_watching(
         }
         for ((internal, module), line) in first {
             let (specifier, target) = match internal {
-                Some(path) => (path.to_string(), Target::Internal(PathBuf::from(path))),
+                Some(path) => (path.to_string(), Target::Internal(Unit::from(path))),
                 None => (module.clone(), Target::External(module)),
             };
             deps.push(Dep {
+                from: Unit::from(document.path.as_str()),
                 file: PathBuf::from(&document.path),
                 line,
                 specifier,
@@ -1035,7 +1036,7 @@ mod tests {
                 )
             })
             .collect();
-        let db = || Some(Target::Internal(PathBuf::from("lib/shop/db/client.rb")));
+        let db = || Some(Target::Internal(Unit::from("lib/shop/db/client.rb")));
         let method = |m: &str| Some(m.to_string());
         assert_eq!(
             uses,
@@ -1073,7 +1074,7 @@ mod tests {
                     14,
                     ".Shop".into(),
                     method("Shop.config"),
-                    Some(Target::Internal(PathBuf::from("lib/shop.rb")))
+                    Some(Target::Internal(Unit::from("lib/shop.rb")))
                 ),
             ]
         );
@@ -1150,7 +1151,7 @@ mod tests {
                 (
                     "internal/handlers/h.go",
                     6,
-                    Target::Internal(PathBuf::from("internal/db/db.go"))
+                    Target::Internal(Unit::from("internal/db/db.go"))
                 ),
             ]
         );
@@ -1178,11 +1179,11 @@ mod tests {
             vec![
                 (
                     "internal/handlers/h.go".to_string(),
-                    Target::Internal(PathBuf::from("gen/gen.go"))
+                    Target::Internal(Unit::from("gen/gen.go"))
                 ),
                 (
                     "internal/handlers/h.go".to_string(),
-                    Target::Internal(PathBuf::from("internal/db/db.go"))
+                    Target::Internal(Unit::from("internal/db/db.go"))
                 ),
             ]
         );
@@ -1207,7 +1208,7 @@ mod tests {
         assert_eq!(uses[0].specifier, "example.com/app/internal/db");
         assert_eq!(
             uses[0].target,
-            Some(Target::Internal(PathBuf::from("internal/db/db.go")))
+            Some(Target::Internal(Unit::from("internal/db/db.go")))
         );
         assert_eq!(uses[1].target, Some(Target::External("fmt".into())));
         assert!(facts(&documents, &[], false).symbols.is_empty());
@@ -1240,7 +1241,7 @@ mod tests {
             got,
             vec![
                 (5, Target::External("Illuminate\\Support\\Str".into())),
-                (4, Target::Internal(PathBuf::from("src/Domain/Order.php"))),
+                (4, Target::Internal(Unit::from("src/Domain/Order.php"))),
             ]
         );
     }
