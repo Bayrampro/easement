@@ -2,7 +2,7 @@
 //! Adding a language is one entry here, plus an indexer in `indexer::INDEXERS`
 //! or an adapter in this module; the rules ask this table, never an extension.
 
-use super::parts::{self, Span};
+use super::parts::{self, Found};
 use crate::relpath;
 use crate::stdlib;
 
@@ -45,7 +45,7 @@ pub struct Language {
     pub manifest: Option<Manifest>,
     /// Finds the parts of a source file that a dependency belongs to instead of the
     /// file, for example the code of a test build. `None` when the file is one unit.
-    pub parts: Option<fn(&str) -> Vec<Span>>,
+    pub parts: Option<fn(&str) -> Found>,
 }
 
 const TYPESCRIPT_EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"];

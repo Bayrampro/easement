@@ -956,7 +956,8 @@ mod tests {
         let mut document = doc("src/blob_db.rs", &[], &[(1, testkit), (9, testkit)]);
         document.parts = crate::lang::parts::rust(
             "pub fn open() {}\n\n#[cfg(test)]\nmod tests {\n    fn a() {}\n    fn b() {}\n    fn c() {}\n    fn d() {}\n    fn e() {}\n}\n",
-        );
+        )
+        .spans;
         let deps = facts(&[document], &[], false).deps;
         let found: Vec<_> = deps
             .iter()

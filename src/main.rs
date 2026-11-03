@@ -290,6 +290,9 @@ impl Project {
         }
         stats.unused_partial = unused.reasons;
         stats.manifests_partial = undeclared.reasons;
+        if self.config.tests.is_some() {
+            stats.parts_partial = parts_reasons(&scan.parts_doubts);
+        }
         stats.symbols_partial = check::symbols_partial(&self.config, &map, &scan.unnamed_uses);
         // Only a whole index can tell a name that matches nothing: files it did not
         // cover, names it left unnamed and languages without an index may hold it.
@@ -774,6 +777,34 @@ fn main() -> ExitCode {
 /// repository keeps it in `easement.schema.json`.
 fn schema_text() -> String {
     serde_json::to_string_pretty(&config::schema()).expect("a schema is JSON")
+}
+
+/// How many files a line about test code that was not told apart names.
+const PARTS_SHOWN: usize = 3;
+
+/// One line for each kind of doubt about test code, with the files it holds.
+fn parts_reasons(doubts: &[(String, lang::parts::Doubt)]) -> Vec<String> {
+    let mut by_kind: std::collections::BTreeMap<lang::parts::Doubt, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for (file, doubt) in doubts {
+        by_kind.entry(*doubt).or_default().push(file);
+    }
+    by_kind
+        .into_iter()
+        .map(|(doubt, mut files)| {
+            files.sort_unstable();
+            let mut named = files
+                .iter()
+                .take(PARTS_SHOWN)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            if files.len() > PARTS_SHOWN {
+                named.push_str(&format!(" and {} more", files.len() - PARTS_SHOWN));
+            }
+            doubt.reason(&named)
+        })
+        .collect()
 }
 
 #[cfg(test)]

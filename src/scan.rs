@@ -86,6 +86,8 @@ pub struct Scan {
     /// Checked files that use a name of a package the indexer left unnamed,
     /// which no rule on names judged.
     pub unnamed_uses: Vec<String>,
+    /// Files whose test code a finder of parts could not tell from the file's.
+    pub parts_doubts: Vec<(String, lang::parts::Doubt)>,
     /// The qualifier and name of the symbols the index knows under a name that
     /// `forbid_symbol` lists, and whether that list is whole.
     pub known_symbols: (Vec<(String, String)>, bool),
@@ -214,11 +216,19 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         .into_iter()
         .filter(|d| project.contains(d.path.as_str()) || excluded.contains(&d.path))
         .partition(|d| project.contains(d.path.as_str()));
+    let mut parts_doubts: Vec<(String, lang::parts::Doubt)> = Vec::new();
     for document in &mut documents {
-        if let Some(find) = lang::registry::of(&document.path).and_then(|language| language.parts)
-            && let Ok(source) = std::fs::read_to_string(root.join(&document.path))
-        {
-            document.parts = find(&source);
+        let Some(find) = lang::registry::of(&document.path).and_then(|language| language.parts)
+        else {
+            continue;
+        };
+        match std::fs::read_to_string(root.join(&document.path)) {
+            Ok(source) => {
+                let found = find(&source);
+                document.parts = found.spans;
+                parts_doubts.extend(found.doubts.into_iter().map(|d| (document.path.clone(), d)));
+            }
+            Err(_) => parts_doubts.push((document.path.clone(), lang::parts::Doubt::Unreadable)),
         }
     }
     for document in documents
@@ -294,6 +304,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         suppressions,
         uncovered: indexed.uncovered,
         unnamed_uses,
+        parts_doubts,
         known_symbols,
         indexed: (indexed.ran, indexed.cached),
         flow,

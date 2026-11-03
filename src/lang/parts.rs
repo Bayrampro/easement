@@ -29,13 +29,21 @@ pub struct Span {
 /// The `#[cfg(test)]` items of a Rust source: the attribute, then the item up
 /// to its closing brace (or its `;`). `mod tests;` is no part: its code is in
 /// another file.
-pub fn rust(source: &str) -> Vec<Span> {
+pub fn rust(source: &str) -> Found {
     let masked = mask_rust(source.as_bytes());
     let Ok(text) = std::str::from_utf8(&masked) else {
-        return Vec::new();
+        return Found {
+            spans: Vec::new(),
+            doubts: vec![Doubt::Unreadable],
+        };
     };
     let attribute = Regex::new(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]").expect("valid regex");
+    let whole_file = Regex::new(r"#!\[\s*cfg\s*\(\s*test\s*\)\s*\]").expect("valid regex");
     let mut spans: Vec<Span> = Vec::new();
+    let mut doubts: Vec<Doubt> = Vec::new();
+    if whole_file.is_match(text) {
+        doubts.push(Doubt::WholeFile);
+    }
     for found in attribute.find_iter(text) {
         // An item nested in a part that was found already is part of it.
         if spans
@@ -44,17 +52,71 @@ pub fn rust(source: &str) -> Vec<Span> {
         {
             continue;
         }
-        if let Some(end) = item_end(&masked, found.end()) {
-            spans.push(Span {
+        match item_end(&masked, found.end()) {
+            Item::Ends(end) => spans.push(Span {
                 lines: line_of(&masked, found.start())..=line_of(&masked, end),
                 part: Part {
                     name: "cfg(test)".to_string(),
                     kind: Some(Kind::Test),
                 },
-            });
+            }),
+            Item::Module => doubts.push(Doubt::ModuleInAnotherFile),
+            Item::Unbalanced => doubts.push(Doubt::Unbalanced),
+            Item::Member => {}
         }
     }
-    spans
+    doubts.dedup();
+    Found { spans, doubts }
+}
+
+/// What a finder found in a source, and what it could not tell.
+#[derive(Debug, Default)]
+pub struct Found {
+    pub spans: Vec<Span>,
+    pub doubts: Vec<Doubt>,
+}
+
+/// Why test code of a file may be judged as the file's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Doubt {
+    /// The source is not valid UTF-8.
+    Unreadable,
+    /// An item whose end was not found (the braces do not match).
+    Unbalanced,
+    /// `#[cfg(test)] mod name;`: the code is in another file.
+    ModuleInAnotherFile,
+    /// `#![cfg(test)]`: the whole file is test code.
+    WholeFile,
+}
+
+impl Doubt {
+    /// The line of the report for the `files` that share it.
+    pub fn reason(self, files: &str) -> String {
+        match self {
+            Doubt::Unreadable => format!(
+                "{files}: not valid UTF-8, so their `#[cfg(test)]` code is judged as the file's, not as `tests`"
+            ),
+            Doubt::Unbalanced => format!(
+                "{files}: easement could not find the end of a `#[cfg(test)]` item (the braces do not match), so it is judged as the file's, not as `tests`"
+            ),
+            Doubt::ModuleInAnotherFile => format!(
+                "{files}: `#[cfg(test)] mod name;` names a file that is judged as its component's, not as `tests`; put the test code in the file itself to have it judged as `tests`"
+            ),
+            Doubt::WholeFile => format!(
+                "{files}: `#![cfg(test)]` makes the whole file test code, but it is judged as its component's, not as `tests`"
+            ),
+        }
+    }
+}
+
+/// How the item after a `#[cfg(test)]` attribute ends.
+enum Item {
+    Ends(usize),
+    /// `mod name;`
+    Module,
+    /// A field, an argument, an arm: no item an attribute governs as a part.
+    Member,
+    Unbalanced,
 }
 
 /// `source` with the inside of comments, strings and characters blanked, so
@@ -183,8 +245,8 @@ fn line_of(source: &[u8], at: usize) -> usize {
 }
 
 /// The byte at which the item after the attribute that ends at `from` ends:
-/// its closing brace, or its `;`. `None` for `mod name;`, which holds no code.
-fn item_end(code: &[u8], from: usize) -> Option<usize> {
+/// its closing brace, or its `;`.
+fn item_end(code: &[u8], from: usize) -> Item {
     let mut i = from;
     // Skip the other attributes of the item.
     loop {
@@ -212,7 +274,7 @@ fn item_end(code: &[u8], from: usize) -> Option<usize> {
     }
     let item = i;
     if !starts_item(&code[item..]) {
-        return None;
+        return Item::Member;
     }
     let mut nesting = 0;
     while i < code.len() {
@@ -220,9 +282,13 @@ fn item_end(code: &[u8], from: usize) -> Option<usize> {
             b'(' | b'[' => nesting += 1,
             b')' | b']' => nesting -= 1,
             b';' if nesting == 0 => {
-                return (!is_module(&code[item..i])).then_some(i);
+                return if is_module(&code[item..i]) {
+                    Item::Module
+                } else {
+                    Item::Ends(i)
+                };
             }
-            b'}' if nesting == 0 => return None,
+            b'}' if nesting == 0 => return Item::Unbalanced,
             b'{' if nesting == 0 => {
                 let mut depth = 0;
                 while i < code.len() {
@@ -231,20 +297,20 @@ fn item_end(code: &[u8], from: usize) -> Option<usize> {
                         b'}' => {
                             depth -= 1;
                             if depth == 0 {
-                                return Some(i);
+                                return Item::Ends(i);
                             }
                         }
                         _ => {}
                     }
                     i += 1;
                 }
-                return None;
+                return Item::Unbalanced;
             }
             _ => {}
         }
         i += 1;
     }
-    None
+    Item::Unbalanced
 }
 
 /// Whether `code` starts an item, after its visibility and qualifiers, and not a field,
@@ -290,13 +356,17 @@ mod tests {
     use super::*;
 
     fn lines(source: &str) -> Vec<RangeInclusive<usize>> {
-        rust(source).into_iter().map(|span| span.lines).collect()
+        rust(source)
+            .spans
+            .into_iter()
+            .map(|span| span.lines)
+            .collect()
     }
 
     #[test]
     fn a_cfg_test_module_is_a_test_part_from_its_attribute_to_its_closing_brace() {
         let source = "pub fn run() {}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n}\n\npub fn after() {}\n";
-        let spans = rust(source);
+        let spans = rust(source).spans;
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].lines, 3..=6);
         assert_eq!(spans[0].part.name, "cfg(test)");
@@ -367,5 +437,27 @@ mod tests {
         let source =
             "#[cfg(test)]\npub(crate) fn a() {\n}\n#[cfg(test)]\nunsafe impl Send for S {\n}\n";
         assert_eq!(lines(source), [1..=3, 4..=6]);
+    }
+
+    #[test]
+    fn what_the_finder_could_not_tell_it_says() {
+        assert_eq!(
+            rust("#[cfg(test)]\nmod tests {\n    fn a() {\n}\n").doubts,
+            [Doubt::Unbalanced]
+        );
+        assert_eq!(
+            rust("#[cfg(test)]\nmod tests;\n").doubts,
+            [Doubt::ModuleInAnotherFile]
+        );
+        assert_eq!(
+            rust("#![cfg(test)]\nfn a() {}\n").doubts,
+            [Doubt::WholeFile]
+        );
+        assert!(rust("#[cfg(test)]\nmod tests {\n}\n").doubts.is_empty());
+        assert!(
+            rust("struct S {\n    #[cfg(test)]\n    f: u8,\n}\n")
+                .doubts
+                .is_empty()
+        );
     }
 }

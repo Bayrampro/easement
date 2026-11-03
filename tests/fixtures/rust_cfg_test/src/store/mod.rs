@@ -13,3 +13,6 @@ mod tests {
         let _ = Clock;
     }
 }
+
+#[cfg(test)]
+mod extra;

@@ -230,6 +230,9 @@ pub struct Stats {
     /// Why `manifests` left some imports unchecked.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub manifests_partial: Vec<String>,
+    /// Test code that `tests: auto` could not take out of the file it sits in.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parts_partial: Vec<String>,
     /// Why `forbid_symbol` left some uses of names unchecked.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub symbols_partial: Vec<String>,

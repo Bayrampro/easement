@@ -1351,9 +1351,8 @@ fn rust_resolves_the_module_tree() {
 /// A crate's unit tests sit in the file they test, and the dev-dependency they use
 /// is not a dependency of the crate: only the line outside `#[cfg(test)]` is judged
 /// as the file's.
-#[test]
-fn rust_cfg_test_code_is_tests_not_the_file_it_sits_in() {
-    let (_tmp, root) = fixture("rust_cfg_test");
+fn rust_cfg_test_fixture() -> (TempDir, PathBuf) {
+    let (tmp, root) = fixture("rust_cfg_test");
     fs::write(
         root.join("Cargo.toml"),
         "[package]\nname = \"shop\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dev-dependencies]\ntestkit = { path = \"testkit\" }\n\n[dependencies]\ntestkit = { path = \"testkit\" }\n",
@@ -1364,6 +1363,12 @@ fn rust_cfg_test_code_is_tests_not_the_file_it_sits_in() {
         "[package]\nname = \"testkit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     )
     .unwrap();
+    (tmp, root)
+}
+
+#[test]
+fn rust_cfg_test_code_is_tests_not_the_file_it_sits_in() {
+    let (_tmp, root) = rust_cfg_test_fixture();
     easement(&root, &["check"])
         .code(1)
         .stdout(contains(
@@ -1371,6 +1376,21 @@ fn rust_cfg_test_code_is_tests_not_the_file_it_sits_in() {
         ))
         .stdout(contains("src/store/ok.rs").not())
         .stdout(contains("1 violation(s)"));
+}
+
+/// Test code the finder cannot see is said, not silently judged as the file's.
+#[test]
+fn a_cfg_test_module_in_another_file_is_flagged_as_not_seen() {
+    let (_tmp, root) = rust_cfg_test_fixture();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("src/store/mod.rs"))
+        .stdout(contains("`#[cfg(test)] mod name;`"));
+    let out = easement(&root, &["check", "--format", "json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let partial = report["stats"]["parts_partial"].as_array().unwrap();
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    assert!(partial[0].as_str().unwrap().contains("src/store/mod.rs"));
 }
 
 #[test]
