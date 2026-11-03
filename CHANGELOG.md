@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.7](https://github.com/mokevnin/easement/compare/v0.4.6...v0.4.7) (2026-11-03)
+
+
+### Features
+
+* say when a `forbid_symbol` name can never fire because a deeper namespace defines it ([580369f](https://github.com/mokevnin/easement/commit/580369f54e38aa32db37f2b9c8f3b826f5ede352)), closes [#56](https://github.com/mokevnin/easement/issues/56)
+
+
+### Bug Fixes
+
+* name `unowned` and a component as the way out of an `excluded` import ([eb36493](https://github.com/mokevnin/easement/commit/eb36493a0320bb349e39512ff620199731509616)), closes [#59](https://github.com/mokevnin/easement/issues/59)
+
 ## [0.4.6](https://github.com/mokevnin/easement/compare/v0.4.5...v0.4.6) (2026-11-03)
 
 
