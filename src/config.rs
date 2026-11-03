@@ -120,6 +120,12 @@ pub struct Config {
     /// Fail on dependency cycles between components: true for all, or a list of components.
     #[serde(default)]
     pub no_cycles: NoCycles,
+    /// What `must_not_reach` follows: `files` (the default) takes an import for everything
+    /// its file imports; `symbols` follows the definitions a call references, so calling
+    /// one pure method does not reach what another method of its file uses. A file the
+    /// index gave no ranges keeps reaching as a whole.
+    #[serde(default)]
+    pub reach: Reach,
     /// Components from the top layer to the bottom one: a layer may depend on any layer below
     /// it, never on one above. A list in place of a name holds sibling components of one
     /// layer, which do not depend on each other; {name, closed: true} is a layer the ones
@@ -393,6 +399,15 @@ impl Patterns {
             Patterns::Many(ps) => ps.iter().map(String::as_str).collect(),
         }
     }
+}
+
+/// What a chain of `must_not_reach` follows.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Reach {
+    #[default]
+    Files,
+    Symbols,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]

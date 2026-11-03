@@ -6,6 +6,7 @@ mod diagram;
 mod diff;
 mod doctor;
 mod explain;
+mod flow;
 mod graph;
 mod impact;
 mod indexer;
@@ -244,6 +245,7 @@ impl Project {
             &map,
             &scan.deps,
             &scan.all_files,
+            scan.flow.as_ref(),
         ));
         violations.extend(check::metrics(&self.config, &edges));
         violations.extend(check::orphans(&self.config, &map, &scan.paths));

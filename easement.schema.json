@@ -102,6 +102,14 @@
         }
       ]
     },
+    "reach": {
+      "description": "What `must_not_reach` follows: `files` (the default) takes an import for everything its file imports; `symbols` follows the definitions a call references, so calling one pure method does not reach what another method of its file uses. A file the index gave no ranges keeps reaching as a whole.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Reach"
+        }
+      ]
+    },
     "rules": {
       "description": "Per component: what it may depend on and use.",
       "type": "object",
@@ -429,6 +437,14 @@
           },
           "minItems": 1
         }
+      ]
+    },
+    "Reach": {
+      "description": "What a chain of `must_not_reach` follows.",
+      "type": "string",
+      "enum": [
+        "files",
+        "symbols"
       ]
     },
     "Reasoned": {

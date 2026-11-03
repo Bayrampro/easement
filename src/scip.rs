@@ -51,6 +51,33 @@ pub struct Document {
     /// The types this file defines (classes, structs, interfaces, traits),
     /// by name and 1-based line.
     pub types: Vec<(String, usize)>,
+    /// The methods and functions this file defines that the index gave a range.
+    pub scopes: Vec<Scope>,
+}
+
+/// A method or function with the lines it spans, 1-based and inclusive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scope {
+    pub symbol: String,
+    pub first: usize,
+    pub last: usize,
+}
+
+/// The first and last line, 0-based, of the enclosing range of an occurrence.
+fn enclosing_lines(occurrence: &Occurrence) -> Option<(usize, usize)> {
+    use scip::types::occurrence::Typed_enclosing_range as Typed;
+    let (first, last) = match (
+        &occurrence.typed_enclosing_range,
+        occurrence.enclosing_range.as_slice(),
+    ) {
+        (Some(Typed::SingleLineEnclosingRange(range)), _) => (range.line, range.line),
+        (Some(Typed::MultiLineEnclosingRange(range)), _) => (range.start_line, range.end_line),
+        (Some(_), _) => return None,
+        (None, [line, _, _]) => (*line, *line),
+        (None, [start, _, end, _]) => (*start, *end),
+        (None, _) => return None,
+    };
+    Some((usize::try_from(first).ok()?, usize::try_from(last).ok()?))
 }
 
 /// The documents of one or more indexes, merged.
@@ -94,6 +121,16 @@ pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
                     && let Some((name, Kind::Type)) = parsed_symbol.descriptors.last()
                 {
                     parsed.types.push((name.clone(), line_of(occurrence) + 1));
+                }
+                // A method or function is `name().`; a parameter is `(name)`.
+                if occurrence.symbol.ends_with(").")
+                    && let Some((first, last)) = enclosing_lines(occurrence)
+                {
+                    parsed.scopes.push(Scope {
+                        symbol: occurrence.symbol.clone(),
+                        first: first + 1,
+                        last: last + 1,
+                    });
                 }
                 parsed.definitions.push(occurrence.symbol.clone());
             } else {
@@ -883,6 +920,7 @@ mod tests {
             path: path.to_string(),
             definitions: defs.iter().map(|s| s.to_string()).collect(),
             types: Vec::new(),
+            scopes: Vec::new(),
             references: refs
                 .iter()
                 .map(|(line, symbol)| Reference {

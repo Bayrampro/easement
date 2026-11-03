@@ -1691,6 +1691,60 @@ fn forbid_symbol_catches_every_way_to_use_a_type() {
 }
 
 #[test]
+fn reach_by_symbols_follows_the_method_a_call_names_not_the_whole_file() {
+    if no_scip_ruby_here() {
+        return;
+    }
+    // `Pure` calls `Document.host`, which only parses; `Document.fetch` and `both` reach `Http`.
+    let (_tmp, root) = fixture("ruby_reach");
+    easement(&root, &["check"]).success();
+    // By files, the same call reaches what `fetch` uses.
+    let config = root.join("easement.yml");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, text.replace("reach: symbols\n", "")).unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("app/models/pure.rb:4: models reaches external"));
+}
+
+#[test]
+fn reach_by_symbols_keeps_a_chain_through_the_method_that_reaches_it() {
+    if no_scip_ruby_here() {
+        return;
+    }
+    let (_tmp, root) = fixture("ruby_reach");
+    fs::write(
+        root.join("app/models/leaky.rb"),
+        "# typed: true\nclass Leaky\n  def run(uid)\n    Document.both(uid)\n  end\nend\n",
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "app/models/leaky.rb:4: models reaches external through no component: app/models/leaky.rb:4 -> app/lib/document.rb:12 -> app/external/http.rb [reach]",
+        ))
+        .stdout(contains("pure.rb").not());
+}
+
+#[test]
+fn reach_by_symbols_keeps_a_chain_when_no_method_is_named() {
+    if no_scip_ruby_here() {
+        return;
+    }
+    // The receiver is opaque to Sorbet, so the index has the class but not the method: any
+    // method of it may be what runs.
+    let (_tmp, root) = fixture("ruby_reach");
+    fs::write(
+        root.join("app/models/opaque.rb"),
+        "# typed: true\nclass Opaque\n  def run(uid)\n    T.unsafe(Document).fetch(uid)\n  end\nend\n",
+    )
+    .unwrap();
+    easement(&root, &["check"]).code(1).stdout(contains(
+        "app/models/opaque.rb:4: models reaches external through no component",
+    ));
+}
+
+#[test]
 fn ruby_symbols_are_constants_and_methods() {
     if no_scip_ruby_here() {
         return;

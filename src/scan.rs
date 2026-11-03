@@ -87,6 +87,9 @@ pub struct Scan {
     pub known_symbols: (Vec<(String, String)>, bool),
     /// Indexers that ran, and indexes taken from the cache.
     pub indexed: (usize, usize),
+    /// With `reach: symbols`, the references of the index by the definition that holds
+    /// them.
+    pub flow: Option<crate::flow::Flow>,
 }
 
 /// Project walker: honours .gitignore (even outside a git checkout) and
@@ -226,6 +229,8 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
             })
         })
         .collect();
+    let flow =
+        (config.reach == crate::config::Reach::Symbols).then(|| crate::flow::build(&documents));
     let facts = scip::facts_watching(
         &documents,
         &hidden,
@@ -279,6 +284,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         unnamed_uses,
         known_symbols,
         indexed: (indexed.ran, indexed.cached),
+        flow,
     })
 }
 

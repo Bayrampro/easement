@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::ComponentMap;
 use crate::config::{Config, Listed};
+use crate::flow::{self, Flow};
 use crate::lang::Target;
 use crate::relpath;
 use crate::scan::{Dep, slash};
@@ -570,6 +571,7 @@ pub fn reaches(
     map: &ComponentMap,
     deps: &[Dep],
     files: &[String],
+    flow: Option<&Flow>,
 ) -> Vec<Violation> {
     let pairs: Vec<(&str, &Listed)> = config
         .rules
@@ -583,11 +585,15 @@ pub fn reaches(
     if pairs.is_empty() {
         return Vec::new();
     }
-    let graph = file_graph(deps, files);
+    let graph = match flow {
+        Some(flow) => symbol_graph(deps, files, flow),
+        None => file_graph(deps, files),
+    };
+    // A node is a file, or with `reach: symbols` a method of one.
     let component: BTreeMap<&str, &str> = graph
         .iter()
         .flat_map(|(f, out)| std::iter::once(f.as_str()).chain(out.iter().map(|(t, _)| t.as_str())))
-        .filter_map(|f| map.component_of(f).map(|c| (f, c)))
+        .filter_map(|f| map.component_of(flow::file_of(f)).map(|c| (f, c)))
         .collect();
     let mut found = Vec::new();
     for (from, to) in pairs {
@@ -603,7 +609,12 @@ pub fn reaches(
         else {
             continue;
         };
-        let (through, chain) = describe_chain(&hops, last, of);
+        let hops: Vec<(String, usize)> = hops
+            .into_iter()
+            .map(|(node, line)| (flow::file_of(&node).to_string(), line))
+            .collect();
+        let last = flow::file_of(last);
+        let (through, chain) = describe_chain(&hops, last, |file| map.component_of(file));
         let (file, line) = hops[0].clone();
         found.push(Violation {
             rule: RuleId::Reach,
@@ -649,28 +660,93 @@ pub fn describe_chain<'a>(
     )
 }
 
+/// The files of a project by directory, and the set of them.
+struct Files<'a> {
+    in_dir: BTreeMap<&'a str, Vec<&'a str>>,
+    known: BTreeSet<&'a str>,
+}
+
+impl<'a> Files<'a> {
+    fn new(files: &'a [String]) -> Self {
+        let mut in_dir: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for file in files {
+            in_dir.entry(relpath::parent(file)).or_default().push(file);
+        }
+        Self {
+            in_dir,
+            known: files.iter().map(String::as_str).collect(),
+        }
+    }
+
+    /// The files an import of `path` names: the file, or one of each file directly in
+    /// a package directory.
+    fn targets(&self, path: &str) -> Vec<&'a str> {
+        match self.known.get(path) {
+            Some(file) => vec![*file],
+            None => self.in_dir.get(path).cloned().unwrap_or_default(),
+        }
+    }
+}
+
 /// Every file -> the files it imports, with the line of the import. An
 /// import of a package directory is one of each file directly in it.
 pub fn file_graph(deps: &[Dep], files: &[String]) -> BTreeMap<String, BTreeSet<(String, usize)>> {
-    let mut in_dir: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for file in files {
-        in_dir.entry(relpath::parent(file)).or_default().push(file);
-    }
-    let known: BTreeSet<&str> = files.iter().map(String::as_str).collect();
+    let files = Files::new(files);
     let mut graph: BTreeMap<String, BTreeSet<(String, usize)>> = BTreeMap::new();
     for dep in deps {
         let Target::Internal(path) = &dep.target else {
             continue;
         };
-        let to = slash(path);
-        let targets = if known.contains(to.as_str()) {
-            vec![to.as_str()]
-        } else {
-            in_dir.get(to.as_str()).cloned().unwrap_or_default()
-        };
         let out = graph.entry(slash(&dep.file)).or_default();
-        for target in targets {
+        for target in files.targets(&slash(path)) {
             out.insert((target.to_string(), dep.line));
+        }
+    }
+    graph
+}
+
+/// The graph of `reach: symbols`: every node (see [`flow::Node::key`]) -> the nodes
+/// its references name, with the line. An import that no reference of its file
+/// accounts for reaches everything in what it names, from the definition that holds
+/// its line.
+fn symbol_graph(
+    deps: &[Dep],
+    files: &[String],
+    flow: &Flow,
+) -> BTreeMap<String, BTreeSet<(String, usize)>> {
+    let files = Files::new(files);
+    let mut graph: BTreeMap<String, BTreeSet<(String, usize)>> = BTreeMap::new();
+    let mut covered: BTreeSet<(&str, usize, &str)> = BTreeSet::new();
+    for edge in &flow.edges {
+        let (from, to) = (edge.from.file.as_str(), edge.to.file.as_str());
+        if !files.known.contains(from) || !files.known.contains(to) {
+            continue;
+        }
+        covered.insert((from, edge.line, to));
+        graph
+            .entry(edge.from.key())
+            .or_default()
+            .insert((edge.to.key(), edge.line));
+    }
+    for dep in deps {
+        let Target::Internal(path) = &dep.target else {
+            continue;
+        };
+        let file = slash(&dep.file);
+        // Each file the import names that no reference at its line reaches is reached
+        // whole, as the other files of a Go package are: they run on import too.
+        let targets: Vec<&str> = files
+            .targets(&slash(path))
+            .into_iter()
+            .filter(|target| !covered.contains(&(file.as_str(), dep.line, *target)))
+            .collect();
+        for from in flow.owners(&file, dep.line) {
+            let out = graph.entry(from.key()).or_default();
+            for target in &targets {
+                for node in flow.nodes_of(target) {
+                    out.insert((node.key(), dep.line));
+                }
+            }
         }
     }
     graph
@@ -1672,13 +1748,151 @@ rules:
         ]
         .map(String::from)
         .to_vec();
-        let found = reaches(&config, &map, &deps, &files);
+        let found = reaches(&config, &map, &deps, &files, None);
         assert_eq!(found.len(), 1);
         assert_eq!(
             found[0].message,
             "a reaches c through no component: a/A2.kt:4 -> x/S.kt:5 -> c/C.kt"
         );
         assert_eq!(found[0].target, "c/C.kt");
+    }
+
+    /// `a/A.rb` calls `host` (line 2); `x/G.rb` defines `host` (lines 3-5) and `fetch` (7-9),
+    /// and `fetch` calls `get` of `c/C.rb`. `host_calls` lists what `host` references.
+    fn symbol_world(host_calls: &[&str]) -> (Config, ComponentMap, Vec<Dep>, Vec<String>, Flow) {
+        use crate::scip::{Document, Reference, Scope};
+        let config: Config = serde_norway::from_str(
+            "version: 1
+components:
+  a: { in: a }
+  c: { in: c }
+rules:
+  a: { must_not_reach: [c] }
+",
+        )
+        .unwrap();
+        let map = ComponentMap::new(&config).unwrap();
+        let dep = |from: &str, to: &str, line| Dep {
+            file: from.into(),
+            line,
+            specifier: String::new(),
+            target: Target::Internal(to.into()),
+        };
+        let reference = |line, symbol: &str| Reference {
+            line,
+            symbol: symbol.to_string(),
+            spelled: None,
+        };
+        let scope = |symbol: &str, first, last| Scope {
+            symbol: symbol.to_string(),
+            first,
+            last,
+        };
+        let host: Vec<Reference> = host_calls.iter().map(|s| reference(4, s)).collect();
+        let documents = vec![
+            Document {
+                path: "a/A.rb".into(),
+                references: vec![reference(2, "host().")],
+                ..Document::default()
+            },
+            Document {
+                path: "x/G.rb".into(),
+                definitions: vec!["host().".into(), "fetch().".into()],
+                scopes: vec![scope("host().", 3, 5), scope("fetch().", 7, 9)],
+                references: host.into_iter().chain([reference(8, "get().")]).collect(),
+                ..Document::default()
+            },
+            Document {
+                path: "c/C.rb".into(),
+                definitions: vec!["get().".into()],
+                scopes: vec![scope("get().", 1, 1)],
+                ..Document::default()
+            },
+        ];
+        let deps = vec![dep("a/A.rb", "x/G.rb", 2), dep("x/G.rb", "c/C.rb", 8)];
+        let files = ["a/A.rb", "x/G.rb", "c/C.rb"].map(String::from).to_vec();
+        let flow = crate::flow::build(&documents);
+        (config, map, deps, files, flow)
+    }
+
+    #[test]
+    fn reach_by_symbols_passes_a_method_that_reaches_nothing_forbidden() {
+        let (config, map, deps, files, flow) = symbol_world(&[]);
+        // By files, calling `host` reaches what `fetch` uses.
+        assert_eq!(reaches(&config, &map, &deps, &files, None).len(), 1);
+        assert!(reaches(&config, &map, &deps, &files, Some(&flow)).is_empty());
+    }
+
+    #[test]
+    fn reach_by_symbols_keeps_a_chain_through_the_called_method() {
+        // `host` calls `get` itself (line 4), so the chain stays, at the call of `host`.
+        let (config, map, deps, files, flow) = symbol_world(&["get()."]);
+        let found = reaches(&config, &map, &deps, &files, Some(&flow));
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].message,
+            "a reaches c through no component: a/A.rb:2 -> x/G.rb:4 -> c/C.rb"
+        );
+    }
+
+    #[test]
+    fn reach_by_symbols_reaches_the_files_of_a_package_that_no_reference_names() {
+        use crate::scip::{Document, Reference, Scope};
+        let config: Config = serde_norway::from_str(
+            "version: 1
+components:
+  a: { in: a }
+  c: { in: c }
+rules:
+  a: { must_not_reach: [c] }
+",
+        )
+        .unwrap();
+        let map = ComponentMap::new(&config).unwrap();
+        let dep = |from: &str, to: &str, line| Dep {
+            file: from.into(),
+            line,
+            specifier: String::new(),
+            target: Target::Internal(to.into()),
+        };
+        // `a/A.go` imports the package `x` at line 3 and calls `One` of `x/one.go`; `x/two.go`
+        // holds code that runs on import and uses `c`.
+        let documents = vec![
+            Document {
+                path: "a/A.go".into(),
+                references: vec![Reference {
+                    line: 3,
+                    symbol: "One().".into(),
+                    spelled: None,
+                }],
+                ..Document::default()
+            },
+            Document {
+                path: "x/one.go".into(),
+                definitions: vec!["One().".into()],
+                scopes: vec![Scope {
+                    symbol: "One().".into(),
+                    first: 1,
+                    last: 2,
+                }],
+                ..Document::default()
+            },
+            Document {
+                path: "x/two.go".into(),
+                ..Document::default()
+            },
+        ];
+        let deps = [dep("a/A.go", "x", 3), dep("x/two.go", "c/C.go", 5)];
+        let files = ["a/A.go", "x/one.go", "x/two.go", "c/C.go"]
+            .map(String::from)
+            .to_vec();
+        let flow = crate::flow::build(&documents);
+        let found = reaches(&config, &map, &deps, &files, Some(&flow));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].message,
+            "a reaches c through no component: a/A.go:3 -> x/two.go:5 -> c/C.go"
+        );
     }
 
     fn limits(rule: &str) -> Config {
