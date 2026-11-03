@@ -90,7 +90,7 @@ pub fn edges(root: &Path, files: &[String], read_as_source: impl Fn(&str) -> boo
             };
             let (specifier, target) = match (resolved, &declared.feature) {
                 (Resolved::Internal(path), feature) => {
-                    let unit = match feature {
+                    let unit = match feature.as_deref().filter(|f| *f != "default") {
                         Some(feature) => Unit::in_part(
                             Path::new(&path),
                             Part {
@@ -340,11 +340,16 @@ fn cargo(text: &str) -> Option<Vec<Declared>> {
 /// The strings of the value of a TOML line, without its comment.
 fn strings(text: &str) -> impl Iterator<Item = String> + '_ {
     static STRING: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#""([^"]*)""#).expect("valid regex"));
+        LazyLock::new(|| Regex::new(r#""([^"]*)"|'([^']*)'"#).expect("valid regex"));
     let code = text.split('#').next().unwrap_or_default();
     STRING
         .captures_iter(code)
-        .map(|caps| caps[1].to_string())
+        .map(|caps| {
+            caps.get(1)
+                .or_else(|| caps.get(2))
+                .map_or("", |m| m.as_str())
+                .to_string()
+        })
         .collect::<Vec<_>>()
         .into_iter()
 }
@@ -407,7 +412,7 @@ fn with_features(declared: Vec<Declared>, items: &[(usize, String, String)]) -> 
         for (_, feature, text) in items {
             let hit = match item(text) {
                 Item::Dependency(n) => n == name,
-                Item::Reaches { name: n, .. } => n == name,
+                Item::Reaches { name: n, weak, .. } => n == name && !weak,
                 Item::Feature(_) => false,
             };
             if hit && !owners.contains(&feature.as_str()) {
@@ -435,40 +440,37 @@ fn with_features(declared: Vec<Declared>, items: &[(usize, String, String)]) -> 
             }
         }
     }
+    // What an item names is a dependency of the crate, never a dev-dependency.
     let table_dependency = |name: &str| {
-        declared
-            .iter()
-            .find(|d| d.name == name && d.feature.is_none())
+        declared.iter().find(|d| {
+            d.name == name
+                && d.feature.is_none()
+                && !d
+                    .part
+                    .as_ref()
+                    .is_some_and(|part| part.kind == Some(Kind::Test))
+        })
     };
     for (line, feature, text) in items {
         let from = feature_part(feature);
         let base = |name: &str| {
-            table_dependency(name).map_or_else(
-                || Declared {
-                    line: *line,
-                    name: name.to_string(),
-                    package: name.to_string(),
-                    source: Source::Registry,
-                    part: None,
-                    target: None,
-                    feature: None,
-                    optional: false,
-                },
-                |d| Declared {
-                    line: *line,
-                    part: None,
-                    feature: None,
-                    optional: false,
-                    ..d.clone()
-                },
-            )
+            table_dependency(name).map(|d| Declared {
+                line: *line,
+                part: None,
+                feature: None,
+                optional: false,
+                ..d.clone()
+            })
         };
         let mut edge = |name: &str, feature: Option<&str>| {
-            out.push(Declared {
-                part: from.clone(),
-                feature: feature.map(str::to_string),
-                ..base(name)
-            });
+            // A name no table declares is a mistake Cargo reports; it is no edge.
+            if let Some(base) = base(name) {
+                out.push(Declared {
+                    part: from.clone(),
+                    feature: feature.map(str::to_string),
+                    ..base
+                });
+            }
         };
         match item(text) {
             Item::Dependency(name) => edge(name, None),
@@ -968,5 +970,67 @@ mod tests {
                 (7, None, n("serde"), None),
             ]
         );
+    }
+
+    #[test]
+    fn default_as_a_target_is_the_package_itself() {
+        let own = "crates/telegram/Cargo.toml".to_string();
+        let got = edge_list(&[(
+            "crates/telegram/Cargo.toml",
+            "[features]\ndefault = []\nfull = [\"default\"]\n",
+        )]);
+        assert_eq!(got, [(3, Some("feature/full".to_string()), own, None)]);
+    }
+
+    #[test]
+    fn a_literal_string_is_an_item_too() {
+        let rows = edges_of(
+            "[features]\nfake = ['dep:serde']\n\n[dependencies]\nserde = { version = \"1\", optional = true }\n",
+        );
+        assert_eq!(
+            rows,
+            [(
+                2,
+                "serde".to_string(),
+                Some("feature/fake".to_string()),
+                None,
+                Source::Registry
+            )]
+        );
+    }
+
+    #[test]
+    fn an_item_takes_what_the_dependencies_declare_not_the_dev_ones() {
+        let text = concat!(
+            "[dev-dependencies]\n",
+            "x = { path = \"../x\" }\n",
+            "\n",
+            "[dependencies]\n",
+            "x = \"1\"\n",
+            "\n",
+            "[features]\n",
+            "f = [\"x/g\"]\n",
+        );
+        let items: Vec<_> = edges_of(text).into_iter().filter(|r| r.0 == 8).collect();
+        let f = Some("feature/f".to_string());
+        assert_eq!(
+            items,
+            [
+                (8, "x".to_string(), f.clone(), None, Source::Registry),
+                (
+                    8,
+                    "x".to_string(),
+                    f,
+                    Some("g".to_string()),
+                    Source::Registry
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_item_that_names_no_dependency_is_no_edge() {
+        let rows = edges_of("[features]\nf = [\"typo/g\", \"dep:typo\"]\n");
+        assert!(rows.is_empty(), "{rows:?}");
     }
 }

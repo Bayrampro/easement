@@ -1478,6 +1478,49 @@ fn a_cargo_feature_is_a_part_that_a_component_owns() {
         .stdout(contains("2 violation(s)"));
 }
 
+/// `must_depend_on` is met by a dependency on a part that a component owns.
+#[test]
+fn a_part_that_a_component_owns_meets_must_depend_on() {
+    let (_tmp, root) = cargo_workspace_fixture("cargo_features");
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    let edited = config.replace(
+        "core: { may_depend_on: [fakes] }",
+        "core: { may_depend_on: [fakes], must_depend_on: [fakes] }",
+    );
+    assert_ne!(config, edited);
+    fs::write(root.join("easement.yml"), edited).unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("crates/core/Cargo.toml:6: core -> fakes"))
+        .stdout(contains("2 violation(s)"));
+}
+
+/// A `part` that no manifest produces would own nothing and be judged by no rule, so it
+/// is said.
+#[test]
+fn a_part_that_matches_no_part_is_said_not_silent() {
+    let (_tmp, root) = cargo_workspace_fixture("cargo_features");
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        config.replace("part: feature/fake", "part: feature/fakee"),
+    )
+    .unwrap();
+    let out = easement(&root, &["check", "--format", "json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let partial = report["stats"]["parts_partial"].as_array().unwrap();
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    let reason = partial[0].as_str().unwrap();
+    assert!(
+        reason.contains("fakes") && reason.contains("feature/fakee"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("feature/fake"),
+        "it names the parts the scan found: {reason}"
+    );
+}
+
 #[test]
 fn csharp_resolves_namespaces() {
     layered(

@@ -963,7 +963,7 @@ pub fn required(
         };
         match &dep.target {
             Target::Internal(target) => {
-                if let Some(to) = map.component_of(&target.key()) {
+                if let Some(to) = map.component_of_unit(target) {
                     unit.components.insert(to.to_string());
                 }
             }
@@ -1122,7 +1122,7 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
         }
         if owner.is_some()
             && let Some(Target::Internal(unit)) = &used.target
-            && let Some(to) = map.component_of(&unit.key())
+            && let Some(to) = map.component_of_unit(unit)
             && to != from
             && let Some(public) = &config.components[to].public_symbols
             && !public.contains(&used.name)

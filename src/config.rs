@@ -706,6 +706,9 @@ impl Config {
             if component.patterns.as_vec().is_empty() {
                 bail!("component `{name}` has no `in` patterns");
             }
+            if component.part.is_some() && component.isolated {
+                bail!("component `{name}` owns a `part`, which cannot be `isolated`");
+            }
             for pattern in component.patterns.as_vec() {
                 crate::components::glob_and_placeholders(pattern)
                     .with_context(|| format!("components.{name}.in"))?;
@@ -1139,6 +1142,18 @@ rules:
         let config = config.with_tests()?;
         config.validate()?;
         Ok(config)
+    }
+
+    #[test]
+    fn a_part_cannot_be_isolated() {
+        let err = parse(
+            "version: 1
+components:
+  a: { in: 'crates/*/Cargo.toml', part: feature/fake, isolated: true }
+",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("part"), "{err}");
     }
 
     #[test]
