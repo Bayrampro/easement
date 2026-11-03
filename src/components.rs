@@ -234,7 +234,7 @@ impl ComponentMap {
         }
         Ok(Self {
             entries,
-            tests: config.components.contains_key(TESTS),
+            tests: config.tests.is_some(),
             except,
             unowned: crate::scan::glob_set(&config.unowned, "unowned")?,
             excluded: crate::scan::glob_set(&config.exclude, "exclude")?,
@@ -438,11 +438,37 @@ fn without_extension(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     fn map(yaml: &str) -> ComponentMap {
         let config: Config = serde_norway::from_str(yaml).unwrap();
         ComponentMap::new(&config).unwrap()
+    }
+
+    #[test]
+    fn test_code_of_a_file_is_tests_only_under_tests_auto() {
+        use crate::lang::parts::{Kind, Part};
+        let unit = Unit::in_part(
+            Path::new("src/store.rs"),
+            Part {
+                name: "cfg(test)".to_string(),
+                kind: Some(Kind::Test),
+            },
+        );
+        let own = map("version: 1
+components:
+  store: { in: src/store.rs }
+  tests: { in: spec }
+");
+        assert_eq!(own.component_of_unit(&unit), Some("store"));
+        let auto = map("version: 1
+components:
+  store: { in: src/store.rs }
+tests: auto
+");
+        assert_eq!(auto.component_of_unit(&unit), Some("tests"));
     }
 
     #[test]

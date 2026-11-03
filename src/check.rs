@@ -946,7 +946,7 @@ pub fn required(
     }
     for dep in deps {
         let file = dep.from.key();
-        let Some(component) = map.component_of(&file) else {
+        let Some(component) = map.component_of_unit(&dep.from) else {
             continue;
         };
         let Some(unit) = units.get_mut(&(component.to_string(), parent(&file))) else {

@@ -133,7 +133,13 @@ fn mask_rust(source: &[u8]) -> Vec<u8> {
 
 /// Whether the `r` at `at` opens a raw string (`r"`, `r#"`), not ends a name.
 fn is_raw_string(source: &[u8], at: usize) -> bool {
-    let word_before = at > 0 && (source[at - 1].is_ascii_alphanumeric() || source[at - 1] == b'_');
+    let is_word = |i: usize| source[i].is_ascii_alphanumeric() || source[i] == b'_';
+    // `br"..."` is a raw byte string: the `b` is no part of a longer name.
+    let before = match at.checked_sub(1) {
+        Some(b) if source[b] == b'b' => b,
+        _ => at,
+    };
+    let word_before = before > 0 && is_word(before - 1);
     let hashes = source[at + 1..].iter().take_while(|&&b| b == b'#').count();
     !word_before && source.get(at + 1 + hashes) == Some(&b'"')
 }
@@ -154,8 +160,9 @@ fn string_end(source: &[u8], from: usize) -> usize {
 /// The index after the character literal at `at`, `None` for a lifetime.
 fn char_end(source: &[u8], at: usize) -> Option<usize> {
     if source.get(at + 1) == Some(&b'\\') {
-        let close = source[at + 2..].iter().position(|&b| b == b'\'')?;
-        return Some(at + 2 + close + 1);
+        // The escaped character comes first: `'\''`, `'\n'`, `'\u{7d}'`.
+        let close = source.get(at + 3..)?.iter().position(|&b| b == b'\'')?;
+        return Some(at + 3 + close + 1);
     }
     let rest = &source[at + 1..];
     let width = match rest.first()? {
@@ -204,6 +211,9 @@ fn item_end(code: &[u8], from: usize) -> Option<usize> {
         }
     }
     let item = i;
+    if !starts_item(&code[item..]) {
+        return None;
+    }
     let mut nesting = 0;
     while i < code.len() {
         match code[i] {
@@ -212,6 +222,7 @@ fn item_end(code: &[u8], from: usize) -> Option<usize> {
             b';' if nesting == 0 => {
                 return (!is_module(&code[item..i])).then_some(i);
             }
+            b'}' if nesting == 0 => return None,
             b'{' if nesting == 0 => {
                 let mut depth = 0;
                 while i < code.len() {
@@ -234,6 +245,36 @@ fn item_end(code: &[u8], from: usize) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+/// Whether `code` starts an item, after its visibility and qualifiers, and not a field,
+/// a match arm or an argument that an attribute can sit on too.
+fn starts_item(code: &[u8]) -> bool {
+    const KEYWORDS: [&str; 17] = [
+        "mod",
+        "fn",
+        "use",
+        "struct",
+        "enum",
+        "trait",
+        "impl",
+        "const",
+        "static",
+        "type",
+        "union",
+        "extern",
+        "unsafe",
+        "async",
+        "macro_rules",
+        "pub",
+        "default",
+    ];
+    let text = String::from_utf8_lossy(&code[..code.len().min(64)]);
+    let first = text
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .next()
+        .unwrap_or_default();
+    KEYWORDS.contains(&first)
 }
 
 /// Whether the text of an item up to its `;` is `mod name`, with a visibility.
@@ -307,5 +348,24 @@ mod tests {
     #[test]
     fn a_cfg_test_module_in_another_file_is_no_part_of_this_one() {
         assert!(lines("#[cfg(test)]\nmod tests;\nfn run() {}\n").is_empty());
+    }
+
+    #[test]
+    fn raw_byte_strings_and_escaped_quote_chars_hide_their_braces() {
+        let source = "#[cfg(test)]\nmod tests {\n    const A: &[u8] = br#\"} \\\"#;\n    const B: char = '\\'';\n    const C: char = '}';\n}\nfn after() {}\n";
+        assert_eq!(lines(source), [1..=6]);
+    }
+
+    #[test]
+    fn an_attribute_on_something_that_is_no_item_is_no_part() {
+        let source = "struct S {\n    #[cfg(test)]\n    field: u8,\n    other: u8,\n}\nfn run() { let x = 1; }\n";
+        assert!(lines(source).is_empty());
+    }
+
+    #[test]
+    fn a_visibility_or_a_qualifier_before_the_keyword_still_makes_an_item() {
+        let source =
+            "#[cfg(test)]\npub(crate) fn a() {\n}\n#[cfg(test)]\nunsafe impl Send for S {\n}\n";
+        assert_eq!(lines(source), [1..=3, 4..=6]);
     }
 }
