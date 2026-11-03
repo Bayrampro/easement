@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.10](https://github.com/mokevnin/easement/compare/v0.4.9...v0.4.10) (2026-11-03)
+
+
+### Features
+
+* take a cfg(test) module file, a cfg(test) file and cfg(all(test, ...)) as test code ([f538508](https://github.com/mokevnin/easement/commit/f53850821e9270ec06d6dd0d7ccb5c8df7ef9fd3))
+
+
+### Bug Fixes
+
+* place test-only modules as Rust does, and say what cannot be placed ([8b60eaa](https://github.com/mokevnin/easement/commit/8b60eaa45c47affc9dc2add602f0e46649034e8f))
+
 ## [0.4.9](https://github.com/mokevnin/easement/compare/v0.4.8...v0.4.9) (2026-11-03)
 
 
