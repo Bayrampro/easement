@@ -1063,7 +1063,7 @@ pub fn symbols_partial(config: &Config, map: &ComponentMap, unnamed: &[String]) 
         files.push_str(&format!(" and {} more files", unnamed.len() - SHOWN));
     }
     vec![format!(
-        "`forbid_symbol` cannot tell the npm package of the names used in {files}: a `package.json` without `name` inside the package hides it from the indexer, so those uses were not checked"
+        "`forbid_symbol` cannot tell the npm package of the names used in {files}: a `package.json` without `name` inside the package hides it from the indexer, so those uses were not checked; scip-typescript 0.6.1 or newer names such a package: update the indexer and run again"
     )]
 }
 
@@ -1560,6 +1560,18 @@ rules:
                 "{pattern}"
             );
         }
+    }
+
+    #[test]
+    fn unjudged_npm_names_say_which_scip_typescript_names_them() {
+        let config = forbidding(&["i18next.i18next"]);
+        let map = ComponentMap::new(&config).unwrap();
+        let notes = symbols_partial(&config, &map, &["web/a.ts".to_string()]);
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].contains("scip-typescript 0.6.1 or newer") && notes[0].contains("web/a.ts"),
+            "{notes:?}"
+        );
     }
 
     #[test]
