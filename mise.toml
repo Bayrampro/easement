@@ -41,6 +41,12 @@ _.path = [
   "{{env.HOME}}/.dotnet/tools",
 ]
 
+# Resources shipped by the pinned tools (hk, ...): agent skills are linked into .claude/skills and
+# kept in sync with the pinned tool versions.
+[settings.skills]
+auto_sync = true
+prune = true
+
 [tasks.setup]
 description = "Install dependencies, the git hooks and the agent skills"
 depends = ["skills"]
@@ -58,6 +64,33 @@ skills add mattpocock/skills --agent claude-code codex --yes --skill \
   prototype research domain-modeling codebase-design code-review pr retro wizard \
   grill-me grilling handoff teach to-questionnaire wait-what writing-for-agents
 """
+
+[tasks.update]
+description = "Update npm, Cargo and skills dependencies; then run `mise run check` and `cargo test`"
+depends = ["update:npm", "update:cargo", "update:skills"]
+
+# The SCIP indexers of package.json are pinned to the versions of mise.toml (the tests and CI use
+# them); Renovate moves both together, so ncu leaves them alone.
+[tasks."update:npm"]
+description = "Bump the npm dev tools (not the SCIP indexers)"
+run = "pnpm dlx npm-check-updates -u --reject '@sourcegraph/*' && pnpm install"
+
+[tasks."update:cargo"]
+description = "Bump Cargo.lock within the semver ranges of Cargo.toml"
+run = "cargo update"
+
+# No --yes: in a terminal skills asks whether to remove the skills their upstream deleted, and it
+# only warns in a run without a TTY. --project picks the project scope so nothing else is asked.
+[tasks."update:skills"]
+description = "Update the installed agent skills"
+run = "skills update --project"
+
+# --no-global: a bare `mise upgrade` also upgrades every tool of ~/.config/mise/config.toml.
+# --bump rewrites the pins of this file, including the two SCIP indexers: copy a moved one into
+# package.json, and a moved hk into hk.pkl, in the same commit (CI installs them from there).
+[tasks.upgrade]
+description = "Upgrade the mise tools pinned in mise.toml, not the global ones"
+run = "mise upgrade --no-global --bump"
 
 [tasks.check]
 description = "Run every check, the same set CI runs"
