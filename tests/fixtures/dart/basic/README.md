@@ -70,5 +70,5 @@ mutations. Unit tests cover literal/comment parsing, SDK/indexer/local-input
 fingerprinting, package URI normalization and the real SCIP artifacts.
 
 Manifest policy accepts development dependencies but not overrides alone.
-Internal workspace declaration enforcement, inactive-platform extraction,
-private-symbol completeness, semantic architecture and UI checks are not claimed.
+Internal workspace declaration enforcement, inactive-platform extraction and
+private-symbol completeness are not claimed.

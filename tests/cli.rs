@@ -4864,81 +4864,7 @@ fn a_layer_violation_says_which_layer_stops_it() {
         .stdout(contains("(owner: @acme/api)"));
 }
 
-#[test]
-fn dart_semantic_contract_alias_is_checked_without_import_boundaries() {
-    let (_tmp, root) = project(&[
-        ("pubspec.yaml", DART_PUBSPEC),
-        ("easement.yml", ""),
-        (
-            "lib/orders.dart",
-            "class Order {}\nclass WireOrder {}\ntypedef Orders = List<WireOrder?>;\nabstract interface class OrderRepository {\n  Future<Orders> load();\n}\n",
-        ),
-    ]);
-    prepare_dart(&root);
-    fs::write(
-        root.join("easement.yml"),
-        r#"version: 1
-components:
-  orders: {in: lib}
-dart:
-  roles:
-    - role: dto
-      types: [{library: 'package:example/orders.dart', name: WireOrder}]
-    - role: repository-contract
-      types: [{library: 'package:example/orders.dart', name: OrderRepository}]
-rules:
-  orders:
-    dart:
-      contract_api_types: {forbid_roles: [dto]}
-"#,
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&stdout_of(
-        easement(&root, &["check", "--no-cache", "--format", "json"]).code(1),
-    ))
-    .unwrap();
-    let violation = &value["violations"][0];
-    assert_eq!(violation["rule"], "dart-contract-api-types", "{value}");
-    assert_eq!(violation["line"], 5);
-    assert!(violation["message"].as_str().unwrap().contains("Orders"));
-    assert!(violation["message"].as_str().unwrap().contains("WireOrder"));
-    assert_eq!(value["confidence"], "full", "{value}");
-    insta::assert_json_snapshot!("dart_semantic_contract_alias", &value);
-    let source = root.join("lib/orders.dart");
-    fs::write(
-        &source,
-        fs::read_to_string(&source)
-            .unwrap()
-            .replace("List<WireOrder?>", "List<Order>"),
-    )
-    .unwrap();
-    easement(&root, &["check", "--no-cache"]).success();
-}
-
-fn semantic_project(source: &str, policy: &str) -> (TempDir, PathBuf) {
-    let config = format!("version: 1\ncomponents:\n  orders: {{in: lib}}\n{policy}");
-    let result = project(&[
-        ("pubspec.yaml", DART_PUBSPEC),
-        ("easement.yml", &config),
-        ("lib/orders.dart", source),
-    ]);
-    prepare_dart(&result.1);
-    result
-}
-
-const SEMANTIC_API_POLICY: &str = r#"dart:
-  roles:
-    - role: dto
-      types: [{library: 'package:example/orders.dart', name: WireOrder}]
-    - role: repository-contract
-      types: [{library: 'package:example/orders.dart', name: OrderRepository}]
-rules:
-  orders:
-    dart:
-      contract_api_types: {forbid_roles: [dto]}
-"#;
-
-fn semantic_json(root: &Path, code: i32) -> serde_json::Value {
+fn dependency_json(root: &Path, code: i32) -> serde_json::Value {
     serde_json::from_str(&stdout_of(
         easement(root, &["check", "--format", "json"]).code(code),
     ))
@@ -4946,940 +4872,141 @@ fn semantic_json(root: &Path, code: i32) -> serde_json::Value {
 }
 
 #[test]
-fn dart_semantic_api_shapes_and_inherited_substitutions() {
-    let source = r#"class WireOrder {}
-class Order {}
-typedef Orders = List<WireOrder?>;
-abstract class Generic<T> { T inherited(); }
-abstract interface class OrderRepository extends Generic<Orders> {
-  WireOrder get value;
-  set value(WireOrder input);
-  abstract WireOrder field;
-  void accept((WireOrder, {WireOrder named}) record);
-  void callback(void Function(WireOrder) callback);
-  Future<List<WireOrder?>> nested();
-  OrderRepository(WireOrder input);
-  void aliases(Order okay, Orders bad);
-}
-"#;
-    let (_tmp, root) = semantic_project(source, SEMANTIC_API_POLICY);
-    let value = semantic_json(&root, 1);
-    assert_eq!(value["confidence"], "full", "{value}");
-    let violations = value["violations"].as_array().unwrap();
-    for member in [
-        "inherited",
-        "value",
-        "field",
-        "accept",
-        "callback",
-        "nested",
-    ] {
-        assert!(
-            violations.iter().any(|v| v["semantic"]["declaration"]
-                .as_str()
-                .unwrap()
-                .ends_with(&format!("::{member}"))),
-            "missing {member}: {value}"
-        );
-    }
-    let parameter = violations
-        .iter()
-        .find(|v| v["semantic"]["operation"] == "parameter:bad")
-        .unwrap();
-    assert_eq!(parameter["line"], 13);
-    assert_eq!(parameter["semantic"]["column"], 28);
+fn dart_support_integrates_with_upstream_global_symbols_and_package_coverage() {
+    let (_tmp, root) = dart_project();
+    fs::write(root.join("easement.yml"), "version: 1\ncomponents:\n  app: {in: lib/app.dart}\n  domain: {in: lib/domain.dart}\ncommon: [domain]\nforbid_symbol: [lib/domain.Domain]\n").unwrap();
+    let report = dependency_json(&root, 1);
+    assert_eq!(report["confidence"], "full", "{report}");
     assert!(
-        violations.iter().any(|v| v["semantic"]["declaration"]
-            .as_str()
+        report["violations"]
+            .as_array()
             .unwrap()
-            .ends_with("::new")),
-        "constructor signature missing: {value}"
-    );
-    let inherited = violations
-        .iter()
-        .find(|v| {
-            v["semantic"]["declaration"]
-                .as_str()
-                .unwrap()
-                .ends_with("::inherited")
-        })
-        .unwrap();
-    assert_eq!(inherited["line"], 5);
-    assert_eq!(inherited["semantic"]["origin"][1], 4);
-    fs::write(
-        root.join("lib/orders.dart"),
-        source.replace("WireOrder", "Order").replacen(
-            "class Order {}\nclass Order {}",
-            "class WireOrder {}\nclass Order {}",
-            1,
-        ),
-    )
-    .unwrap();
-    easement(&root, &["check", "--no-cache"]).success();
-}
-
-#[test]
-fn dart_semantic_repository_modifiers_and_identity_are_explicit() {
-    let policy = r#"dart:
-  roles:
-    - role: repository-contract
-      types: [{library: 'package:example/orders.dart', name: Repository}]
-    - role: repository-implementation
-      types: [{library: 'package:example/orders.dart', name: Implementation}]
-  implementations:
-    - implementation: {library: 'package:example/orders.dart', name: Implementation}
-      contract: {library: 'package:example/orders.dart', name: Repository, arguments: [{library: 'dart:core', name: String}]}
-rules:
-  orders:
-    dart:
-      repository_declaration: {require: [abstract, interface]}
-      repository_implementation: true
-"#;
-    let source = "abstract interface class Repository<T> {}\nclass Base implements Repository<String> {}\nclass Implementation extends Base {}\n";
-    let (_tmp, root) = semantic_project(source, policy);
-    easement(&root, &["check"]).success();
-    fs::write(
-        root.join("lib/orders.dart"),
-        source
-            .replace("abstract interface class", "class")
-            .replace("Repository<String>", "Repository<int>"),
-    )
-    .unwrap();
-    let value = semantic_json(&root, 1);
-    for rule in [
-        "dart-repository-declaration",
-        "dart-repository-implementation",
-    ] {
-        assert!(
-            value["violations"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v["rule"] == rule),
-            "{value}"
-        );
-    }
-    fs::write(
-        root.join("lib/other.dart"),
-        "abstract interface class Repository<T> {}\n",
-    )
-    .unwrap();
-    fs::write(
-        root.join("lib/orders.dart"),
-        format!(
-            "import 'other.dart' as other;\n{}",
-            source.replace(
-                "implements Repository<String>",
-                "implements other.Repository<String>"
-            )
-        ),
-    )
-    .unwrap();
-    let value = semantic_json(&root, 1);
-    assert_eq!(
-        value["violations"][0]["rule"], "dart-repository-implementation",
-        "{value}"
-    );
-}
-
-#[test]
-fn dart_semantic_use_cases_reject_inferred_implementations_and_allow_bootstrap() {
-    let policy = r#"dart:
-  roles:
-    - role: use-case
-      types: [{library: 'package:example/orders.dart', name: LoadOrders}]
-    - role: repository-implementation
-      types: [{library: 'package:example/orders.dart', name: Storage}]
-    - role: bootstrap
-      types: [{library: 'package:example/orders.dart', name: bootstrap}]
-rules:
-  orders:
-    dart:
-      use_case_dependencies: {forbid_roles: [repository-implementation]}
-"#;
-    let source = r#"abstract interface class Repository {}
-class Storage implements Repository {}
-typedef Concrete = Storage;
-class LoadOrders {
-  final Repository repository;
-  LoadOrders(this.repository);
-  void run() { final inferred = Concrete(); print(inferred); }
-}
-void bootstrap() { LoadOrders(Storage()); }
-"#;
-    let (_tmp, root) = semantic_project(source, policy);
-    let value = semantic_json(&root, 1);
-    assert_eq!(value["confidence"], "full", "{value}");
-    let violations = value["violations"].as_array().unwrap();
-    assert!(!violations.is_empty());
-    assert!(
-        violations
             .iter()
-            .all(|v| v["rule"] == "dart-use-case-dependencies"
-                && v["semantic"]["declaration"]
-                    .as_str()
-                    .unwrap()
-                    .contains("#LoadOrders::")),
-        "{value}"
+            .any(|v| v["rule"] == "symbol" && v["file"] == "lib/app.dart"),
+        "{report}"
     );
-    fs::write(
-        root.join("lib/orders.dart"),
-        source.replace(
-            "final inferred = Concrete(); print(inferred);",
-            "print(repository);",
-        ),
-    )
-    .unwrap();
-    easement(&root, &["check", "--no-cache"]).success();
-}
-
-#[test]
-fn dart_semantic_domain_resolves_real_flutter_reexports_and_allows_namesake() {
-    let (_tmp, root) = fixture("dart/flutter-basic");
-    prepare_dart(&root);
-    fs::write(root.join("lib/main.dart"), "import 'package:flutter/widgets.dart';\ntypedef Context = BuildContext;\nclass Model { Context? context; }\n").unwrap();
     fs::write(
         root.join("easement.yml"),
-        r#"version: 1
-components:
-  domain: {in: lib}
-dart:
-  roles:
-    - role: entity
-      types: [{library: 'package:flutter_example/main.dart', name: Model}]
-rules:
-  domain:
-    dart:
-      domain_type_boundaries:
-        forbid_types: [{library: 'package:flutter/**', name: BuildContext}]
-"#,
+        "version: 1\npackages: true\ncomponents:\n  app: {in: [lib, pubspec.yaml]}\n",
     )
     .unwrap();
-    let value = semantic_json(&root, 1);
-    assert_eq!(value["confidence"], "full", "{value}");
+    let report = dependency_json(&root, 0);
+    assert_eq!(report["confidence"], "partial", "{report}");
     assert!(
-        value["violations"]
+        report["stats"]["packages_partial"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|v| v["semantic"]["offending_type"]
-                == "package:flutter/src/widgets/framework.dart#BuildContext"),
-        "{value}"
+            .any(|v| v.as_str().unwrap().contains("Pub")
+                && v.as_str().unwrap().contains("not yet supported")),
+        "{report}"
     );
-    fs::write(root.join("lib/local.dart"), "class BuildContext {}\n").unwrap();
-    fs::write(root.join("lib/main.dart"), "import 'local.dart';\ntypedef Context = BuildContext;\nclass Model { Context? context; }\n").unwrap();
-    easement(&root, &["check", "--no-cache"]).success();
+}
+
+const REMOVED_DART_RULES: [&str; 7] = [
+    "dart-repository-declaration",
+    "dart-contract-api-types",
+    "dart-repository-implementation",
+    "dart-use-case-dependencies",
+    "dart-domain-type-boundaries",
+    "dart-one-widget-per-file",
+    "dart-no-widget-helpers",
+];
+
+#[test]
+fn removed_dart_rule_settings_are_unknown() {
+    let base = "version: 1\ncomponents:\n  app: {in: lib}\n";
+    for policy in [
+        "dart: {roles: []}\n",
+        "rules:\n  app:\n    dart: {contract_api_types: {forbid_roles: [dto]}}\n",
+        "rules:\n  app:\n    dart: {one_widget_per_file: true, no_widget_helpers: true}\n",
+    ] {
+        let (_tmp, root) = project(&[("easement.yml", &format!("{base}{policy}"))]);
+        easement(&root, &["check"])
+            .code(2)
+            .stderr(contains("unknown field `dart`"));
+    }
 }
 
 #[test]
-fn dart_semantic_role_precedence_conflicts_and_unknown_selectors() {
-    let source =
-        "class WireOrder {}\nabstract interface class OrderRepository { WireOrder load(); }\n";
-    let policy = SEMANTIC_API_POLICY.replace(
-        "  roles:\n",
-        "  roles:\n    - {role: entity, components: [orders]}\n",
-    );
-    let (_tmp, root) = semantic_project(source, &policy);
-    semantic_json(&root, 1);
-    fs::write(
-        root.join("easement.yml"),
-        fs::read_to_string(root.join("easement.yml"))
-            .unwrap()
-            .replace("name: WireOrder", "name: Missing"),
-    )
-    .unwrap();
-    easement(&root, &["check"])
-        .code(2)
-        .stderr(contains("unknown explicit Dart selector"));
-    fs::write(root.join("easement.yml"), format!("version: 1\ncomponents:\n  orders: {{in: lib}}\n{}", SEMANTIC_API_POLICY.replace("  roles:\n", "  roles:\n    - role: entity\n      types: [{library: 'package:example/orders.dart', name: WireOrder}]\n"))).unwrap();
-    easement(&root, &["check"])
-        .code(2)
-        .stderr(contains("conflicting Dart roles"));
-}
-
-#[test]
-fn dart_semantic_partial_analysis_keeps_proven_violations() {
-    let source = "class WireOrder {}\nabstract interface class OrderRepository { WireOrder load(); Unknown missing(); }\nclass Storage implements Unknown {}\n";
-    let policy = SEMANTIC_API_POLICY
-        .replace("  roles:\n", "  roles:\n    - role: repository-implementation\n      types: [{library: 'package:example/orders.dart', name: Storage}]\n")
-        .replace("rules:\n", "  implementations:\n    - implementation: {library: 'package:example/orders.dart', name: Storage}\n      contract: {library: 'package:example/orders.dart', name: OrderRepository}\nrules:\n")
-        .replace("    dart:\n", "    dart:\n      repository_implementation: true\n");
-    let (_tmp, root) = semantic_project(source, &policy);
-    let value = semantic_json(&root, 1);
-    assert_eq!(value["confidence"], "partial", "{value}");
-    assert!(!value["violations"].as_array().unwrap().is_empty());
+fn removed_dart_rule_ids_are_not_supported_or_in_the_schema() {
+    let (_tmp, root) = project(&[(
+        "easement.yml",
+        "version: 1\ncomponents:\n  app: {in: lib}\n",
+    )]);
+    let schema = stdout_of(easement(&root, &["schema"]).success());
+    let parsed: serde_json::Value = serde_json::from_str(&schema).unwrap();
+    assert!(parsed["properties"].get("dart").is_none());
     assert!(
-        value["violations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|v| v["rule"] != "dart-repository-implementation"),
-        "unproven relationship reported as violation: {value}"
+        parsed["definitions"]["Rule"]["properties"]
+            .get("dart")
+            .is_none()
     );
-    assert!(
-        !value["stats"]["semantic_partial"]
-            .as_array()
-            .unwrap()
-            .is_empty(),
-        "{value}"
-    );
-    easement(&root, &["baseline", "--accept-new"]).success();
-    fs::write(
-        root.join("lib/orders.dart"),
-        source.replace("WireOrder load();", "OrderRepository load();"),
-    )
-    .unwrap();
-    let value = semantic_json(&root, 0);
-    assert_eq!(value["stale"], serde_json::json!([]), "{value}");
+    for rule in REMOVED_DART_RULES {
+        assert!(
+            !schema.contains(rule),
+            "removed rule remains in schema: {rule}"
+        );
+        fs::write(
+            root.join("easement.yml"),
+            format!("version: 1\ncomponents:\n  app: {{in: lib}}\nwarn: [{rule}]\n"),
+        )
+        .unwrap();
+        easement(&root, &["check"])
+            .code(2)
+            .stderr(contains(format!("unknown rule `{rule}` in warn")));
+    }
 }
 
 #[test]
-fn dart_semantic_cache_rechecks_policy_aliases_and_baseline_filters() {
-    let source = "class WireOrder {}\nclass Order {}\ntypedef Orders = List<WireOrder?>;\nabstract interface class OrderRepository { Future<Orders> load(); }\n";
-    let (_tmp, root) = semantic_project(source, SEMANTIC_API_POLICY);
-    let cache = TempDir::new().unwrap();
-    let run = |args: &[&str]| easement_cached(&root, args, cache.path());
-    run(&["check"]).code(1);
-    let value: serde_json::Value = serde_json::from_str(&stdout_of(
-        run(&["check", "--cache-only", "--format", "json"]).code(1),
-    ))
-    .unwrap();
-    assert_eq!(value["stats"]["semantic_from_cache"], 1, "{value}");
-    assert!(
-        value["cached"].as_str().unwrap().contains("semantic"),
-        "{value}"
-    );
-    let config = root.join("easement.yml");
-    let original = fs::read_to_string(&config).unwrap();
-    fs::write(&config, original.replace("name: WireOrder", "name: Order")).unwrap();
-    let changed: serde_json::Value =
-        serde_json::from_str(&stdout_of(run(&["check", "--format", "json"]).success())).unwrap();
-    assert_eq!(changed["stats"]["semantic_from_cache"], 1, "{changed}");
-    fs::write(&config, &original).unwrap();
-    run(&["baseline", "--accept-new"]).success();
-    run(&["check"]).success();
-    fs::write(
-        &config,
-        format!("{original}\nwarn: [dart-contract-api-types]\n"),
-    )
-    .unwrap();
-    run(&["check", "--no-baseline"]).success();
-    fs::write(&config, &original).unwrap();
-    fs::write(
-        root.join("lib/orders.dart"),
-        source.replace("List<WireOrder?>", "List<Order>"),
-    )
-    .unwrap();
-    run(&["check", "--cache-only"]).code(3);
-    run(&["check", "--no-baseline"]).success();
-    run(&["check", "--no-baseline", "--no-cache"]).success();
-}
-
-#[cfg(unix)]
-#[test]
-fn dart_semantic_tool_is_required_only_when_enabled() {
-    use std::os::unix::fs::PermissionsExt;
-    let source =
-        "class WireOrder {}\nabstract interface class OrderRepository { WireOrder load(); }\n";
-    let (_tmp, root) = semantic_project(source, SEMANTIC_API_POLICY);
+fn dart_dependency_check_and_doctor_do_not_need_the_semantic_companion() {
+    // Keep the dependency tools available, while hiding every companion launcher.
     let bin = TempDir::new().unwrap();
-    fs::copy(
-        which::which("scip_dart").unwrap(),
-        bin.path().join("scip_dart"),
-    )
-    .unwrap();
-    let paths = std::env::split_paths(&std::env::var_os("PATH").unwrap())
-        .filter(|p| !p.join("easement_dart_semantics").is_file())
-        .collect::<Vec<_>>();
-    let path =
-        std::env::join_paths(std::iter::once(bin.path().to_path_buf()).chain(paths)).unwrap();
-    let run = || {
-        let mut command = Command::cargo_bin("easement").unwrap();
-        command
-            .current_dir(&root)
-            .env("PATH", &path)
-            .env("EASEMENT_CACHE_DIR", test_cache())
-            .args(["check", "--no-cache"]);
-        command
-    };
-    run()
-        .assert()
-        .code(2)
-        .stderr(contains("easement_dart_semantics is missing"));
-    let fake = bin.path().join("easement_dart_semantics");
-    fs::write(&fake, "#!/bin/sh\necho incompatible\n").unwrap();
-    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
-    run()
-        .assert()
-        .code(2)
-        .stderr(contains("incompatible Dart semantic companion"));
-    fs::write(&fake, r#"#!/bin/sh
-if [ "$1" = "--version" ]; then
-  echo 'easement_dart_semantics 1.1.0 facts=2 analyzer=14.4.0'
-else
-  cat >/dev/null
-  echo '{"format_version":3,"extractor_version":"1.1.0","analyzer_version":"14.4.0","sdk_version":"3.13.7","files":[],"declarations":[],"gaps":[],"ui_classes":[],"callables":[]}'
-fi
-"#).unwrap();
-    run()
-        .assert()
-        .code(2)
-        .stderr(contains("incompatible Dart semantic fact format"));
-    let malformed = fs::read_to_string(&fake)
-        .unwrap()
-        .replace("\"format_version\":3", "\"format_version\":2");
-    fs::write(&fake, malformed).unwrap();
-    run()
-        .assert()
-        .success()
-        .stdout(contains("did not analyze this requested file"));
-    fs::write(
-        root.join("easement.yml"),
-        "version: 1\ncomponents:\n  orders: {in: lib}\n",
-    )
-    .unwrap();
-    run().assert().success();
-}
-
-#[test]
-fn dart_semantic_alias_diff_suppression_and_mixed_language_scope() {
-    let source = "class WireOrder {}\nclass Order {}\ntypedef Orders = List<Order>;\nabstract interface class OrderRepository { Future<Orders> load(); }\n";
-    let (_tmp, root) = semantic_project(source, SEMANTIC_API_POLICY);
-    fs::create_dir_all(root.join("kotlin")).unwrap();
-    fs::write(
-        root.join("kotlin/model.kt"),
-        "package model\nclass KotlinModel\n",
-    )
-    .unwrap();
-    let config = root.join("easement.yml");
-    fs::write(
-        &config,
-        fs::read_to_string(&config).unwrap().replace(
-            "  orders: {in: lib}",
-            "  orders: {in: lib}\n  kotlin: {in: kotlin}",
-        ),
-    )
-    .unwrap();
-    git(&root, &["init", "-q", "-b", "main"]);
-    git(&root, &["add", "."]);
-    git(&root, &["commit", "-q", "-m", "test: semantic base"]);
-    fs::write(
-        root.join("lib/orders.dart"),
-        source.replace("List<Order>", "List<WireOrder?>"),
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&stdout_of(
-        easement(
-            &root,
-            &["check", "--diff", "HEAD", "--no-cache", "--format", "json"],
-        )
-        .code(1),
-    ))
-    .unwrap();
-    assert_eq!(value["violations"][0]["line"], 4, "{value}");
-    assert_eq!(value["confidence"], "partial");
-    easement(&root, &["check", "--scope", "kotlin"]).success();
-    let source = fs::read_to_string(root.join("lib/orders.dart")).unwrap().replace("abstract interface class", "// easement:disable-next-line dart-contract-api-types -- reviewed legacy signature\nabstract interface class");
-    fs::write(root.join("lib/orders.dart"), source).unwrap();
-    let value = semantic_json(&root, 0);
-    assert_eq!(value["stats"]["suppressed"], 1, "{value}");
-}
-
-#[test]
-fn dart_semantic_local_package_alias_changes_invalidate_dependent_facts() {
-    let app_pubspec = format!("{DART_PUBSPEC}dependencies:\n  data:\n    path: packages/data\n");
-    let policy = r#"version: 1
-components:
-  orders: {in: lib}
-  data: {in: packages/data/lib}
-dart:
-  roles:
-    - role: repository-contract
-      types: [{library: 'package:example/orders.dart', name: Repository}]
-    - role: dto
-      types: [{library: 'package:data/types.dart', name: WireOrder}]
-rules:
-  orders:
-    may_depend_on: [data]
-    dart:
-      contract_api_types: {forbid_roles: [dto]}
-"#;
-    let (_tmp, root) = project(&[
-        ("pubspec.yaml", &app_pubspec),
-        ("easement.yml", policy),
-        (
-            "lib/orders.dart",
-            "import 'package:data/types.dart';\nabstract interface class Repository { Future<Orders> load(); }\n",
-        ),
-        (
-            "packages/data/pubspec.yaml",
-            "name: data\nenvironment:\n  sdk: ^3.13.0\n",
-        ),
-        (
-            "packages/data/lib/types.dart",
-            "class WireOrder {}\nclass Order {}\ntypedef Orders = List<WireOrder?>;\n",
-        ),
-    ]);
-    prepare_dart(&root);
-    prepare_dart(&root.join("packages/data"));
-    let cache = TempDir::new().unwrap();
-    let run = |args: &[&str]| easement_cached(&root, args, cache.path());
-    run(&["check"]).code(1);
-    run(&["check", "--cache-only"]).code(1);
-    let path = root.join("packages/data/lib/types.dart");
-    fs::write(
-        &path,
-        fs::read_to_string(&path)
-            .unwrap()
-            .replace("List<WireOrder?>", "List<Order>"),
-    )
-    .unwrap();
-    run(&["check", "--cache-only"]).code(3);
-    run(&["check"]).success();
-    run(&["check", "--no-cache"]).success();
-}
-
-#[test]
-fn dart_semantic_inherited_diff_tracks_the_generic_substitution_site() {
-    let source = "class WireOrder {}\nclass Order {}\nabstract class Generic<T> { T load(); }\nabstract interface class OrderRepository\n    extends Generic<Order> {}\n";
-    let (_tmp, root) = semantic_project(source, SEMANTIC_API_POLICY);
-    git(&root, &["init", "-q", "-b", "main"]);
-    git(&root, &["add", "."]);
-    git(
-        &root,
-        &["commit", "-q", "-m", "test: inherited generic API"],
-    );
-    fs::write(
-        root.join("lib/orders.dart"),
-        source.replace("Generic<Order>", "Generic<WireOrder>"),
-    )
-    .unwrap();
-    let value: serde_json::Value = serde_json::from_str(&stdout_of(
-        easement(
-            &root,
-            &["check", "--diff", "HEAD", "--no-cache", "--format", "json"],
-        )
-        .code(1),
-    ))
-    .unwrap();
-    assert_eq!(value["violations"][0]["line"], 4, "{value}");
-    assert_eq!(value["violations"][0]["semantic"]["origin"][1], 3);
-}
-
-#[test]
-fn dart_semantic_same_line_signature_slots_are_distinct_without_field_duplicates() {
-    let source = "class WireOrder {}\nabstract interface class OrderRepository { WireOrder save(WireOrder first, WireOrder second); WireOrder get value; set value(WireOrder input); abstract WireOrder cached; }\n";
-    let (_tmp, root) = semantic_project(source, SEMANTIC_API_POLICY);
-    let value = semantic_json(&root, 1);
-    let violations = value["violations"].as_array().unwrap();
-    assert_eq!(violations.len(), 6, "{value}");
-    for (member, operation) in [
-        ("save", "return"),
-        ("save", "parameter:first"),
-        ("save", "parameter:second"),
-        ("value", "return"),
-        ("value", "parameter:input"),
-        ("cached", "return"),
-    ] {
-        assert_eq!(
-            violations
-                .iter()
-                .filter(|v| v["semantic"]["declaration"]
-                    .as_str()
-                    .unwrap()
-                    .ends_with(&format!("::{member}"))
-                    && v["semantic"]["operation"] == operation)
-                .count(),
-            1,
-            "missing or duplicate {member} {operation}: {value}"
-        );
-    }
-    let messages: std::collections::BTreeSet<_> = violations
-        .iter()
-        .map(|v| v["message"].as_str().unwrap())
+    let path = std::env::var_os("PATH").unwrap();
+    let mut paths: Vec<_> = std::env::split_paths(&path)
+        .filter(|dir| {
+            !dir.join("easement_dart_semantics").is_file()
+                && !dir.join("easement_dart_semantics.exe").is_file()
+        })
         .collect();
-    assert_eq!(
-        messages.len(),
-        violations.len(),
-        "distinct slots have indistinguishable text diagnostics: {value}"
-    );
-    easement(&root, &["baseline", "--accept-new"]).success();
-    fs::write(root.join("lib/orders.dart"), source.replace("; ", ";\n")).unwrap();
-    let reformatted = semantic_json(&root, 0);
-    assert_eq!(
-        reformatted["legalized"], 6,
-        "formatting changed baseline identities: {reformatted}"
-    );
-    assert_eq!(reformatted["stale"], serde_json::json!([]));
-}
-
-fn flutter_ui_project() -> (TempDir, PathBuf) {
-    let result = fixture("dart/flutter-ui");
-    prepare_dart(&result.1);
-    result
-}
-
-fn ui_policy(root: &Path, layout: bool, helpers: bool) {
-    fs::write(root.join("easement.yml"), format!("version: 1\ncomponents:\n  presentation: {{in: lib}}\nrules:\n  presentation:\n    dart:\n      one_widget_per_file: {layout}\n      no_widget_helpers: {helpers}\n")).unwrap();
-}
-
-#[test]
-fn dart_ui_rules_are_independent_and_extraction_fixes_both() {
-    let (_tmp, root) = flutter_ui_project();
-    let value = semantic_json(&root, 1);
-    let found = value["violations"].as_array().unwrap();
-    assert_eq!(found.len(), 2, "{value}");
-    assert_eq!(value["confidence"], "full", "{value}");
-    let layout = found
-        .iter()
-        .find(|v| v["rule"] == "dart-one-widget-per-file")
+    let indexer = which::which("scip_dart").unwrap();
+    fs::copy(&indexer, bin.path().join(indexer.file_name().unwrap())).unwrap();
+    paths.insert(0, bin.path().to_path_buf());
+    let path = std::env::join_paths(paths).unwrap();
+    assert!(which::which_in("easement_dart_semantics", Some(&path), bin.path()).is_err());
+    for fixture_name in ["dart/basic", "dart/flutter-basic"] {
+        let (_tmp, root) = fixture(fixture_name);
+        fs::write(
+            root.join("easement.yml"),
+            "version: 1\ncomponents:\n  app: {in: lib}\n",
+        )
         .unwrap();
-    assert_eq!(layout["file"], "lib/profile_screen.dart");
-    assert_eq!(layout["line"], 12);
-    assert!(
-        layout["message"]
-            .as_str()
-            .unwrap()
-            .contains("ProfileScreen")
-    );
-    assert!(
-        layout["message"]
-            .as_str()
-            .unwrap()
-            .contains("_ProfileHeader")
-    );
-    let helper = found
-        .iter()
-        .find(|v| v["rule"] == "dart-no-widget-helpers")
-        .unwrap();
-    assert_eq!(helper["line"], 9);
-    assert!(
-        helper["semantic"]["declaration"]
-            .as_str()
-            .unwrap()
-            .contains("_header")
-    );
-    assert!(helper["message"].as_str().unwrap().contains("Widget"));
-    insta::assert_json_snapshot!("dart_ui_composition", &value);
-    for (layout, helpers, count) in [(true, false, 1), (false, true, 1), (false, false, 0)] {
-        ui_policy(&root, layout, helpers);
-        let value = semantic_json(&root, if count == 0 { 0 } else { 1 });
-        assert_eq!(value["violations"].as_array().unwrap().len(), count);
-        if count == 0 {
-            assert_eq!(value["stats"]["semantic_indexed"].as_u64().unwrap_or(0), 0);
+        prepare_dart(&root);
+        for args in [
+            vec!["check", "--no-cache", "--format", "json"],
+            vec!["doctor", "--format", "json"],
+        ] {
+            let output = Command::cargo_bin("easement")
+                .unwrap()
+                .current_dir(&root)
+                .env("PATH", &path)
+                .env("EASEMENT_CACHE_DIR", test_cache())
+                .args(&args)
+                .assert()
+                .success()
+                .get_output()
+                .stdout
+                .clone();
+            let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
+            if args[0] == "check" {
+                let stats = report["stats"].as_object().unwrap();
+                assert!(stats.keys().all(|key| !key.starts_with("semantic_")));
+            }
+            assert!(
+                !String::from_utf8(output)
+                    .unwrap()
+                    .contains("easement_dart_semantics")
+            );
         }
     }
-    ui_policy(&root, true, true);
-    fs::write(root.join("lib/profile_screen.dart"), "import 'package:flutter/widgets.dart';\nimport 'profile_header.dart';\nclass ProfileScreen extends StatelessWidget {\n  const ProfileScreen({super.key});\n  @override\n  Widget build(BuildContext context) => const ProfileHeader();\n}\n").unwrap();
-    fs::write(root.join("lib/profile_header.dart"), "import 'package:flutter/widgets.dart';\nclass ProfileHeader extends StatelessWidget {\n  const ProfileHeader({super.key});\n  @override\n  Widget build(BuildContext context) => const SizedBox.shrink();\n}\n").unwrap();
-    let output = std::process::Command::new("dart")
-        .args(["analyze", "--fatal-infos"])
-        .current_dir(&root)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    semantic_json(&root, 0);
-}
-
-#[test]
-fn dart_ui_resolved_widgets_parts_and_wrapper_builds() {
-    let (_tmp, root) = flutter_ui_project();
-    fs::remove_file(root.join("lib/profile_screen.dart")).unwrap();
-    fs::write(root.join("lib/base.dart"), "import 'package:flutter/widgets.dart';\nabstract class Base extends StatelessWidget { const Base({super.key}); }\ntypedef Alias = Base;\n").unwrap();
-    fs::write(
-        root.join("lib/widgets.dart"),
-        r#"import 'package:flutter/widgets.dart';
-import 'base.dart';
-part 'extra.dart';
-class First extends Alias {
-  const First({super.key});
-  @override
-  Widget build(BuildContext context) => const SizedBox();
-}
-class Second extends First { const Second({super.key}); }
-class Third extends Second { const Third({super.key}); }
-"#,
-    )
-    .unwrap();
-    fs::write(root.join("lib/extra.dart"), "part of 'widgets.dart';\nclass PartWidget extends First { const PartWidget({super.key}); }\n").unwrap();
-    fs::write(root.join("lib/consumer.dart"), r#"import 'package:flutter/widgets.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-class Screen extends ConsumerWidget {
-  const Screen({super.key});
-  @override
-  Widget build(BuildContext context, WidgetRef ref) => ListView.builder(itemBuilder: (_, i) => Text('$i'));
-}
-"#).unwrap();
-    fs::write(
-        root.join("lib/state.dart"),
-        r#"import 'package:flutter/widgets.dart';
-class Screen extends StatefulWidget {
-  const Screen({super.key});
-  @override
-  State<Screen> createState() => _ScreenState();
-}
-class _ScreenState extends State<Screen> {
-  @override
-  Widget build(BuildContext context) => const SizedBox();
-}
-class Unrelated {}
-"#,
-    )
-    .unwrap();
-    fs::write(
-        root.join("lib/namesake.dart"),
-        "class Widget {}\nclass One extends Widget {}\nclass Two extends Widget {}\n",
-    )
-    .unwrap();
-    let value = semantic_json(&root, 1);
-    assert_eq!(value["confidence"], "full", "{value}");
-    let found = value["violations"].as_array().unwrap();
-    assert_eq!(found.len(), 2, "{value}");
-    assert!(
-        found
-            .iter()
-            .all(|v| v["rule"] == "dart-one-widget-per-file" && v["file"] == "lib/widgets.dart")
-    );
-    assert!(found.iter().any(|v| v["line"] == 9));
-    assert!(found.iter().any(|v| v["line"] == 10));
-}
-
-#[test]
-fn dart_ui_named_helpers_cover_private_local_nullable_and_broad_returns() {
-    let (_tmp, root) = flutter_ui_project();
-    ui_policy(&root, false, true);
-    fs::write(
-        root.join("lib/profile_screen.dart"),
-        r#"import 'package:flutter/widgets.dart';
-typedef Maybe = Text?;
-Widget top() => const Text('top');
-Widget build() => const SizedBox();
-class Screen extends StatefulWidget {
-  const Screen({super.key});
-  @override
-  State<Screen> createState() => ScreenState();
-  static Text title() => const Text('title');
-}
-class ScreenState extends State<Screen> {
-  @override
-  Widget build(BuildContext context) {
-    Text local() => const Text('local');
-    void other() { Text local() => const Text('other'); local(); }
-    other();
-    return ListView.builder(itemBuilder: (_, i) => local());
-  }
-  Maybe get footer => const Text('footer');
-  _inferred() => const SizedBox();
-  Object broad(bool yes) { if (yes) return const Text('yes'); else return const SizedBox(); }
-  Object? nullable(bool yes) => yes ? const Text('yes') : null;
-  List<Widget> many() => [const Text('many')];
-  Future<Widget> later() async => const Text('later');
-  Widget tearoff(BuildContext c, int i) => const Text('tearoff');
-  Widget useTearoff() => ListView.builder(itemBuilder: tearoff);
-}
-class Unrelated { Widget build() => const Text('ordinary'); }
-"#,
-    )
-    .unwrap();
-    // Equal names in separate libraries must keep independent local identities.
-    fs::copy(
-        root.join("lib/profile_screen.dart"),
-        root.join("lib/other.dart"),
-    )
-    .unwrap();
-    let value = semantic_json(&root, 1);
-    assert_eq!(value["confidence"], "full", "{value}");
-    let found = value["violations"].as_array().unwrap();
-    assert_eq!(found.len(), 24, "{value}");
-    assert!(found.iter().all(|v| v["rule"] == "dart-no-widget-helpers"));
-    for name in [
-        "top",
-        "#build",
-        "title",
-        "footer",
-        "_inferred",
-        "broad",
-        "nullable",
-        "tearoff",
-        "useTearoff",
-        "Unrelated::build",
-    ] {
-        assert!(
-            found.iter().any(|v| v["semantic"]["declaration"]
-                .as_str()
-                .unwrap()
-                .contains(name)),
-            "missing {name}: {value}"
-        );
-    }
-    let locals: Vec<_> = found
-        .iter()
-        .filter(|v| {
-            v["semantic"]["declaration"]
-                .as_str()
-                .unwrap()
-                .contains("::local[")
-        })
-        .collect();
-    assert_eq!(locals.len(), 4, "{value}");
-    assert!(
-        locals
-            .iter()
-            .all(|v| v["target"].as_str().unwrap().ends_with("local[local:1]"))
-    );
-    let identities: std::collections::BTreeSet<_> = locals
-        .iter()
-        .map(|v| v["target"].as_str().unwrap())
-        .collect();
-    assert_eq!(identities.len(), 4);
-    assert!(found.iter().all(|v| {
-        !v["semantic"]["declaration"]
-            .as_str()
-            .unwrap()
-            .ends_with("ScreenState::build")
-    }));
-}
-
-#[test]
-fn dart_ui_partial_results_source_selection_and_mixed_language_scope() {
-    let (_tmp, root) = flutter_ui_project();
-    let file = root.join("lib/profile_screen.dart");
-    let source = fs::read_to_string(&file).unwrap();
-    fs::write(&file, format!("{source}\nObject uncertain(dynamic value) => value;\nclass Broken extends Missing {{}}\n")).unwrap();
-    let value = semantic_json(&root, 1);
-    assert_eq!(value["violations"].as_array().unwrap().len(), 2, "{value}");
-    assert_eq!(value["confidence"], "partial");
-    assert!(
-        value["stats"]["semantic_partial"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|g| g["declaration"].as_str().unwrap().contains("uncertain"))
-    );
-    easement(&root, &["check"])
-        .code(1)
-        .stdout(contains("Incomplete analysis:"))
-        .stdout(contains("uncertain"));
-    fs::write(&file, &source).unwrap();
-    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
-    fs::write(root.join("lib/extra.dart"), &source).unwrap();
-    fs::write(
-        root.join("easement.yml"),
-        format!(
-            "{config}\nexclude: ['lib/extra.dart']\ntarget_only: ['lib/profile_screen.dart']\n"
-        ),
-    )
-    .unwrap();
-    let value = semantic_json(&root, 0);
-    assert_eq!(value["stats"]["semantic_indexed"].as_u64().unwrap_or(0), 0);
-    fs::create_dir_all(root.join("kotlin")).unwrap();
-    fs::write(root.join("kotlin/model.kt"), "package model\nclass Model\n").unwrap();
-    fs::write(
-        root.join("easement.yml"),
-        format!(
-            "{}\nexclude: ['lib/extra.dart']\n",
-            config.replace(
-                "  presentation: {in: lib}",
-                "  presentation: {in: lib}\n  kotlin: {in: kotlin}"
-            )
-        ),
-    )
-    .unwrap();
-    let value = semantic_json(&root, 1);
-    assert_eq!(value["violations"].as_array().unwrap().len(), 2);
-    easement(&root, &["check", "--scope", "kotlin"]).success();
-}
-
-#[test]
-fn dart_ui_baseline_diff_suppression_and_cache_follow_existing_workflows() {
-    let (_tmp, root) = flutter_ui_project();
-    let file = root.join("lib/profile_screen.dart");
-    let source = fs::read_to_string(&file).unwrap();
-    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
-    ui_policy(&root, true, false);
-    semantic_json(&root, 1);
-    let value: serde_json::Value = serde_json::from_str(&stdout_of(
-        easement(&root, &["check", "--cache-only", "--format", "json"]).code(1),
-    ))
-    .unwrap();
-    assert_eq!(value["stats"]["semantic_from_cache"], 1);
-    easement(&root, &["baseline", "--accept-new"]).success();
-    fs::write(&file, source.replace("ProfileScreen", "RenamedScreen")).unwrap();
-    easement(&root, &["check"]).success();
-    fs::remove_file(root.join("easement.baseline.yml")).unwrap();
-    fs::write(root.join("easement.yml"), &config).unwrap();
-    fs::write(&file, &source).unwrap();
-    git(&root, &["init", "-q", "-b", "main"]);
-    git(&root, &["add", "."]);
-    git(&root, &["commit", "-q", "-m", "test: Flutter UI base"]);
-    fs::write(&file, source.replace("class ProfileScreen", "class Inserted extends StatelessWidget {\n  const Inserted({super.key});\n  @override\n  Widget build(BuildContext context) => const SizedBox();\n}\n\nclass ProfileScreen")).unwrap();
-    let value: serde_json::Value = serde_json::from_str(&stdout_of(
-        easement(&root, &["check", "--diff", "HEAD", "--format", "json"]).code(1),
-    ))
-    .unwrap();
-    let found = value["violations"].as_array().unwrap();
-    assert_eq!(found.len(), 2, "{value}");
-    assert!(
-        found
-            .iter()
-            .all(|v| v["rule"] == "dart-one-widget-per-file")
-    );
-    fs::write(&file, source.replace("  Widget _header", "  // easement:disable-next-line dart-no-widget-helpers -- extract separately\n  Widget _header").replace("class _ProfileHeader", "// easement:disable-next-line dart-one-widget-per-file -- legacy widget pair\nclass _ProfileHeader")).unwrap();
-    let value = semantic_json(&root, 0);
-    assert_eq!(value["stats"]["suppressed"], 2);
-    fs::write(&file, &source).unwrap();
-    fs::write(
-        root.join("easement.yml"),
-        format!("{config}\nwarn: [dart-one-widget-per-file, dart-no-widget-helpers]\n"),
-    )
-    .unwrap();
-    let value = semantic_json(&root, 0);
-    assert_eq!(value["warnings"].as_array().unwrap().len(), 2);
-}
-
-#[test]
-fn dart_ui_local_base_and_alias_edits_invalidate_semantic_cache() {
-    let (_tmp, root) = flutter_ui_project();
-    fs::create_dir_all(root.join("packages/base/lib")).unwrap();
-    fs::write(root.join("packages/base/pubspec.yaml"), "name: ui_base\nenvironment:\n  sdk: ^3.13.0\ndependencies:\n  flutter:\n    sdk: flutter\n").unwrap();
-    let pubspec = root.join("pubspec.yaml");
-    fs::write(
-        &pubspec,
-        format!(
-            "{}  ui_base:\n    path: packages/base\n",
-            fs::read_to_string(&pubspec).unwrap()
-        ),
-    )
-    .unwrap();
-    let base = root.join("packages/base/lib/base.dart");
-    let widget_base = "import 'package:flutter/widgets.dart';\nabstract class Base extends StatelessWidget { const Base({super.key}); }\ntypedef Result = Text;\n";
-    fs::write(&base, widget_base).unwrap();
-    prepare_dart(&root);
-    prepare_dart(&root.join("packages/base"));
-    fs::write(root.join("lib/profile_screen.dart"), "import 'package:flutter/widgets.dart';\nimport 'package:ui_base/base.dart';\nclass First extends Base {\n  const First({super.key});\n  @override\n  Widget build(BuildContext context) => const SizedBox();\n  Result helper(Result value) => value;\n}\nclass Second extends First { const Second({super.key}); }\n").unwrap();
-    let value = semantic_json(&root, 1);
-    assert_eq!(value["violations"].as_array().unwrap().len(), 2, "{value}");
-    fs::write(
-        &base,
-        widget_base.replace("typedef Result = Text;", "typedef Result = String;"),
-    )
-    .unwrap();
-    let value = semantic_json(&root, 1);
-    assert_eq!(value["stats"]["semantic_indexed"], 1, "{value}");
-    assert_eq!(value["violations"].as_array().unwrap().len(), 1);
-    let fresh: serde_json::Value = serde_json::from_str(&stdout_of(
-        easement(&root, &["check", "--no-cache", "--format", "json"]).code(1),
-    ))
-    .unwrap();
-    assert_eq!(value["violations"], fresh["violations"]);
-    fs::write(&base, "import 'package:flutter/widgets.dart';\nabstract class Base { const Base({Key? key}); Widget build(BuildContext context); }\ntypedef Result = String;\n").unwrap();
-    let value = semantic_json(&root, 0);
-    assert_eq!(value["stats"]["semantic_indexed"], 1, "{value}");
-    assert_eq!(value["confidence"], "full", "{value}");
-    easement(&root, &["check", "--no-cache"]).success();
 }

@@ -1,6 +1,6 @@
 /target
 /flutter-demo/
-tools/dart-indexer/.dart_tool/
+tools/*/.dart_tool/
 tests/fixtures/dart/**/.dart_tool/
 node_modules/
 .lycheecache

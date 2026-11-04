@@ -3,6 +3,6 @@ publish_to: none
 environment:
   sdk: '>=3.13.0 <4.0.0'
 dependencies:
-  analyzer: 14.4.0
+  # 6.0.0 cannot compile the generated bindings shipped by scip_dart 1.8.1.
   protobuf: 6.1.0
   scip_dart: 1.8.1

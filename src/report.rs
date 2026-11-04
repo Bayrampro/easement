@@ -846,7 +846,6 @@ mod tests {
     fn verdict() -> Verdict {
         Verdict {
             new: vec![Violation {
-                semantic: None,
                 rule: RuleId::Dependency,
                 file: "src/a.ts".into(),
                 line: 3,

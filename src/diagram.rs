@@ -318,7 +318,6 @@ pub fn check(policy: &Policy, edges: &[Edge]) -> Result<Vec<Violation>> {
             imports.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
             let first = imports[0];
             Violation {
-                semantic: None,
                 rule: RuleId::Diagram,
                 file: first.file.clone(),
                 line: first.line,

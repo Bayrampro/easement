@@ -125,20 +125,12 @@ run = "hk check --all"
 
 [tasks.install-dart-indexer]
 description = "Install the pinned Dart indexer launcher"
-run = ["cd tools/dart-indexer && dart pub get --enforce-lockfile", "dart tools/dart-indexer/bin/install.dart"]
+run = ["cd tools/scip-dart && dart pub get --enforce-lockfile", "dart tools/scip-dart/bin/install.dart"]
 
 [tasks.prepare-dart-fixtures]
 description = "Seed Flutter dependencies before offline Dart integration tests"
-run = ["cd tests/fixtures/dart/flutter-basic && flutter pub get --enforce-lockfile", "cd tests/fixtures/dart/flutter-ui && flutter pub get --enforce-lockfile"]
+run = ["cd tests/fixtures/dart/flutter-basic && flutter pub get --enforce-lockfile"]
 
 [tasks.fix]
 description = "Apply the automatic fixes"
 run = "hk fix --all"
-
-[tasks.install-dart-semantics]
-description = "Install the opt-in pinned Dart semantic companion"
-run = ["cd tools/dart-indexer && dart pub get --enforce-lockfile", "dart tools/dart-indexer/bin/install_semantics.dart"]
-
-[tasks.check-dart-semantics]
-description = "Format, analyze and test the Dart semantic companion"
-run = ["dart format --output=none --set-exit-if-changed tools/dart-indexer/bin tools/dart-indexer/test", "dart analyze --fatal-infos tools/dart-indexer", "dart tools/dart-indexer/test/semantics_test.dart", "dart tools/dart-indexer/test/ui_test.dart"]

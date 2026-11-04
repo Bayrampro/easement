@@ -90,9 +90,6 @@ fn warn_schema(_: &mut SchemaGenerator) -> Schema {
 #[serde(deny_unknown_fields)]
 #[schemars(transform = config_schema_extras)]
 pub struct Config {
-    /// Opt-in Dart roles and implementation-to-contract associations.
-    #[serde(default)]
-    pub dart: crate::dart::config::Settings,
     /// Config format version.
     #[schemars(extend("const" = 1))]
     pub version: u32,
@@ -452,9 +449,6 @@ pub enum Reach {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
-    /// Opt-in semantic constraints applied only to Dart declarations of this component.
-    #[serde(default)]
-    pub dart: crate::dart::config::Rules,
     /// Components this one may depend on. An item may carry its own reason, shown by
     /// `explain`.
     #[serde(default)]
@@ -613,7 +607,6 @@ impl Config {
     }
 
     fn validate(&self) -> Result<()> {
-        crate::dart::config::validate(self)?;
         if self.version != 1 {
             bail!("unsupported config version {}, expected 1", self.version);
         }

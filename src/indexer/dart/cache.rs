@@ -23,31 +23,7 @@ pub(super) fn fingerprint(
     dir: &Path,
     resolution: &Resolution,
 ) -> Result<String> {
-    fingerprint_for(binary, sdk, dir, resolution, "# easement-scip-dart-v1 ")
-}
-
-pub(super) fn semantic_fingerprint(
-    binary: &Path,
-    sdk: &Path,
-    dir: &Path,
-    resolution: &Resolution,
-) -> Result<String> {
-    fingerprint_for(
-        binary,
-        sdk,
-        dir,
-        resolution,
-        "# easement-dart-semantics-v1 ",
-    )
-}
-
-fn fingerprint_for(
-    binary: &Path,
-    sdk: &Path,
-    dir: &Path,
-    resolution: &Resolution,
-    prefix: &str,
-) -> Result<String> {
+    let prefix = "# easement-scip-dart-v1 ";
     let wrapper =
         std::fs::read_to_string(binary).context("Dart cache needs a verifiable launcher")?;
     let header = wrapper.lines().nth(1).context("unknown Dart launcher")?;
@@ -81,12 +57,7 @@ fn fingerprint_for(
         field(&mut hash, format!("{value:?}").as_bytes());
     }
     let mut seen = BTreeSet::new();
-    let semantic = prefix == "# easement-dart-semantics-v1 ";
-    if semantic {
-        source_tree(dir, &mut seen, &mut hash)?;
-    } else {
-        tree(dir, &mut seen, &mut hash)?;
-    }
+    tree(dir, &mut seen, &mut hash)?;
     for sdk in [
         sdk,
         launcher
@@ -100,34 +71,10 @@ fn fingerprint_for(
         }
     }
     tree(&launcher.source, &mut seen, &mut hash)?;
-    if semantic {
-        // Parts next to the executable participate in its implementation identity.
-        tree(
-            launcher
-                .source
-                .parent()
-                .context("companion has no executable directory")?,
-            &mut seen,
-            &mut hash,
-        )?;
-        let library = launcher
-            .source
-            .parent()
-            .and_then(Path::parent)
-            .context("companion has no package")?
-            .join("lib");
-        if library.exists() {
-            tree(&library, &mut seen, &mut hash)?;
-        }
-    }
     inputs(&launcher.config, &mut seen, &mut hash)?;
     inputs(&resolution.path, &mut seen, &mut hash)?;
     for package in resolution.packages.values() {
-        if semantic {
-            source_tree(&package.root, &mut seen, &mut hash)?;
-        } else {
-            tree(&package.root, &mut seen, &mut hash)?;
-        }
+        tree(&package.root, &mut seen, &mut hash)?;
         options(&package.root, resolution, &mut seen, &mut hash)?;
     }
     for parent in dir.ancestors() {
@@ -141,52 +88,6 @@ fn fingerprint_for(
     }
     options(dir, resolution, &mut seen, &mut hash)?;
     Ok(hash.finalize().to_hex().to_string())
-}
-
-/// Analyzer consumes Dart source and explicitly resolved configuration, not policy.
-/// Plugin configurations are rejected by `options`; included options are read directly.
-fn source_tree(path: &Path, seen: &mut BTreeSet<PathBuf>, hash: &mut blake3::Hasher) -> Result<()> {
-    if !path.is_dir() {
-        return tree(path, seen, hash);
-    }
-    field(hash, path.as_os_str().as_encoded_bytes());
-    let canonical = dunce::canonicalize(path)?;
-    field(hash, canonical.as_os_str().as_encoded_bytes());
-    if !seen.insert(canonical) {
-        hash.update(b"alias");
-        return Ok(());
-    }
-    let mut children = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
-    children.retain(|entry| {
-        let name = entry.file_name();
-        if name == ".git" {
-            return false;
-        }
-        entry.path().is_dir()
-            || entry.path().extension().is_some_and(|ext| {
-                registry::DART
-                    .extensions
-                    .iter()
-                    .any(|source| ext == *source)
-                    || ext == "json"
-            })
-            || [
-                "pubspec.yaml",
-                "pubspec.lock",
-                "pubspec_overrides.yaml",
-                "analysis_options.yaml",
-                ".analysis_options",
-            ]
-            .iter()
-            .any(|value| name == *value)
-    });
-    children.sort_by_key(|entry| entry.file_name());
-    hash.update(b"semantic-source-directory");
-    hash.update(&(children.len() as u64).to_le_bytes());
-    for entry in children {
-        source_tree(&entry.path(), seen, hash)?;
-    }
-    Ok(())
 }
 
 fn tree(path: &Path, seen: &mut BTreeSet<PathBuf>, hash: &mut blake3::Hasher) -> Result<()> {
@@ -408,37 +309,6 @@ mod tests {
             let next = key();
             assert_ne!(previous, next);
             previous = next;
-        }
-        let semantic_binary = tmp.path().join("easement_dart_semantics");
-        std::fs::write(
-            &semantic_binary,
-            std::fs::read_to_string(&binary)
-                .unwrap()
-                .replace("# easement-scip-dart-v1 ", "# easement-dart-semantics-v1 "),
-        )
-        .unwrap();
-        let semantic_key =
-            || semantic_fingerprint(&semantic_binary, &sdk, &root, &resolution).unwrap();
-        let before_part = semantic_key();
-        std::fs::write(runner.join("ui.dart"), "// widget classification part\n").unwrap();
-        assert_ne!(before_part, semantic_key());
-        let policy_key = semantic_key();
-        std::fs::write(root.join("easement.yml"), "version: 1\ndart: {}\n").unwrap();
-        assert_eq!(policy_key, semantic_key());
-        std::fs::write(root.join("easement.yml"), "version: 1\ndart: {roles: []}\n").unwrap();
-        assert_eq!(policy_key, semantic_key());
-        for path in [
-            root.join("app.dart"),
-            sdk.join("version"),
-            dependency.join("dep.dart"),
-            runner.join("indexer.dart"),
-            runner.join("ui.dart"),
-        ] {
-            let before = semantic_key();
-            let mut content = std::fs::read(&path).unwrap();
-            content.push(b'\n');
-            std::fs::write(path, content).unwrap();
-            assert_ne!(before, semantic_key());
         }
         std::fs::write(
             root.join("analysis_options.yaml"),

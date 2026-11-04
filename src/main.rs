@@ -3,7 +3,6 @@ mod check;
 mod components;
 mod config;
 mod decision;
-mod dart;
 mod diagram;
 mod diff;
 mod doctor;
@@ -27,8 +26,6 @@ mod stdlib;
 mod suggest;
 mod suppress;
 mod unused;
-
-use crate::lang::registry;
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -248,14 +245,6 @@ impl Project {
         let undeclared =
             manifests::undeclared(self.config(), &map, &self.root, &scan.deps, &scan.all_files);
         violations.extend(undeclared.violations);
-        let semantic = dart::evaluate(
-            &self.root,
-            &self.config,
-            &map,
-            &scan.paths,
-            cache.index_cache,
-        )?;
-        violations.extend(semantic.violations);
         let (mut violations, suppressed) = suppress::apply(violations, &scan.suppressions);
         violations.extend(check::unmatched(
             &self.policy,
@@ -314,9 +303,6 @@ impl Project {
                 .collect();
             stats.naming_unseen = unseen.into_iter().collect();
         }
-        stats.semantic_partial = semantic.gaps;
-        stats.semantic_indexed = semantic.ran;
-        stats.semantic_from_cache = semantic.cached;
         stats.unused_partial = unused.reasons;
         stats.manifests_partial = undeclared.reasons;
         if self.config().packages {
@@ -352,7 +338,8 @@ impl Project {
             .collect();
         // Only a whole index can tell a name that matches nothing: files it did not
         // cover, names it left unnamed and languages without an index may hold it.
-        let indexed_whole = scan.uncovered.is_empty()
+        let indexed_whole = scan.analysis_partial.is_empty()
+            && scan.uncovered.is_empty()
             && scan.unnamed_uses.is_empty()
             && scan.known_symbols.1
             && scan
@@ -361,23 +348,6 @@ impl Project {
                 .all(|f| indexer::INDEXERS.iter().any(|l| l.covers(f)));
         stats.symbols_unmatched =
             check::symbols_unmatched(self.config(), &scan.known_symbols.0, indexed_whole);
-        stats.analysis_partial.extend(
-            stats
-                .semantic_partial
-                .iter()
-                .filter(|gap| scope.contains(&map, &gap.file))
-                .map(|gap| crate::scan::AnalysisGap {
-                    file: gap.file.clone(),
-                    line: Some(gap.line),
-                    reason: format!(
-                        "{}: {}: {}; {}",
-                        gap.rule.as_str(),
-                        gap.declaration,
-                        gap.reason,
-                        gap.recheck
-                    ),
-                }),
-        );
         stats.files = scan
             .paths
             .iter()
@@ -399,16 +369,11 @@ impl Project {
         let accepted = map.accepted_gaps(scan.uncovered.iter().filter(|f| scope.contains(&map, f)));
         Ok(Analysis {
             accepted,
-            uncertain: stats
-                .semantic_partial
+            uncertain: scan
+                .uncovered
                 .iter()
-                .map(|gap| gap.file.clone())
-                .chain(
-                    scan.uncovered
-                        .iter()
-                        .cloned()
-                        .chain(scan.analysis_partial.into_iter().map(|gap| gap.file)),
-                )
+                .cloned()
+                .chain(scan.analysis_partial.into_iter().map(|gap| gap.file))
                 .collect(),
             unindexed: scan.uncovered,
             violations,

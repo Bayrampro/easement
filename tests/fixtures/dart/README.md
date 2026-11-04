@@ -1,12 +1,10 @@
 # Dart and Flutter fixtures
 
 One directory groups the Dart language fixtures. Each child remains a separate
-Pub package so pure Dart tests do not inherit Flutter or UI-wrapper dependencies.
+Pub package so pure Dart tests do not inherit Flutter dependencies.
 
 - `basic/`: Dart directives, dependency extraction and recorded SCIP evidence.
-- `semantic/`: opt-in architecture policies, aliases and semantic evidence.
 - `flutter-basic/`: minimal real Flutter SDK dependency-indexing fixture.
-- `flutter-ui/`: opt-in widget layout/helper rules, with pinned Riverpod wrapper.
 
 Other scenarios (caching, external dependencies, malformed sources, generated
 files and Pub workspaces) use temporary packages created by `tests/cli.rs`.

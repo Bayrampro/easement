@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 mod cache;
 pub(crate) mod directives;
 pub(crate) mod private;
-pub(crate) mod semantics;
 use directives::Kind;
 
 #[derive(Debug)]

@@ -142,7 +142,6 @@ mod tests {
 
     fn v(file: &str, to: &str) -> Violation {
         Violation {
-            semantic: None,
             rule: crate::check::RuleId::Dependency,
             file: file.into(),
             line: 1,

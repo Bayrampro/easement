@@ -212,18 +212,6 @@ Every violation carries a rule id, used in the JSON report, the baseline and sup
 | `naming` | a component defines a type whose name another component's `defines` claims |
 | `diagram` | a dependency between components has no arrow in the `diagram` |
 | `undeclared` | with `manifests`, a file imports an external module the nearest manifest does not declare |
-| `dart-repository-declaration` | a selected repository contract lacks required class modifiers |
-| `dart-contract-api-types` | a selected public contract API exposes a forbidden role or type |
-| `dart-repository-implementation` | an implementation does not satisfy its configured contract association |
-| `dart-use-case-dependencies` | a selected use case depends on a forbidden role or type |
-| `dart-domain-type-boundaries` | a selected domain declaration uses a forbidden role or type |
-| `dart-one-widget-per-file` | a physical file declares more than one Flutter widget class |
-| `dart-no-widget-helpers` | a named callable in a file declaring widgets returns a widget without being a verified framework build override |
-
-Dart semantic and Flutter UI rules are disabled by default. See
-[Dart semantic architecture checks](#dart-semantic-architecture-checks) and
-[Flutter UI composition checks](#flutter-ui-composition-checks) for configuration,
-resolved evidence, coverage limits and extraction fixes.
 
 ### Public API
 
@@ -747,7 +735,7 @@ Indexers are slow (a second or two for a small project, ten or more for a big on
 - **Kept:** the newest 32 indexes of each directory and indexer.
 - **Not looked at:** dependencies outside the project (`node_modules`, `vendor/`, the Go module cache, the Python environment), and the toolchain an indexer calls on the `PATH` (`go`, `python3`, `dotnet`, the JDK, Maven). After changing them without touching a lock file, run `easement check --no-cache`. An indexer run through rustup or a mise shim is known by the binary that rustup or mise runs in the directory of the index; other proxies (Volta, proto) are not resolved, so after switching a toolchain behind them run `--no-cache` too.
 
-Dart uses dedicated dependency and semantic cache keys; their resolution inputs, tool identities and bypass conditions are described under [Dart and Flutter](#dart-and-flutter) and [Dart semantic architecture checks](#dart-semantic-architecture-checks).
+Dart uses a dedicated dependency cache key; its resolution inputs, tool identity and bypass conditions are described under [Dart and Flutter](#dart-and-flutter).
 
 `--format json` reports `stats.indexed` and `stats.from_cache`. When an index came from the cache, the report says so, in `cached` of `--format json` and in a line of the text, with what the key leaves out and that `--no-cache` indexes again. `impact` (`cached` in its JSON), `why`, `suggest` and `baseline` say it the same way; `graph` and `suggest --patch`, whose output is a diagram or a patch, say it on stderr, with `graph` naming there the reasons its graph may be partial too.
 
@@ -767,7 +755,7 @@ Dart uses dedicated dependency and semantic cache keys; their resolution inputs,
 | Java | [`scip-java`](https://github.com/sourcegraph/scip-java) | a `pom.xml` or `build.gradle(.kts)` (the outermost one holds the modules); the JDK and the build tool; it builds the project, and needs bash 4.4 or newer (not the macOS one) |
 | C# | [`scip-dotnet`](https://github.com/sourcegraph/scip-dotnet) | a `.csproj` or `.sln`; the .NET SDK; `dotnet tool install --global scip-dotnet`; it restores packages |
 | Ruby | [`scip-ruby`](https://github.com/sourcegraph/scip-ruby) | a `Gemfile` or `.gemspec` (the outermost one holds the project); `mise use -g github:sourcegraph/scip-ruby`; releases exist for macOS arm64 and Linux x86_64 only |
-| Dart / Flutter | `scip_dart` through the [pinned launcher](#dart-and-flutter) | a `pubspec.yaml`; Dart or Flutter SDK, prepared Pub resolution and generated sources; opt-in semantic/UI rules also need the [semantic companion](#dart-semantic-architecture-checks) |
+| Dart / Flutter | `scip_dart` through the [pinned launcher](#dart-and-flutter) | a `pubspec.yaml`; Dart or Flutter SDK, prepared Pub resolution and generated sources |
 
 ```sh
 mise use -g go:github.com/scip-code/scip-go/cmd/scip-go npm:@sourcegraph/scip-typescript npm:@sourcegraph/scip-python github:sourcegraph/scip-java github:sourcegraph/scip-ruby
@@ -826,7 +814,7 @@ mise run install-dart-indexer
 export PATH="$PWD/target/dart-indexer:$PATH"
 ```
 
-This resolves `scip_dart` 1.8.1 with the checked-in tool lockfile and creates a
+This resolves `scip_dart` 1.8.1 with the checked-in lockfile in `tools/scip-dart` and creates a
 launcher that runs its released source through Dart. It pins `protobuf` 6.1.0;
 6.0.0 does not compile the released generated bindings. The release reports
 `1.7.0` through `--version`, so cache identity uses implementation contents.
@@ -911,8 +899,9 @@ cross-file private use that `forbid_symbol` or `public_symbols` could restrict.
 Public-only files, ordinary locals, and unrelated private helpers do not inherit
 a project-wide warning. Missing source ranges, symbol classification, or part
 ownership remain conservative; other extraction gaps are reported independently.
-Dart `unused` enforcement remains unsupported.
-Semantic architecture checks are available through the opt-in companion below.
+Dart `unused` enforcement remains unsupported. Pub dependency-declaration edges
+with `packages: true` are also unsupported and report partial coverage;
+`manifests: true` continues to validate Dart source imports.
 
 Dart cache keys read hidden resolution state, package and workspace metadata,
 sources and resolved local/external package inputs, inherited/included analyzer
@@ -934,8 +923,7 @@ See [Dart extraction evidence](tests/fixtures/dart/basic/README.md).
 1. Walk the project. For Go, TypeScript, Python, Rust, PHP, Java, C#, Ruby and Dart run the SCIP indexer and read the index; for Kotlin and Swift parse each file with tree-sitter and collect imports.
 2. Turn every reference to a module into a dependency on a file inside the project, or on an external module.
 3. Map both ends to components and check each edge against the rules.
-4. When Dart semantic or Flutter UI rules are enabled, use the analyzer companion to resolve declarations and evaluate those policies. Missing facts retain proven findings and lower confidence.
-5. Compare violations with the baseline and report.
+4. Compare violations with the baseline and report.
 
 ## Comparison with other tools
 
@@ -956,7 +944,7 @@ Where `easement` differs:
 - **One config, one baseline, one report.** A repository with a Go backend and a TypeScript frontend gets the same component model, the same suppressions and the same CI output (`sarif`, `github`, `junit`) for both.
 - **The compiler's view, through SCIP.** Go, TypeScript, Python, Rust, PHP, Java, C#, Ruby and Dart are resolved by their SCIP indexers, so aliases, `tsconfig` paths and re-exports are what the compiler sees; Kotlin and Swift are read with tree-sitter and nothing has to build. The price of the indexers is that dependencies have to be installed (and, for Java and C#, the project built), which ArchUnit, working on compiled classes, also asks for.
 - **Adoption and review features built in.** A baseline for existing violations, `--diff` to judge only what a pull request adds, `--scope` for a part of the project, and `extends` for shared policy in a monorepo.
-- **One static CLI binary.** The CLI needs no runtime; language indexers still need their toolchains. Dart semantic and Flutter UI checks also need the Dart SDK and companion.
+- **One static CLI binary.** The CLI needs no runtime; language indexers still need their toolchains.
 
 Where the others are stronger:
 
@@ -999,186 +987,3 @@ Tools are pinned in `mise.toml`: `mise install`, `mise run setup` for the git ho
 ## License
 
 MIT
-
-## Dart semantic architecture checks
-
-Semantic checks are opt-in and apply only to Dart. Dependency checks still use
-SCIP. The companion uses the pinned analyzer to resolve declarations, public
-signatures, aliases, inherited generic members, inferred types and references.
-These checks enforce configured policies over analyzed code.
-
-Install from an easement source checkout, alongside the Stage 1 indexer:
-
-```sh
-mise run install-dart-indexer
-mise run install-dart-semantics
-export PATH="$PWD/target/dart-indexer:$PATH"
-easement_dart_semantics --version
-```
-
-The tested pair remains Flutter 3.47.9 / Dart 3.13.7. The tooling package requires
-Dart >=3.13.0 <4.0.0 and pins analyzer 14.4.0. Companion 1.1.0 emits fact format 2;
-its version command checks both identities. Installation currently creates a Unix
-launcher. Keep its source checkout and pinned package resolution available.
-`easement check` never installs tools, runs Pub or generates application code.
-
-Enable the smallest contract policy with:
-
-```yaml
-dart:
-  roles:
-    - role: dto
-      types: [{library: 'package:example/orders.dart', name: WireOrder}]
-    - role: repository-contract
-      types: [{library: 'package:example/orders.dart', name: OrderRepository}]
-rules:
-  orders:
-    dart:
-      contract_api_types: {forbid_roles: [dto]}
-```
-
-This extends an ordinary configuration whose `orders` component owns the source
-files. A signature `Future<Orders> load()` with
-`typedef Orders = List<WireOrder?>` fails at `Orders`, even when all declarations
-share one file. The diagnostic includes declaration identity, offending type,
-alias/type path, configured constraint and source location. Returning an entity
-instead passes. Text and JSON share the finding; JSON adds `semantic` evidence.
-
-`dart.roles` accepts `components`, project-relative `paths` globs and exact
-`types` selectors. Explicit types override component/path defaults. Assignments
-of different roles at equal precedence are configuration errors. Unknown explicit
-selectors are errors when semantic analysis is enabled. Select the defining
-library URI, including for declarations reached through re-exports or parts.
-Supported roles are `entity`, `dto`, `repository-contract`,
-`repository-implementation`, `use-case`, `view-model`, `view`, `screen`, and
-`bootstrap`. Names and suffixes never assign roles automatically. Declarations
-without roles are outside role-selected policies.
-
-The following keys live under `rules.<component>.dart`:
-
-| Setting | Policy |
-| --- | --- |
-| `repository_declaration: {require: [abstract, interface]}` | Repository contracts require these class modifiers. |
-| `contract_api_types: {forbid_roles: [dto]}` | Public contract returns, parameters, getters, setters and fields must not expose forbidden types. |
-| `repository_implementation: true` | Implementations must satisfy their explicit contract associations. |
-| `use_case_dependencies: {forbid_roles: [repository-implementation]}` | Use cases must not store, accept, construct or directly reference implementation types. |
-| `domain_type_boundaries: {forbid_types: [{library: 'package:flutter/**', name: '*'}]}` | Domain declarations must not use selected UI/infrastructure identities. |
-
-Type policies also accept `roles` to choose their subjects, `forbid_roles`, and
-`forbid_types` library/name globs. Default subjects are repository contracts for
-API checks, use cases for dependency checks, and entities/contracts/use cases for
-domain boundaries. Choose forbidden types and roles explicitly; enabling a rule
-does not select a framework preset. Bootstrap code can construct and inject
-implementations because it is not a use case. Other configured constraints still
-apply to it.
-
-Associate implementations explicitly:
-
-```yaml
-dart:
-  implementations:
-    - implementation: {library: 'package:example/application.dart', name: Storage}
-      contract: {library: 'package:example/orders.dart', name: OrderRepository}
-```
-
-The implementation needs the `repository-implementation` role and its contract
-needs `repository-contract`. Indirect implementations through base classes pass.
-For generic contracts, add recursive `arguments` entries with `library`, `name`
-and optional `nullable: true`. Arguments match resolved named type identities
-and nullability exactly; an omitted argument list requires a non-generic
-contract. A differently instantiated or same-named contract from another library
-fails. Record/function syntax for association arguments is not supported.
-
-Missing tools, malformed facts and incompatible fact versions are setup errors.
-Unresolved facts retain proven violations and produce `stats.semantic_partial`
-entries naming the rule, declaration, location, reason and recheck command.
-Confidence becomes partial; baseline debt is not marked fixed from missing facts.
-Only packages needed by enabled semantic rules invoke the companion. Referenced
-local types can supply role defaults through their definition locations; explicit
-selectors must resolve within those analyzed facts.
-
-Stable diagnostic IDs are `dart-repository-declaration`,
-`dart-contract-api-types`, `dart-repository-implementation`,
-`dart-use-case-dependencies`, and `dart-domain-type-boundaries`. They support
-`warn`, baselines and reasoned inline suppressions through the existing CLI.
-Diff evidence includes signature, alias and inherited-member origins. Run a full
-check after configuration changes; changed-line filtering does not prove all
-consequences of role edits. Use `--no-cache` to regenerate facts. Semantic cache
-keys include source, resolution, local dependencies, SDK and companion/analyzer
-identity, while policy is evaluated on every run. Stage 1 may conservatively
-reindex after configuration or baseline edits. `--cache-only` needs both caches.
-
-Run the prepared examples from this checkout:
-
-```sh
-cd tests/fixtures/dart/semantic
-dart pub get
-easement doctor
-easement check --no-cache --format json
-# The DTO alias deliberately fails. Change List<WireOrder?> to List<Order>.
-easement check --config clean.yml --no-cache
-easement check --config mvvm.yml --no-cache
-```
-
-The fixture contains a Clean Architecture policy and an independent MVVM
-policy. See its [extraction evidence](tests/fixtures/dart/semantic/README.md).
-
-## Flutter UI composition checks
-
-Two independent opt-in checks apply to Dart sources owned by a component:
-
-```yaml
-version: 1
-components:
-  presentation: {in: lib}
-rules:
-  presentation:
-    dart:
-      one_widget_per_file: true
-      no_widget_helpers: true
-```
-
-No architecture roles or repository policies are required. Either switch needs
-`mise run install-dart-semantics`; reinstall older companions for fact format 2.
-Both disabled retain ordinary Dart dependency checks without the companion.
-
-`dart-one-widget-per-file` counts class declarations by physical file, including
-parts. Resolved Flutter ancestry counts private, indirect, aliased and
-`ConsumerWidget` subclasses. A widget plus its `State` is valid. Each class after
-first receives a finding naming all widgets in that file. Move additional widgets
-into separate files; rename private classes when importing across libraries.
-
-`dart-no-widget-helpers` checks named top-level/local functions, methods, static
-methods and getters in physical files declaring widgets, including `State`
-helpers. It checks resolved widget return types, nullable aliases and inferred
-return expressions. Broad returns are classified only when return paths establish
-a widget result; uncertain classification reports partial confidence. Actual
-framework `build` overrides pass, including verified overrides through custom
-bases and Riverpod `ConsumerWidget`. A method merely named `build` still fails.
-
-For example, `ProfileScreen` plus `_ProfileHeader` in one file, with
-`Widget _header() => const _ProfileHeader()`, produces two findings. Move header
-into `profile_header.dart`, expose it as `ProfileHeader`, import it and return
-`const ProfileHeader()` directly from screen's `build`; both findings disappear.
-
-V1 checks named helpers only. Anonymous callbacks, inline `children` composition,
-`List<Widget>` and `Future<Widget>` factories are outside this rule. An inline
-`itemBuilder` passes; a named helper called from it or passed as a tear-off is
-checked at its declaration. These are team conventions, not Flutter correctness
-requirements. No application code is rewritten automatically.
-
-Both IDs support `warn`, baselines and reasoned inline suppressions. Existing
-`exclude` and `target_only` source policy applies; generated files receive no
-implicit exemption. Missing facts retain proven violations and disclose affected
-files/reasons through text and `stats.semantic_partial` in JSON. Missing or
-incompatible tools are setup errors.
-
-Diff evidence includes all widget participants, so inserting a new first widget
-can expose violations on unchanged declarations. Baselines identify offending
-declarations without companion widget names. Run a full check after alias,
-base-class or configuration edits to inspect downstream effects. Cached semantic
-facts include local dependencies and all companion source parts; use `--no-cache`
-to verify again.
-
-The [real Flutter fixture](tests/fixtures/dart/flutter-ui/README.md) pins its wrapper
-dependency and demonstrates both findings and extraction into separate files.

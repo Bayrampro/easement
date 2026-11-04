@@ -150,7 +150,6 @@ components:
         };
         let edges = vec![edge("a", "b", 1), edge("a", "b", 2), edge("b", "a", 1)];
         let violation = Violation {
-            semantic: None,
             rule: RuleId::Dependency,
             file: "b/x".into(),
             line: 1,

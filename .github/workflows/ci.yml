@@ -168,7 +168,7 @@ jobs:
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
 
       - name: Install the pinned Dart indexer
-        working-directory: tools/dart-indexer
+        working-directory: tools/scip-dart
         run: |
           dart pub get --enforce-lockfile
           dart bin/install.dart
@@ -180,14 +180,5 @@ jobs:
       - name: Prepare the real Flutter fixture
         working-directory: tests/fixtures/dart/flutter-basic
         run: flutter pub get --enforce-lockfile
-
-      - name: Prepare Flutter UI fixture
-        working-directory: tests/fixtures/dart/flutter-ui
-        run: flutter pub get --enforce-lockfile
-
-      - name: Install and verify the opt-in Dart semantic companion
-        run: |
-          mise run install-dart-semantics
-          mise run check-dart-semantics
 
       - run: cargo test --locked
