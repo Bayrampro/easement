@@ -1,0 +1,134 @@
+{
+  "documents": [
+    {
+      "file": "lib/application.dart",
+      "occurrences": 31,
+      "symbols": [
+        {
+          "symbol": "scip-dart pub example null lib/`application.dart`/",
+          "kind": "UnspecifiedKind",
+          "signature_text": "",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`application.dart`/Storage#",
+          "kind": "Class",
+          "signature_text": "class Storage implements OrderRepository",
+          "relationships": [
+            {
+              "symbol": "scip-dart pub example . lib/`orders.dart`/OrderRepository#",
+              "implementation": true
+            }
+          ]
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`application.dart`/Storage#load().",
+          "kind": "Method",
+          "signature_text": "Future<List<WireOrder?>> load()",
+          "relationships": [
+            {
+              "symbol": "scip-dart pub example . lib/`orders.dart`/OrderRepository#load().",
+              "implementation": true
+            }
+          ]
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`application.dart`/LoadOrders#",
+          "kind": "Class",
+          "signature_text": "class LoadOrders",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`application.dart`/LoadOrders#repository.",
+          "kind": "Field",
+          "signature_text": "OrderRepository repository",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`application.dart`/LoadOrders#`<constructor>`().",
+          "kind": "Constructor",
+          "signature_text": "LoadOrders(OrderRepository repository)",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`application.dart`/LoadOrders#run().",
+          "kind": "Method",
+          "signature_text": "Future<void> run()",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`application.dart`/OrdersViewModel#",
+          "kind": "Class",
+          "signature_text": "class OrdersViewModel",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`application.dart`/OrdersViewModel#repository.",
+          "kind": "Field",
+          "signature_text": "OrderRepository repository",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`application.dart`/OrdersViewModel#`<constructor>`().",
+          "kind": "Constructor",
+          "signature_text": "OrdersViewModel(OrderRepository repository)",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`application.dart`/OrdersViewModel#refresh().",
+          "kind": "Method",
+          "signature_text": "Future<List<Order>> refresh()",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`application.dart`/bootstrap().",
+          "kind": "Function",
+          "signature_text": "void bootstrap()",
+          "relationships": []
+        }
+      ]
+    },
+    {
+      "file": "lib/orders.dart",
+      "occurrences": 10,
+      "symbols": [
+        {
+          "symbol": "scip-dart pub example null lib/`orders.dart`/",
+          "kind": "UnspecifiedKind",
+          "signature_text": "",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`orders.dart`/Order#",
+          "kind": "Class",
+          "signature_text": "class Order",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`orders.dart`/WireOrder#",
+          "kind": "Class",
+          "signature_text": "class WireOrder",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`orders.dart`/Orders#",
+          "kind": "TypeAlias",
+          "signature_text": "typedef Orders = List<WireOrder?>",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`orders.dart`/OrderRepository#",
+          "kind": "Class",
+          "signature_text": "abstract interface class OrderRepository",
+          "relationships": []
+        },
+        {
+          "symbol": "scip-dart pub example . lib/`orders.dart`/OrderRepository#load().",
+          "kind": "Method",
+          "signature_text": "Future<List<WireOrder?>> load()",
+          "relationships": []
+        }
+      ]
+    }
+  ]
+}

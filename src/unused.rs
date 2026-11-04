@@ -119,6 +119,7 @@ pub fn unused(input: &Input) -> Result<Unused> {
         .into_iter()
         .filter(|f| !reached.contains(f.as_str()))
         .map(|file| Violation {
+            semantic: None,
             rule: RuleId::Unused,
             file: file.clone(),
             line: 1,

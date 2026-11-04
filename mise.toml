@@ -76,3 +76,11 @@ run = "cd tests/fixtures/flutter-basic && flutter pub get --enforce-lockfile"
 [tasks.fix]
 description = "Apply the automatic fixes"
 run = "hk fix --all"
+
+[tasks.install-dart-semantics]
+description = "Install the opt-in pinned Dart semantic companion"
+run = ["cd tools/dart-indexer && dart pub get --enforce-lockfile", "dart tools/dart-indexer/bin/install_semantics.dart"]
+
+[tasks.check-dart-semantics]
+description = "Format, analyze and test the Dart semantic companion"
+run = ["dart format --output=none --set-exit-if-changed tools/dart-indexer/bin tools/dart-indexer/test", "dart analyze --fatal-infos tools/dart-indexer", "dart tools/dart-indexer/test/semantics_test.dart"]

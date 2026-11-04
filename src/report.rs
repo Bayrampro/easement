@@ -67,6 +67,18 @@ impl Confidence {
 /// What a verdict over cached indexes rests on. Not a reason for `partial`: the
 /// key holds what decides an index, but not dependencies outside the project.
 pub fn cache_note(stats: &Stats) -> Option<String> {
+    let dependency = dependency_cache_note(stats);
+    if stats.semantic_from_cache == 0 {
+        return dependency;
+    }
+    let semantic = format!(
+        "{} Dart semantic fact set(s) came from the cache, keyed on resolved inputs, SDK, analyzer and companion implementation; run with --no-cache to extract again",
+        stats.semantic_from_cache
+    );
+    Some(dependency.map_or_else(|| semantic.clone(), |note| format!("{note}; {semantic}")))
+}
+
+fn dependency_cache_note(stats: &Stats) -> Option<String> {
     if stats.from_cache > 0 && stats.dedicated_dart_cache {
         return Some(format!(
             "{} index(es) came from the Dart cache, keyed on resolved package inputs, SDK artifacts, indexer implementation and environment; run with `--no-cache` to index and validate again",
@@ -609,6 +621,7 @@ mod tests {
     fn verdict() -> Verdict {
         Verdict {
             new: vec![Violation {
+                semantic: None,
                 rule: RuleId::Dependency,
                 file: "src/a.ts".into(),
                 line: 3,

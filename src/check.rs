@@ -16,6 +16,12 @@ use crate::scope::Scope;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuleId {
+    /// Dart-only opt-in semantic policy rules.
+    DartRepositoryDeclaration,
+    DartContractApiTypes,
+    DartRepositoryImplementation,
+    DartUseCaseDependencies,
+    DartDomainTypeBoundaries,
     /// An import between components that `may_depend_on` does not allow.
     Dependency,
     /// An import of a path outside the target component's public API.
@@ -59,6 +65,11 @@ pub enum RuleId {
 impl RuleId {
     pub fn as_str(self) -> &'static str {
         match self {
+            RuleId::DartRepositoryDeclaration => "dart-repository-declaration",
+            RuleId::DartContractApiTypes => "dart-contract-api-types",
+            RuleId::DartRepositoryImplementation => "dart-repository-implementation",
+            RuleId::DartUseCaseDependencies => "dart-use-case-dependencies",
+            RuleId::DartDomainTypeBoundaries => "dart-domain-type-boundaries",
             RuleId::Dependency => "dependency",
             RuleId::Privacy => "privacy",
             RuleId::Cycle => "cycle",
@@ -89,7 +100,12 @@ impl RuleId {
     }
 
     /// Every rule, in the order of the declaration.
-    pub const ALL: [RuleId; 19] = [
+    pub const ALL: [RuleId; 24] = [
+        RuleId::DartRepositoryDeclaration,
+        RuleId::DartContractApiTypes,
+        RuleId::DartRepositoryImplementation,
+        RuleId::DartUseCaseDependencies,
+        RuleId::DartDomainTypeBoundaries,
         RuleId::Dependency,
         RuleId::Privacy,
         RuleId::Cycle,
@@ -112,7 +128,12 @@ impl RuleId {
     ];
 
     /// Rules that an inline comment can suppress.
-    pub const SUPPRESSIBLE: [RuleId; 8] = [
+    pub const SUPPRESSIBLE: [RuleId; 13] = [
+        RuleId::DartRepositoryDeclaration,
+        RuleId::DartContractApiTypes,
+        RuleId::DartRepositoryImplementation,
+        RuleId::DartUseCaseDependencies,
+        RuleId::DartDomainTypeBoundaries,
         RuleId::Dependency,
         RuleId::Privacy,
         RuleId::External,
@@ -134,6 +155,9 @@ fn default_rule() -> RuleId {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Violation {
+    /// Additional resolved semantic evidence, absent for ordinary dependency rules.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic: Option<SemanticDetail>,
     pub rule: RuleId,
     pub file: String,
     pub line: usize,
@@ -147,6 +171,27 @@ pub struct Violation {
     /// Every import behind the violation; diff mode keeps it if any of them changed.
     #[serde(skip)]
     pub evidence: Vec<(String, usize)>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SemanticDetail {
+    pub declaration: String,
+    pub offending_type: String,
+    pub type_path: Vec<String>,
+    pub constraint: String,
+    pub column: usize,
+    pub operation: String,
+    pub origin: Option<(String, usize)>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SemanticGap {
+    pub rule: RuleId,
+    pub file: String,
+    pub line: usize,
+    pub declaration: String,
+    pub reason: String,
+    pub recheck: String,
 }
 
 /// Identity of a violation for the baseline: line numbers are left out so that
@@ -207,6 +252,12 @@ fn is_zero(n: &usize) -> bool {
 
 #[derive(Debug, Default, Serialize)]
 pub struct Stats {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub semantic_partial: Vec<SemanticGap>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub semantic_indexed: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub semantic_from_cache: usize,
     #[serde(skip)]
     pub dedicated_dart_cache: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -310,6 +361,7 @@ pub fn evaluate(
                     && let Some(problem) = map.external_problem(from, &file, module)
                 {
                     found.push(Violation {
+                        semantic: None,
                         rule: RuleId::External,
                         evidence: vec![(file.clone(), dep.line)],
                         file,
@@ -337,6 +389,7 @@ pub fn evaluate(
         };
         if map.is_excluded(&target) {
             found.push(Violation {
+                semantic: None,
                 rule: RuleId::Excluded,
                 evidence: vec![(file.clone(), dep.line)],
                 file,
@@ -360,6 +413,7 @@ pub fn evaluate(
                 && here != there
             {
                 found.push(Violation {
+                    semantic: None,
                     rule: RuleId::Isolation,
                     evidence: vec![(file.clone(), dep.line)],
                     file,
@@ -433,6 +487,7 @@ pub fn evaluate(
             continue;
         };
         found.push(Violation {
+            semantic: None,
             rule,
             evidence: vec![(file.clone(), dep.line)],
             file,
@@ -466,6 +521,7 @@ fn slice_violation(
         (here != *there).then(|| (name, here, there.clone()))
     })?;
     Some(Violation {
+        semantic: None,
         rule: RuleId::Isolation,
         evidence: vec![(file.to_string(), dep.line)],
         file: file.to_string(),
@@ -545,6 +601,7 @@ pub fn cycles(config: &Config, edges: &[Edge]) -> Vec<Violation> {
                 .collect();
             evidence.sort();
             Violation {
+                semantic: None,
                 rule: RuleId::Cycle,
                 file: first.file.clone(),
                 line: first.line,
@@ -606,6 +663,7 @@ pub fn reaches(
         let (through, chain) = describe_chain(&hops, last, of);
         let (file, line) = hops[0].clone();
         found.push(Violation {
+            semantic: None,
             rule: RuleId::Reach,
             file,
             line,
@@ -793,6 +851,7 @@ pub fn metrics(config: &Config, edges: &[Edge]) -> Vec<Violation> {
         let list = targets.iter().copied().collect::<Vec<_>>().join(", ");
         let mut over = |limit: &str, message: String| {
             found.push(Violation {
+                semantic: None,
                 rule: RuleId::Metric,
                 file: file.clone(),
                 line,
@@ -901,6 +960,7 @@ pub fn required(
         let shown = if dir.is_empty() { "." } else { dir };
         let mut missing = |target: String, message: String, wanted: &Listed| {
             found.push(Violation {
+                semantic: None,
                 rule: RuleId::Required,
                 file: first.clone(),
                 line: 1,
@@ -989,6 +1049,7 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
         };
         let mut report = |message: String, target: String, to: &str, because: Option<&str>| {
             found.push(Violation {
+                semantic: None,
                 rule: RuleId::Symbol,
                 evidence: vec![(file.clone(), used.line)],
                 file: file.clone(),
@@ -1104,6 +1165,7 @@ pub fn forbidden_files(config: &Config, map: &ComponentMap, files: &[String]) ->
                 continue;
             };
             found.push(Violation {
+                semantic: None,
                 rule: RuleId::File,
                 file: file.clone(),
                 line: 1,
@@ -1135,6 +1197,7 @@ pub fn orphans(config: &Config, map: &ComponentMap, files: &[String]) -> Vec<Vio
         .iter()
         .filter(|f| map.component_of(f).is_none() && !map.is_unowned(f))
         .map(|file| Violation {
+            semantic: None,
             rule: RuleId::Orphan,
             file: file.clone(),
             line: 1,
@@ -1164,6 +1227,7 @@ pub fn unmatched(
         .into_iter()
         .filter(|(component, _)| !config.components[*component].optional)
         .map(|(component, pattern)| Violation {
+            semantic: None,
             rule: RuleId::Unmatched,
             file: config_file.to_string(),
             line: config_line(config_text, component, pattern),
@@ -1182,6 +1246,7 @@ pub fn unmatched(
                 .unwrap_or_default()
                 .into_iter()
                 .map(|pattern| Violation {
+                    semantic: None,
                     rule: RuleId::Unmatched,
                     file: config_file.to_string(),
                     line: entry_line(config_text, pattern),
@@ -1311,6 +1376,7 @@ pub fn naming(
         let (owner, pattern) = owners[0];
         let places: Vec<&str> = owners.iter().map(|(c, _)| *c).collect();
         found.push(Violation {
+            semantic: None,
             rule: RuleId::Naming,
             file: def.file.clone(),
             line: def.line,
@@ -1432,6 +1498,7 @@ components:
     #[test]
     fn dedupe_keeps_every_line_and_drops_repeats() {
         let at = |line: usize| Violation {
+            semantic: None,
             rule: RuleId::Symbol,
             file: "f".into(),
             line,

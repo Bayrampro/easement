@@ -1,0 +1,31 @@
+version: 1
+components:
+  orders: {in: lib}
+dart:
+  roles:
+    - role: entity
+      types: [{library: 'package:example/orders.dart', name: Order}]
+    - role: dto
+      types: [{library: 'package:example/orders.dart', name: WireOrder}]
+    - role: repository-contract
+      types: [{library: 'package:example/orders.dart', name: OrderRepository}]
+    - role: repository-implementation
+      types: [{library: 'package:example/application.dart', name: Storage}]
+    - role: use-case
+      types: [{library: 'package:example/application.dart', name: LoadOrders}]
+    - role: view-model
+      types: [{library: 'package:example/application.dart', name: OrdersViewModel}]
+    - role: bootstrap
+      types: [{library: 'package:example/application.dart', name: bootstrap}]
+  implementations:
+    - implementation: {library: 'package:example/application.dart', name: Storage}
+      contract: {library: 'package:example/orders.dart', name: OrderRepository}
+rules:
+  orders:
+    dart:
+      repository_declaration: {require: [abstract, interface]}
+      contract_api_types: {forbid_roles: [dto]}
+      repository_implementation: true
+      use_case_dependencies: {forbid_roles: [repository-implementation]}
+      domain_type_boundaries:
+        forbid_types: [{library: 'package:flutter/**', name: '*'}]

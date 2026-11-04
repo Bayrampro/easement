@@ -2,6 +2,7 @@ mod baseline;
 mod check;
 mod components;
 mod config;
+mod dart;
 mod diagram;
 mod diff;
 mod doctor;
@@ -229,6 +230,14 @@ impl Project {
         let undeclared =
             manifests::undeclared(&self.config, &map, &self.root, &scan.deps, &scan.all_files);
         violations.extend(undeclared.violations);
+        let semantic = dart::evaluate(
+            &self.root,
+            &self.config,
+            &map,
+            &scan.paths,
+            cache.index_cache,
+        )?;
+        violations.extend(semantic.violations);
         let (mut violations, suppressed) = suppress::apply(violations, &scan.suppressions);
         violations.extend(check::unmatched(
             &self.config,
@@ -286,6 +295,9 @@ impl Project {
                 .collect();
             stats.naming_unseen = unseen.into_iter().collect();
         }
+        stats.semantic_partial = semantic.gaps;
+        stats.semantic_indexed = semantic.ran;
+        stats.semantic_from_cache = semantic.cached;
         stats.unused_partial = unused.reasons;
         stats.manifests_partial = undeclared.reasons;
         stats.symbols_partial = check::symbols_partial(&self.config, &map, &scan.unnamed_uses);
@@ -295,6 +307,23 @@ impl Project {
             .filter(|gap| scope.contains(&map, &gap.file))
             .cloned()
             .collect();
+        stats.analysis_partial.extend(
+            stats
+                .semantic_partial
+                .iter()
+                .filter(|gap| scope.contains(&map, &gap.file))
+                .map(|gap| crate::scan::AnalysisGap {
+                    file: gap.file.clone(),
+                    line: Some(gap.line),
+                    reason: format!(
+                        "{}: {}: {}; {}",
+                        gap.rule.as_str(),
+                        gap.declaration,
+                        gap.reason,
+                        gap.recheck
+                    ),
+                }),
+        );
         stats.files = scan
             .paths
             .iter()
@@ -314,11 +343,16 @@ impl Project {
             .cloned()
             .collect();
         Ok(Analysis {
-            uncertain: scan
-                .uncovered
+            uncertain: stats
+                .semantic_partial
                 .iter()
-                .cloned()
-                .chain(scan.analysis_partial.into_iter().map(|gap| gap.file))
+                .map(|gap| gap.file.clone())
+                .chain(
+                    scan.uncovered
+                        .iter()
+                        .cloned()
+                        .chain(scan.analysis_partial.into_iter().map(|gap| gap.file)),
+                )
                 .collect(),
             unindexed: scan.uncovered,
             violations,
@@ -757,7 +791,19 @@ fn run(cli: Cli) -> Result<bool> {
         Command::Doctor { config, format } => {
             let project = Project::open(&config)?;
             let files = scan::project_files(&project.root, &project.config)?;
-            let diagnoses = indexer::diagnose(&project.root, &files);
+            let mut diagnoses = indexer::diagnose(&project.root, &files);
+            let map = ComponentMap::new(&project.config)?;
+            let target_only = scan::glob_set(&project.config.target_only, "target_only")?;
+            if files.iter().any(|file| {
+                relpath::extension(file) == "dart"
+                    && !target_only.is_match(file)
+                    && map
+                        .component_of(file)
+                        .and_then(|c| project.config.rules.get(c))
+                        .is_some_and(|r| r.dart.enabled())
+            }) {
+                diagnoses.push(indexer::dart::semantics::diagnosis());
+            }
             print!(
                 "{}",
                 match format {

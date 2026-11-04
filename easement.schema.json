@@ -29,6 +29,14 @@
       },
       "minProperties": 1
     },
+    "dart": {
+      "description": "Opt-in Dart roles and implementation-to-contract associations.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Settings"
+        }
+      ]
+    },
     "diagram": {
       "description": "A Markdown file with a Mermaid graph or flowchart of the components (or a .mmd file). A dependency between components the diagram has no arrow for fails as diagram. Nodes match components by id or label.",
       "type": [
@@ -154,6 +162,11 @@
       "default": [],
       "items": {
         "enum": [
+          "dart-repository-declaration",
+          "dart-contract-api-types",
+          "dart-repository-implementation",
+          "dart-use-case-dependencies",
+          "dart-domain-type-boundaries",
           "dependency",
           "privacy",
           "cycle",
@@ -217,6 +230,40 @@
       "additionalProperties": false,
       "required": [
         "name"
+      ]
+    },
+    "Assignment": {
+      "type": "object",
+      "properties": {
+        "components": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "paths": {
+          "description": "Project-relative file globs. A directory needs a trailing /**.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "role": {
+          "$ref": "#/definitions/Role"
+        },
+        "types": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/Selector"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "role"
       ]
     },
     "Component": {
@@ -320,6 +367,48 @@
         "in"
       ]
     },
+    "Contract": {
+      "description": "An instantiated contract. Arguments match resolved identities recursively.",
+      "type": "object",
+      "properties": {
+        "arguments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Contract"
+          }
+        },
+        "library": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "nullable": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "library",
+        "name"
+      ]
+    },
+    "DeclarationPolicy": {
+      "type": "object",
+      "properties": {
+        "require": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "require"
+      ]
+    },
     "GoSettings": {
       "description": "Go files behind a build constraint (`//go:build race`) are indexed, and so seen, only for the tags the indexer builds with.",
       "type": "object",
@@ -334,6 +423,22 @@
         }
       },
       "additionalProperties": false
+    },
+    "Implementation": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "$ref": "#/definitions/Contract"
+        },
+        "implementation": {
+          "$ref": "#/definitions/Selector"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "implementation",
+        "contract"
+      ]
     },
     "Layer": {
       "description": "One layer of `layers`: a component, sibling components that do not depend on each other, or a closed component that the layers above it cannot reach past.",
@@ -444,6 +549,20 @@
         "name"
       ]
     },
+    "Role": {
+      "type": "string",
+      "enum": [
+        "entity",
+        "dto",
+        "repository-contract",
+        "repository-implementation",
+        "use-case",
+        "view-model",
+        "view",
+        "screen",
+        "bootstrap"
+      ]
+    },
     "Rule": {
       "type": "object",
       "properties": {
@@ -454,6 +573,14 @@
             "null"
           ],
           "default": null
+        },
+        "dart": {
+          "description": "Opt-in semantic constraints applied only to Dart declarations of this component.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Rules"
+            }
+          ]
         },
         "forbid_external": {
           "description": "External modules this component must not use. $std stands for the standard library of the importing file's language. An item may carry its own reason.",
@@ -557,11 +684,132 @@
       },
       "additionalProperties": false
     },
+    "Rules": {
+      "type": "object",
+      "properties": {
+        "contract_api_types": {
+          "description": "Forbidden types in public repository-contract API signatures.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TypePolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "domain_type_boundaries": {
+          "description": "Forbidden UI/infrastructure identities in configured domain roles.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TypePolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "repository_declaration": {
+          "description": "Required class modifiers for repository-contract declarations.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DeclarationPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "repository_implementation": {
+          "description": "Verify explicit implementation-to-contract associations.",
+          "type": "boolean",
+          "default": false
+        },
+        "use_case_dependencies": {
+          "description": "Forbidden implementation types in use-case signatures and bodies.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TypePolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Selector": {
+      "description": "A declaration identified by its resolved library URI and exact name.",
+      "type": "object",
+      "properties": {
+        "library": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "library",
+        "name"
+      ]
+    },
+    "Settings": {
+      "type": "object",
+      "properties": {
+        "implementations": {
+          "description": "Explicit implementation-to-instantiated-contract associations.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Implementation"
+          }
+        },
+        "roles": {
+          "description": "Role assignments; exact types override component and path defaults.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Assignment"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "TestsMode": {
       "type": "string",
       "enum": [
         "auto"
       ]
+    },
+    "TypePolicy": {
+      "type": "object",
+      "properties": {
+        "forbid_roles": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/Role"
+          }
+        },
+        "forbid_types": {
+          "description": "Library URI and declaration-name globs, matched against resolved identity.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/Selector"
+          }
+        },
+        "roles": {
+          "description": "Subject roles; empty uses the rule's documented default roles.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/Role"
+          }
+        }
+      },
+      "additionalProperties": false
     }
   }
 }
