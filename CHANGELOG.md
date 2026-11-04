@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.12](https://github.com/mokevnin/easement/compare/v0.4.11...v0.4.12) (2026-11-04)
+
+
+### Bug Fixes
+
+* reach through the other files of a Go package ([#79](https://github.com/mokevnin/easement/issues/79)) ([2abdc30](https://github.com/mokevnin/easement/commit/2abdc30e19020c9c1e0529d2502520b8c2fdc6ab))
+
 ## [0.4.11](https://github.com/mokevnin/easement/compare/v0.4.10...v0.4.11) (2026-11-04)
 
 
