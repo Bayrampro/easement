@@ -165,6 +165,7 @@ pub fn apply(violations: Vec<Violation>, suppressions: &[Suppression]) -> (Vec<V
         };
         if let Some((rule, message)) = problem {
             kept.push(Violation {
+                semantic: None,
                 rule,
                 file: s.file.clone(),
                 line: s.line,

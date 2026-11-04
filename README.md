@@ -894,8 +894,8 @@ cross-file private use that `forbid_symbol` or `public_symbols` could restrict.
 Public-only files, ordinary locals, and unrelated private helpers do not inherit
 a project-wide warning. Missing source ranges, symbol classification, or part
 ownership remain conservative; other extraction gaps are reported independently.
-Dart `unused` enforcement, semantic architecture checks and UI
-composition checks are unsupported in this stage.
+Dart `unused` enforcement and UI composition checks remain unsupported.
+Semantic architecture checks are available through the opt-in companion below.
 
 Dart cache keys read hidden resolution state, package and workspace metadata,
 sources and resolved local/external package inputs, inherited/included analyzer
@@ -981,3 +981,127 @@ Tools are pinned in `mise.toml`: `mise install`, `mise run setup` for the git ho
 ## License
 
 MIT
+
+## Dart semantic architecture checks
+
+Semantic checks are opt-in and apply only to Dart. Dependency checks still use
+SCIP. The companion uses the pinned analyzer to resolve declarations, public
+signatures, aliases, inherited generic members, inferred types and references.
+These checks enforce configured policies over analyzed code.
+
+Install from an easement source checkout, alongside the Stage 1 indexer:
+
+```sh
+mise run install-dart-indexer
+mise run install-dart-semantics
+export PATH="$PWD/target/dart-indexer:$PATH"
+easement_dart_semantics --version
+```
+
+The tested pair remains Flutter 3.47.9 / Dart 3.13.7. The tooling package requires
+Dart >=3.13.0 <4.0.0 and pins analyzer 14.4.0. Companion 1.0.0 emits fact format 1;
+its version command checks both identities. Installation currently creates a Unix
+launcher. Keep its source checkout and pinned package resolution available.
+`easement check` never installs tools, runs Pub or generates application code.
+
+Enable the smallest contract policy with:
+
+```yaml
+dart:
+  roles:
+    - role: dto
+      types: [{library: 'package:example/orders.dart', name: WireOrder}]
+    - role: repository-contract
+      types: [{library: 'package:example/orders.dart', name: OrderRepository}]
+rules:
+  orders:
+    dart:
+      contract_api_types: {forbid_roles: [dto]}
+```
+
+This extends an ordinary configuration whose `orders` component owns the source
+files. A signature `Future<Orders> load()` with
+`typedef Orders = List<WireOrder?>` fails at `Orders`, even when all declarations
+share one file. The diagnostic includes declaration identity, offending type,
+alias/type path, configured constraint and source location. Returning an entity
+instead passes. Text and JSON share the finding; JSON adds `semantic` evidence.
+
+`dart.roles` accepts `components`, project-relative `paths` globs and exact
+`types` selectors. Explicit types override component/path defaults. Assignments
+of different roles at equal precedence are configuration errors. Unknown explicit
+selectors are errors when semantic analysis is enabled. Select the defining
+library URI, including for declarations reached through re-exports or parts.
+Supported roles are `entity`, `dto`, `repository-contract`,
+`repository-implementation`, `use-case`, `view-model`, `view`, `screen`, and
+`bootstrap`. Names and suffixes never assign roles automatically. Declarations
+without roles are outside role-selected policies.
+
+The following keys live under `rules.<component>.dart`:
+
+| Setting | Policy |
+| --- | --- |
+| `repository_declaration: {require: [abstract, interface]}` | Repository contracts require these class modifiers. |
+| `contract_api_types: {forbid_roles: [dto]}` | Public contract returns, parameters, getters, setters and fields must not expose forbidden types. |
+| `repository_implementation: true` | Implementations must satisfy their explicit contract associations. |
+| `use_case_dependencies: {forbid_roles: [repository-implementation]}` | Use cases must not store, accept, construct or directly reference implementation types. |
+| `domain_type_boundaries: {forbid_types: [{library: 'package:flutter/**', name: '*'}]}` | Domain declarations must not use selected UI/infrastructure identities. |
+
+Type policies also accept `roles` to choose their subjects, `forbid_roles`, and
+`forbid_types` library/name globs. Default subjects are repository contracts for
+API checks, use cases for dependency checks, and entities/contracts/use cases for
+domain boundaries. Choose forbidden types and roles explicitly; enabling a rule
+does not select a framework preset. Bootstrap code can construct and inject
+implementations because it is not a use case. Other configured constraints still
+apply to it.
+
+Associate implementations explicitly:
+
+```yaml
+dart:
+  implementations:
+    - implementation: {library: 'package:example/application.dart', name: Storage}
+      contract: {library: 'package:example/orders.dart', name: OrderRepository}
+```
+
+The implementation needs the `repository-implementation` role and its contract
+needs `repository-contract`. Indirect implementations through base classes pass.
+For generic contracts, add recursive `arguments` entries with `library`, `name`
+and optional `nullable: true`. Arguments match resolved named type identities
+and nullability exactly; an omitted argument list requires a non-generic
+contract. A differently instantiated or same-named contract from another library
+fails. Record/function syntax for association arguments is not supported.
+
+Missing tools, malformed facts and incompatible fact versions are setup errors.
+Unresolved facts retain proven violations and produce `stats.semantic_partial`
+entries naming the rule, declaration, location, reason and recheck command.
+Confidence becomes partial; baseline debt is not marked fixed from missing facts.
+Only packages needed by enabled semantic rules invoke the companion. Referenced
+local types can supply role defaults through their definition locations; explicit
+selectors must resolve within those analyzed facts.
+
+Stable diagnostic IDs are `dart-repository-declaration`,
+`dart-contract-api-types`, `dart-repository-implementation`,
+`dart-use-case-dependencies`, and `dart-domain-type-boundaries`. They support
+`warn`, baselines and reasoned inline suppressions through the existing CLI.
+Diff evidence includes signature, alias and inherited-member origins. Run a full
+check after configuration changes; changed-line filtering does not prove all
+consequences of role edits. Use `--no-cache` to regenerate facts. Semantic cache
+keys include source, resolution, local dependencies, SDK and companion/analyzer
+identity, while policy is evaluated on every run. Stage 1 may conservatively
+reindex after configuration or baseline edits. `--cache-only` needs both caches.
+
+Run the prepared examples from this checkout:
+
+```sh
+cd tests/fixtures/dart-semantic
+dart pub get
+easement doctor
+easement check --no-cache --format json
+# The DTO alias deliberately fails. Change List<WireOrder?> to List<Order>.
+easement check --config clean.yml --no-cache
+easement check --config mvvm.yml --no-cache
+```
+
+The fixture contains a Clean Architecture policy and an independent MVVM
+policy. See its [extraction evidence](tests/fixtures/dart-semantic/README.md).
+Widget file-layout and widget-returning helper checks remain Stage 3 work.

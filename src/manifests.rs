@@ -261,6 +261,7 @@ pub fn undeclared(
             continue;
         }
         violations.push(Violation {
+            semantic: None,
             rule: RuleId::Undeclared,
             evidence: vec![(file.clone(), dep.line)],
             line: dep.line,
