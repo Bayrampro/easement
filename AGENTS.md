@@ -13,3 +13,17 @@
 - The main callers are coding agents, not people. Output says what not to trust: a clean verdict over partly indexed code (uncovered files), a cached result or an unreliable `suggest` is flagged in a structured field (`--format json`) and in the text, with the reason and how to re-verify (for example `--no-cache`). A cache hit needs a conservative key: when in doubt, miss.
 - The main checkout always stays on `main`: never switch it to another branch. A worktree may have its own branch; its commits land on `main`.
 - Commit messages follow Conventional Commits (commitlint checks them). Text in this repository is English.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in the GitHub Issues of `mokevnin/easement`, used through `gh`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five triage roles use the default label names (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root, created when a term or decision is settled. See `docs/agents/domain.md`.
