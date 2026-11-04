@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.11](https://github.com/mokevnin/easement/compare/v0.4.10...v0.4.11) (2026-11-04)
+
+
+### Bug Fixes
+
+* count a suppression only where the directive begins a comment ([#74](https://github.com/mokevnin/easement/issues/74)) ([c1c4a85](https://github.com/mokevnin/easement/commit/c1c4a855a1034f0191dfec709627f7e0896d52ab))
+* take Rust integration tests into the tests component ([#75](https://github.com/mokevnin/easement/issues/75)) ([9897eab](https://github.com/mokevnin/easement/commit/9897eab9aee0110506042934489306e292427978))
+
 ## [0.4.10](https://github.com/mokevnin/easement/compare/v0.4.9...v0.4.10) (2026-11-03)
 
 
