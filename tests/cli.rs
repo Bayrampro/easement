@@ -1044,14 +1044,11 @@ fn a_directive_in_a_string_or_a_doc_example_is_not_a_suppression() {
     let (_tmp, root) = fixture("policy");
     let page = root.join("src/web/page.ts");
     let text = fs::read_to_string(&page).unwrap();
-    fs::write(
-        &page,
-        format!(
-            "{text}\nexport const syntax = \"// easement:disable-next-line external -- why\";\n\
-             /** // easement:disable-line privacy -- an example */\n"
-        ),
-    )
-    .unwrap();
+    // One literal per line: easement checks this file too, and cannot tell a
+    // line inside a string that spans lines from a comment.
+    let syntax = r#"export const syntax = "// easement:disable-next-line external -- why";"#;
+    let example = "/** // easement:disable-line privacy -- an example */";
+    fs::write(&page, format!("{text}\n{syntax}\n{example}\n")).unwrap();
     easement(&root, &["check"])
         .code(1)
         .stdout(predicates::str::contains("suppression").not());

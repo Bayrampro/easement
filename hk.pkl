@@ -19,6 +19,11 @@ local all = (fast) {
         glob = List("Cargo.toml", "**/*.rs")
         check = "cargo machete"
     }
+    // easement checks its own architecture: easement.yml.
+    ["easement"] {
+        glob = List("**/*.rs", "easement.yml")
+        check = "cargo run --quiet --locked -- check"
+    }
     ["lychee"] {
         glob = List("**/*.md")
         check = "lychee --config lychee.toml --no-progress {{ files }}"
