@@ -18,3 +18,5 @@ expression: "crate::lang::registry::test_patterns().join(\"\\n\")"
 **/*Test.php
 **/*Tests.swift
 **/tests/**/*.rs
+**/benches/**/*.rs
+**/examples/**/*.rs

@@ -180,10 +180,19 @@ pub static RUBY: Language = Language {
 pub static RUST: Language = Language {
     name: "rust",
     extensions: &["rs"],
-    // Cargo's integration tests; a `tests` module under `src/` is the crate's
+    // Cargo's integration tests, benchmarks and examples: targets built with the
+    // dev-dependencies. A module of one of those names under `src/` is the crate's
     // own code, and `parts` takes it for tests when `#[cfg(test)]` declares it.
-    tests: &["**/tests/**/*.rs"],
-    not_tests: &["**/src/**/tests/**/*.rs"],
+    tests: &[
+        "**/tests/**/*.rs",
+        "**/benches/**/*.rs",
+        "**/examples/**/*.rs",
+    ],
+    not_tests: &[
+        "**/src/**/tests/**/*.rs",
+        "**/src/**/benches/**/*.rs",
+        "**/src/**/examples/**/*.rs",
+    ],
     whole_directory: false,
     std: Some(stdlib::rust),
     unused: &["rs"],

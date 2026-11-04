@@ -1474,6 +1474,41 @@ fn rust_integration_tests_are_tests_and_a_tests_module_in_src_is_not() {
         .stdout(contains("component: store"));
 }
 
+/// Benchmarks and examples are Cargo targets built with the dev-dependencies, like
+/// integration tests; a `benches` or `examples` module under `src/` is the crate's.
+#[test]
+fn rust_benches_and_examples_are_tests_and_modules_of_that_name_in_src_are_not() {
+    let (_tmp, root) = rust_cfg_test_fixture();
+    let targets = [
+        "benches/load.rs",
+        "examples/hello.rs",
+        "examples/demo/main.rs",
+    ];
+    let modules = ["src/store/benches/data.rs", "src/store/examples/data.rs"];
+    for file in targets.iter().chain(&modules) {
+        let path = root.join(file);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            "use testkit::Clock;\n\nfn main() {\n    let _ = Clock;\n}\n",
+        )
+        .unwrap();
+    }
+    // The dev-dependency they use is one of `tests`: only the fixture's own violation is left.
+    let check = easement(&root, &["check"]).code(1);
+    check.stdout(contains("1 violation(s)"));
+    for file in targets {
+        easement(&root, &["explain", file])
+            .success()
+            .stdout(contains("component: tests"));
+    }
+    for file in modules {
+        easement(&root, &["explain", file])
+            .success()
+            .stdout(contains("component: store"));
+    }
+}
+
 /// A module file easement cannot find is said, not silently judged as the file's.
 #[test]
 fn a_cfg_test_module_whose_file_is_missing_is_flagged_as_not_seen() {
