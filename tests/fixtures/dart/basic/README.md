@@ -15,9 +15,9 @@ SDK files beside that executable.
 
 ```sh
 mise run install-dart-indexer
-cd tests/fixtures/dart-basic
+cd tests/fixtures/dart/basic
 dart pub get
-../../../target/dart-indexer/scip_dart --output /tmp/dart-evidence.scip .
+../../../../target/dart-indexer/scip_dart --output /tmp/dart-evidence.scip .
 dart analyze --format=machine .
 ```
 

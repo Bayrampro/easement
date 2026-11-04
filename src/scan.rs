@@ -9,7 +9,7 @@ use ignore::WalkBuilder;
 use crate::check::SymbolRef;
 use crate::config::ScanPolicy;
 use crate::indexer;
-use crate::lang::{self, Import, Target, Unit};
+use crate::lang::{self, Import, Target, Unit, registry};
 use crate::scip;
 use crate::suppress::{self, Suppression};
 
@@ -367,7 +367,7 @@ pub fn scan(root: &Path, policy: &ScanPolicy, cache: &mut Cache) -> Result<Scan>
             .chain(facts.analysis_partial)
             .chain(dart_private)
             .filter(|gap| {
-                crate::relpath::extension(&gap.file) != "dart" || paths.contains(&gap.file)
+                !registry::is(Path::new(&gap.file), &registry::DART) || paths.contains(&gap.file)
             })
             .collect(),
         all_files,

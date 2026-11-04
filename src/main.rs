@@ -28,6 +28,8 @@ mod suggest;
 mod suppress;
 mod unused;
 
+use crate::lang::registry;
+
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{IsTerminal, Write};

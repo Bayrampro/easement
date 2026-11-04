@@ -1195,7 +1195,7 @@ fn dart_boundaries_report_precise_locations_and_full_confidence() {
 
 #[test]
 fn dart_directives_include_both_part_forms_and_disclose_conditionals() {
-    let (_tmp, root) = fixture("dart-basic");
+    let (_tmp, root) = fixture("dart/basic");
     fs::write(
         root.join("easement.yml"),
         "version: 1\ncomponents:\n  library: {in: lib}\n",
@@ -1828,7 +1828,7 @@ fn dart_diff_and_baseline_do_not_treat_incomplete_analysis_as_paid_debt() {
 
 #[test]
 fn dart_flutter_uses_the_real_sdk_and_remains_an_external_dependency() {
-    let (_tmp, root) = fixture("flutter-basic");
+    let (_tmp, root) = fixture("dart/flutter-basic");
     fs::write(root.join("lib/main.dart"), "import 'package:flutter/widgets.dart';\nimport 'dart:ui' as ui;\nvoid main() => runApp(const SizedBox());\n").unwrap();
     fs::create_dir(root.join("test")).unwrap();
     fs::write(root.join("test/widget_test.dart"), "import 'package:flutter/widgets.dart';\nvoid main() { assert(const SizedBox().width == null); }\n").unwrap();
@@ -5135,7 +5135,7 @@ void bootstrap() { LoadOrders(Storage()); }
 
 #[test]
 fn dart_semantic_domain_resolves_real_flutter_reexports_and_allows_namesake() {
-    let (_tmp, root) = fixture("flutter-basic");
+    let (_tmp, root) = fixture("dart/flutter-basic");
     prepare_dart(&root);
     fs::write(root.join("lib/main.dart"), "import 'package:flutter/widgets.dart';\ntypedef Context = BuildContext;\nclass Model { Context? context; }\n").unwrap();
     fs::write(
@@ -5514,7 +5514,7 @@ fn dart_semantic_same_line_signature_slots_are_distinct_without_field_duplicates
 }
 
 fn flutter_ui_project() -> (TempDir, PathBuf) {
-    let result = fixture("flutter-ui");
+    let result = fixture("dart/flutter-ui");
     prepare_dart(&result.1);
     result
 }

@@ -6,9 +6,11 @@ mod ui;
 use crate::check::{RuleId, SemanticDetail, SemanticGap, Violation};
 use crate::components::ComponentMap;
 use crate::config::Config;
+use crate::lang::registry;
 use anyhow::{Result, bail};
 use config::{Contract, Role, Selector, TypePolicy};
 use facts::{Declaration, Location, Type, Use};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -29,7 +31,7 @@ pub fn evaluate(
     let enabled: Vec<_> = files
         .iter()
         .filter(|f| {
-            crate::relpath::extension(f) == "dart"
+            registry::is(Path::new(f), &registry::DART)
                 && map
                     .component_of(f)
                     .and_then(|name| config.rules.get(name))

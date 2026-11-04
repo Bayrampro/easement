@@ -10,7 +10,7 @@ Future<void> main() async {
   final package = File.fromUri(Platform.script.resolve('../pubspec.yaml'))
       .parent;
   final root = package.uri
-      .resolve('../../tests/fixtures/flutter-ui/')
+      .resolve('../../tests/fixtures/dart/flutter-ui/')
       .toFilePath();
   final process = await Process.start(Platform.resolvedExecutable, [
     '--packages=${package.path}/.dart_tool/package_config.json',

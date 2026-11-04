@@ -19,7 +19,7 @@ use scip::types::{Index, Occurrence, PositionEncoding, occurrence::Typed_range};
 
 use crate::check::SymbolRef;
 use crate::lang::parts::Part;
-use crate::lang::registry::Manifest;
+use crate::lang::registry::{self, Manifest};
 use crate::lang::{Target, Unit};
 use crate::scan::Dep;
 
@@ -126,7 +126,7 @@ pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
             ..Document::default()
         };
         if document.language == "Dart"
-            && crate::relpath::extension(&parsed.path) == "dart"
+            && registry::is(Path::new(&parsed.path), &registry::DART)
             && document
                 .occurrences
                 .iter()
@@ -144,7 +144,7 @@ pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
         for raw in &document.occurrences {
             let mut normalized;
             let occurrence = if document.language == "Dart"
-                && crate::relpath::extension(&parsed.path) == "dart"
+                && registry::is(Path::new(&parsed.path), &registry::DART)
                 && raw.symbol.starts_with("scip-dart ")
             {
                 normalized = raw.clone();
@@ -1165,9 +1165,9 @@ mod tests {
 
     #[test]
     fn dart_versionless_file_symbols_resolve_real_imports() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dart-basic");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dart/basic");
         let documents = parse(
-            include_bytes!("../tests/fixtures/dart-basic/evidence.scip"),
+            include_bytes!("../tests/fixtures/dart/basic/evidence.scip"),
             &root,
             Path::new(""),
         )
@@ -1193,9 +1193,9 @@ mod tests {
 
     #[test]
     fn flutter_import_keeps_its_pub_uri() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/flutter-basic");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dart/flutter-basic");
         let documents = parse(
-            include_bytes!("../tests/fixtures/flutter-basic/evidence.scip"),
+            include_bytes!("../tests/fixtures/dart/flutter-basic/evidence.scip"),
             &root,
             Path::new(""),
         )

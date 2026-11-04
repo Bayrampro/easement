@@ -41,7 +41,7 @@ pub(crate) fn run(
         let package_files: Vec<_> = files
             .iter()
             .filter(|file| {
-                relpath::extension(file) == "dart"
+                registry::is(Path::new(file), &registry::DART)
                     && roots(root, &[(*file).clone()]).is_ok_and(|roots| roots.contains(&dir))
             })
             .cloned()
@@ -51,7 +51,7 @@ pub(crate) fn run(
         let catalog: Vec<_> = files
             .iter()
             .filter(|file| {
-                crate::relpath::extension(file) == "dart"
+                registry::is(Path::new(file), &registry::DART)
                     && resolution.packages.values().any(|package| {
                         package.root.starts_with(root) && root.join(file).starts_with(&package.root)
                     })

@@ -32,7 +32,10 @@ pub(crate) fn names_package(source: &str, package: &str) -> bool {
 
 fn roots(root: &Path, files: &[String]) -> Result<Vec<PathBuf>> {
     let mut roots = BTreeSet::new();
-    for file in files.iter().filter(|f| relpath::extension(f) == "dart") {
+    for file in files
+        .iter()
+        .filter(|f| registry::is(Path::new(f), &registry::DART))
+    {
         let absolute = root.join(file);
         let owner = absolute
             .ancestors()
@@ -298,7 +301,10 @@ pub(super) fn run(
     excluded: &[String],
     mode: CacheUse,
 ) -> Result<Option<Indexed>> {
-    if !files.iter().any(|f| relpath::extension(f) == "dart") {
+    if !files
+        .iter()
+        .any(|f| registry::is(Path::new(f), &registry::DART))
+    {
         return Ok(None);
     }
     let dirs = roots(root, files)?;
@@ -455,7 +461,9 @@ pub(super) fn run(
     let uncovered = all
         .into_iter()
         .filter(|f| {
-            relpath::extension(f) == "dart" && files.iter().any(|s| s == f) && !indexed.contains(f)
+            registry::is(Path::new(f), &registry::DART)
+                && files.iter().any(|s| s == f)
+                && !indexed.contains(f)
         })
         .map(str::to_string)
         .collect();
@@ -540,7 +548,7 @@ fn directive_gaps(root: &Path, documents: &mut [Document]) -> Result<Vec<Analysi
     let mut inventories = Vec::new();
     let mut gaps = Vec::new();
     for document in documents.iter() {
-        if relpath::extension(&document.path) != "dart" {
+        if !registry::is(Path::new(&document.path), &registry::DART) {
             inventories.push(Vec::new());
             continue;
         }

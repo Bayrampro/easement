@@ -129,7 +129,7 @@ run = ["cd tools/dart-indexer && dart pub get --enforce-lockfile", "dart tools/d
 
 [tasks.prepare-dart-fixtures]
 description = "Seed Flutter dependencies before offline Dart integration tests"
-run = ["cd tests/fixtures/flutter-basic && flutter pub get --enforce-lockfile", "cd tests/fixtures/flutter-ui && flutter pub get --enforce-lockfile"]
+run = ["cd tests/fixtures/dart/flutter-basic && flutter pub get --enforce-lockfile", "cd tests/fixtures/dart/flutter-ui && flutter pub get --enforce-lockfile"]
 
 [tasks.fix]
 description = "Apply the automatic fixes"

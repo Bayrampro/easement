@@ -13,7 +13,7 @@ mise run install-dart-semantics
 mise run prepare-dart-fixtures
 mise run check-dart-semantics
 cargo test dart_ui_
-cd tests/fixtures/flutter-ui
+cd tests/fixtures/dart/flutter-ui
 dart analyze --fatal-infos
 easement check --no-cache --format json
 ```
