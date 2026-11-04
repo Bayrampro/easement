@@ -32,6 +32,8 @@ pub struct Language {
     pub extensions: &'static [&'static str],
     /// Globs of its test files, which `tests: auto` puts into the `tests` component.
     pub tests: &'static [&'static str],
+    /// Globs of files that `tests` matches but that are not test files.
+    pub not_tests: &'static [&'static str],
     /// Whether a module belongs to its standard library, for `$std`; `None`
     /// when easement cannot tell.
     pub std: Option<fn(&str) -> bool>,
@@ -54,6 +56,7 @@ pub static GO: Language = Language {
     name: "go",
     extensions: &["go"],
     tests: &["**/*_test.go"],
+    not_tests: &[],
     std: Some(stdlib::go),
     unused: &["go"],
     conventional: &[],
@@ -66,6 +69,7 @@ pub static TYPESCRIPT: Language = Language {
     name: "typescript",
     extensions: TYPESCRIPT_EXTENSIONS,
     tests: &["**/*.test.*", "**/*.spec.*", "**/__tests__/**"],
+    not_tests: &[],
     std: None,
     unused: TYPESCRIPT_EXTENSIONS,
     conventional: &["**/*.d.ts"],
@@ -77,6 +81,7 @@ pub static PYTHON: Language = Language {
     name: "python",
     extensions: &["py", "pyi"],
     tests: &["**/test_*.py", "**/*_test.py"],
+    not_tests: &[],
     std: Some(stdlib::python),
     // A stub (`.pyi`) is imported by type checkers, not by the program.
     unused: &["py"],
@@ -89,6 +94,7 @@ pub static JAVA: Language = Language {
     name: "java",
     extensions: &["java"],
     tests: &["**/*Test.java", "**/*Tests.java"],
+    not_tests: &[],
     std: Some(stdlib::java),
     unused: &["java"],
     conventional: &["**/package-info.java", "**/module-info.java"],
@@ -101,6 +107,7 @@ pub static KOTLIN: Language = Language {
     name: "kotlin",
     extensions: &["kt", "kts"],
     tests: &["**/*Test.kt", "**/*Tests.kt"],
+    not_tests: &[],
     std: Some(stdlib::kotlin),
     unused: &[],
     conventional: &[],
@@ -112,6 +119,7 @@ pub static CSHARP: Language = Language {
     name: "csharp",
     extensions: &["cs"],
     tests: &["**/*Test.cs", "**/*Tests.cs"],
+    not_tests: &[],
     std: Some(stdlib::csharp),
     unused: &["cs"],
     conventional: &[],
@@ -123,6 +131,7 @@ pub static PHP: Language = Language {
     name: "php",
     extensions: &["php"],
     tests: &["**/*Test.php"],
+    not_tests: &[],
     std: Some(stdlib::php),
     unused: &["php"],
     conventional: &[],
@@ -135,6 +144,7 @@ pub static SWIFT: Language = Language {
     name: "swift",
     extensions: &["swift"],
     tests: &["**/*Tests.swift"],
+    not_tests: &[],
     std: Some(stdlib::swift),
     unused: &[],
     conventional: &[],
@@ -147,6 +157,7 @@ pub static RUBY: Language = Language {
     name: "ruby",
     extensions: &["rb"],
     tests: &[],
+    not_tests: &[],
     std: None,
     unused: &[],
     conventional: &[],
@@ -157,7 +168,10 @@ pub static RUBY: Language = Language {
 pub static RUST: Language = Language {
     name: "rust",
     extensions: &["rs"],
-    tests: &[],
+    // Cargo's integration tests; a `tests` module under `src/` is the crate's
+    // own code, and `parts` takes it for tests when `#[cfg(test)]` declares it.
+    tests: &["**/tests/**/*.rs"],
+    not_tests: &["**/src/**/tests/**/*.rs"],
     std: Some(stdlib::rust),
     unused: &["rs"],
     conventional: &[
@@ -215,5 +229,13 @@ pub fn test_patterns() -> Vec<&'static str> {
     LANGUAGES
         .iter()
         .flat_map(|language| language.tests.iter().copied())
+        .collect()
+}
+
+/// The files the test globs match that are not tests, which `tests: auto` gives up.
+pub fn not_test_patterns() -> Vec<&'static str> {
+    LANGUAGES
+        .iter()
+        .flat_map(|language| language.not_tests.iter().copied())
         .collect()
 }

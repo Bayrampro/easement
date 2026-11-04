@@ -1409,6 +1409,26 @@ fn a_cfg_test_module_in_another_file_is_tests_too() {
         .stdout(contains("1 violation(s)"));
 }
 
+/// Cargo's integration tests sit in `tests/` beside the manifest; a module named
+/// `tests` under `src/` is the crate's own code unless `#[cfg(test)]` says otherwise.
+#[test]
+fn rust_integration_tests_are_tests_and_a_tests_module_in_src_is_not() {
+    let (_tmp, root) = rust_cfg_test_fixture();
+    fs::create_dir_all(root.join("tests/common")).unwrap();
+    fs::write(root.join("tests/api.rs"), "mod common;\n").unwrap();
+    fs::write(root.join("tests/common/mod.rs"), "").unwrap();
+    fs::create_dir_all(root.join("src/store/tests")).unwrap();
+    fs::write(root.join("src/store/tests/fixtures.rs"), "").unwrap();
+    for file in ["tests/api.rs", "tests/common/mod.rs"] {
+        easement(&root, &["explain", file])
+            .success()
+            .stdout(contains("component: tests"));
+    }
+    easement(&root, &["explain", "src/store/tests/fixtures.rs"])
+        .success()
+        .stdout(contains("component: store"));
+}
+
 /// A module file easement cannot find is said, not silently judged as the file's.
 #[test]
 fn a_cfg_test_module_whose_file_is_missing_is_flagged_as_not_seen() {

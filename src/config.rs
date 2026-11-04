@@ -545,7 +545,12 @@ impl Config {
                 ),
                 public: None,
                 because: None,
-                except: None,
+                except: Some(Patterns::Many(
+                    registry::not_test_patterns()
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                )),
                 priority: 1_000_000,
                 isolated: false,
                 public_symbols: None,
