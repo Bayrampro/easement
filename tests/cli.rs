@@ -1406,6 +1406,54 @@ fn a_cfg_test_module_in_another_file_is_tests_too() {
         .stdout(contains("1 violation(s)"));
 }
 
+/// A module that test code declares exists only in a test build, however plainly it
+/// is declared: `extra.rs` declares `mod tests;`, which declares `mod deeper;` (a
+/// `tests/` under `src/`, so no glob takes it), and the `#![cfg(test)]` file `inner.rs`
+/// declares `mod support;`. A plain module of the crate's own code stays its component's.
+#[test]
+fn a_module_that_test_code_declares_is_tests_all_the_way_down() {
+    let (_tmp, root) = rust_cfg_test_fixture();
+    let declaring = root.join("src/store/mod.rs");
+    let source = fs::read_to_string(&declaring).unwrap();
+    fs::write(&declaring, format!("{source}\nmod plain;\n")).unwrap();
+    fs::write(
+        root.join("src/store/plain.rs"),
+        "use testkit::Clock;\n\npub fn p() {\n    let _ = Clock;\n}\n",
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("src/store/extra/tests.rs").not())
+        .stdout(contains("src/store/extra/tests/deeper.rs").not())
+        .stdout(contains("src/store/inner/support.rs").not())
+        .stdout(contains(
+            "src/store/plain.rs:1: store -> kit is not allowed",
+        ))
+        .stdout(contains("2 violation(s)"));
+}
+
+/// A module that test code declares but whose file easement cannot find is said too,
+/// naming the declaring file once however many of its modules are missing.
+#[test]
+fn a_module_that_test_code_declares_whose_file_is_missing_is_flagged_as_not_seen() {
+    let (_tmp, root) = rust_cfg_test_fixture();
+    fs::remove_file(root.join("src/store/extra/tests/deeper.rs")).unwrap();
+    let declaring = root.join("src/store/extra/tests.rs");
+    let source = fs::read_to_string(&declaring).unwrap();
+    fs::write(&declaring, format!("mod gone;\n{source}")).unwrap();
+    let out = easement(&root, &["check", "--format", "json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(report["confidence"], "partial");
+    let partial = report["stats"]["parts_partial"].as_array().unwrap();
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    let reason = partial[0].as_str().unwrap();
+    assert_eq!(
+        reason.matches("src/store/extra/tests.rs").count(),
+        1,
+        "{reason}"
+    );
+}
+
 /// Cargo's integration tests sit in `tests/` beside the manifest; a module named
 /// `tests` under `src/` is the crate's own code unless `#[cfg(test)]` says otherwise.
 #[test]

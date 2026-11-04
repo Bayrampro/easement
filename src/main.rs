@@ -834,6 +834,8 @@ fn parts_reasons(doubts: &[(String, lang::parts::Doubt)]) -> Vec<String> {
         .into_iter()
         .map(|(doubt, mut files)| {
             files.sort_unstable();
+            // A file with several modules of one doubt is named once.
+            files.dedup();
             let mut named = files
                 .iter()
                 .take(PARTS_SHOWN)

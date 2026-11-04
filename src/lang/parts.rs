@@ -47,18 +47,17 @@ pub fn rust(path: &str, source: &str) -> Found {
     let masked = mask_rust(source.as_bytes());
     let Ok(text) = std::str::from_utf8(&masked) else {
         return Found {
-            spans: Vec::new(),
             doubts: vec![Doubt::Unreadable],
-            files: Vec::new(),
+            ..Found::default()
         };
     };
     static ATTRIBUTE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"#(!?)\[\s*cfg\s*\(").expect("valid regex"));
-    let mut spans: Vec<Span> = Vec::new();
-    let mut doubts: Vec<Doubt> = Vec::new();
-    let mut files: Vec<Vec<String>> = Vec::new();
-    for found in ATTRIBUTE.captures_iter(text) {
-        let whole = found.get(0).expect("the whole match");
+    let mut found = Found::default();
+    // The bytes of the test items, `spans` as the code they cover.
+    let mut test_code: Vec<RangeInclusive<usize>> = Vec::new();
+    for attribute in ATTRIBUTE.captures_iter(text) {
+        let whole = attribute.get(0).expect("the whole match");
         let Some((content, attribute_end)) = cfg_attribute(text, whole.end()) else {
             continue;
         };
@@ -69,39 +68,128 @@ pub fn rust(path: &str, source: &str) -> Found {
         // What sits inside an inline module cannot be placed from this file alone.
         let inside_module = brace_depth(&masked[..start]) > 0;
         // `#![cfg(test)]`: the file is test code from its first line to its last.
-        if !found[1].is_empty() {
+        if !attribute[1].is_empty() {
             if inside_module {
-                doubts.push(Doubt::InsideModule);
+                found.doubts.push(Doubt::InsideModule);
             } else {
-                spans.push(Span::test(1..=text.lines().count().max(1)));
+                found
+                    .spans
+                    .push(Span::test(1..=text.lines().count().max(1)));
+                test_code.push(0..=masked.len());
             }
             continue;
         }
         // An item nested in a part that was found already is part of it.
-        if spans
-            .last()
-            .is_some_and(|last| *last.lines.end() >= line_of(&masked, start))
-        {
+        if test_code.last().is_some_and(|last| last.contains(&start)) {
             continue;
         }
         match item_end(&masked, attribute_end) {
             Item::Ends(end) => {
-                spans.push(Span::test(line_of(&masked, start)..=line_of(&masked, end)))
+                found
+                    .spans
+                    .push(Span::test(line_of(&masked, start)..=line_of(&masked, end)));
+                test_code.push(start..=end);
             }
-            Item::Module(_) if inside_module => doubts.push(Doubt::InsideModule),
-            Item::Module(_) if preceded_by_path(text, start) => doubts.push(Doubt::ModulePath),
-            Item::Module(name) => files.push(module_files(path, &name)),
-            Item::ModulePath => doubts.push(Doubt::ModulePath),
-            Item::Unbalanced => doubts.push(Doubt::Unbalanced),
+            Item::Module(name) => {
+                let module = place(path, &name, inside_module, &attributes_before(text, start));
+                found.test_module(module);
+            }
+            Item::ModulePath => found.doubts.push(Doubt::ModulePath),
+            Item::Unbalanced => found.doubts.push(Doubt::Unbalanced),
             Item::Member => {}
         }
     }
-    doubts.dedup();
-    Found {
-        spans,
-        doubts,
-        files,
+    other_modules(path, text, &masked, &test_code, &mut found);
+    found.doubts.dedup();
+    found
+}
+
+/// The `mod name;` of a file that no `#[cfg(test)]` governs. Those in test code are
+/// test code too; the others are kept in `modules`, to be followed when the file turns
+/// out to be test code as a whole.
+fn other_modules(
+    path: &str,
+    text: &str,
+    masked: &[u8],
+    test_code: &[RangeInclusive<usize>],
+    found: &mut Found,
+) {
+    static DECLARATION: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\b(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?:r#)?[A-Za-z_][A-Za-z0-9_]*\s*;")
+            .expect("valid regex")
+    });
+    for declaration in DECLARATION.find_iter(text) {
+        let start = declaration.start();
+        let in_test_code = test_code.iter().any(|item| item.contains(&start));
+        let attributes = attributes_before(text, start);
+        // `#[cfg(test)] mod name;` outside test code is the attribute loop's.
+        if !in_test_code && attributes.iter().any(|a| is_test_cfg(a)) {
+            continue;
+        }
+        let Some(name) = module_name(&masked[start..declaration.end() - 1]) else {
+            continue;
+        };
+        let inside_module = brace_depth(&masked[..start]) > 0;
+        let module = place(path, &name, inside_module, &attributes);
+        if in_test_code {
+            found.test_module(module);
+        } else {
+            found.modules.push(module);
+        }
     }
+}
+
+/// Where the code of the module `name`, declared in `path` after `attributes`, is.
+fn place(path: &str, name: &str, inside_module: bool, attributes: &[&str]) -> Module {
+    if inside_module {
+        Module::Unplaced(Doubt::InsideModule)
+    } else if attributes.iter().any(|a| is_path(a)) {
+        Module::Unplaced(Doubt::ModulePath)
+    } else {
+        Module::Files(module_files(path, name))
+    }
+}
+
+/// The contents of the outer attributes (`#[...]`) right before the item at `start`.
+fn attributes_before(text: &str, start: usize) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut attributes = Vec::new();
+    let mut end = text[..start].trim_end().len();
+    while end > 0 && bytes[end - 1] == b']' {
+        let mut depth = 0;
+        let Some(open) = (0..end).rev().find(|&i| {
+            match bytes[i] {
+                b']' => depth += 1,
+                b'[' => depth -= 1,
+                _ => {}
+            }
+            depth == 0
+        }) else {
+            break;
+        };
+        if open == 0 || bytes[open - 1] != b'#' {
+            break;
+        }
+        attributes.push(&text[open + 1..end - 1]);
+        end = text[..open - 1].trim_end().len();
+    }
+    attributes
+}
+
+/// Whether the content of an attribute is a `cfg` that only a test build satisfies.
+fn is_test_cfg(attribute: &str) -> bool {
+    attribute
+        .trim()
+        .strip_prefix("cfg")
+        .map(str::trim_start)
+        .and_then(|rest| rest.strip_prefix('('))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .is_some_and(only_a_test_build)
+}
+
+/// Whether the content of an attribute is a `path = "..."`.
+fn is_path(attribute: &str) -> bool {
+    attribute.trim_start().starts_with("path")
 }
 
 /// How many `{` of the code before a point are still open.
@@ -111,15 +199,6 @@ fn brace_depth(code: &[u8]) -> usize {
         b'}' => depth.saturating_sub(1),
         _ => depth,
     })
-}
-
-/// Whether the attribute that ends just before `start` is a `#[path = ...]`.
-fn preceded_by_path(text: &str, start: usize) -> bool {
-    let before = text[..start].trim_end();
-    before.ends_with(']')
-        && before
-            .rfind("#[")
-            .is_some_and(|at| before[at + 2..].trim_start().starts_with("path"))
 }
 
 /// The files the module `name` declared in the Rust file `path` may be in: a `mod.rs`,
@@ -211,9 +290,31 @@ fn only_a_test_build(predicate: &str) -> bool {
 pub struct Found {
     pub spans: Vec<Span>,
     pub doubts: Vec<Doubt>,
-    /// `#[cfg(test)] mod name;`: for each, the files its code may be in, of which the one
-    /// that exists is test code as a whole.
+    /// The test-only `mod name;` (one `#[cfg(test)]` governs, or one in test code): for
+    /// each, the files its code may be in, of which the one that exists is test code as
+    /// a whole.
     pub files: Vec<Vec<String>>,
+    /// The other `mod name;` of the file, test code as well when the file is.
+    pub modules: Vec<Module>,
+}
+
+impl Found {
+    /// A test-only `mod name;`: its file is test code as a whole, or it is a doubt.
+    fn test_module(&mut self, module: Module) {
+        match module {
+            Module::Files(candidates) => self.files.push(candidates),
+            Module::Unplaced(doubt) => self.doubts.push(doubt),
+        }
+    }
+}
+
+/// A `mod name;` whose code is in another file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Module {
+    /// The files its code may be in.
+    Files(Vec<String>),
+    /// Where its file is cannot be told from the declaring file alone.
+    Unplaced(Doubt),
 }
 
 /// Why test code of a file may be judged as the file's.
@@ -223,11 +324,11 @@ pub enum Doubt {
     Unreadable,
     /// An item whose end was not found (the braces do not match).
     Unbalanced,
-    /// `#[cfg(test)] mod name;` names a file the project does not have.
+    /// A test-only `mod name;` names a file the project does not have.
     ModuleInAnotherFile,
-    /// An inner `#![cfg(test)]`, or a `#[cfg(test)] mod name;`, inside an inline module.
+    /// An inner `#![cfg(test)]`, or a test-only `mod name;`, inside an inline module.
     InsideModule,
-    /// A `#[path]` puts the file of a `#[cfg(test)] mod name;` somewhere else.
+    /// A `#[path]` puts the file of a test-only `mod name;` somewhere else.
     ModulePath,
 }
 
@@ -242,13 +343,13 @@ impl Doubt {
                 "{files}: easement could not find the end of a `#[cfg(test)]` item (the braces do not match), so it is judged as the file's, not as `tests`"
             ),
             Doubt::InsideModule => format!(
-                "{files}: a `#![cfg(test)]` or a `#[cfg(test)] mod name;` inside an inline module is not placed, so it is judged as the file's, not as `tests`"
+                "{files}: a `#![cfg(test)]`, or a test-only `mod name;`, inside an inline module is not placed, so it is judged as the file's, not as `tests`"
             ),
             Doubt::ModulePath => format!(
-                "{files}: a `#[path]` puts the file of a `#[cfg(test)] mod name;` somewhere easement does not look, so it is judged as its component's, not as `tests`"
+                "{files}: a `#[path]` puts the file of a test-only `mod name;` somewhere easement does not look, so it is judged as its component's, not as `tests`"
             ),
             Doubt::ModuleInAnotherFile => format!(
-                "{files}: `#[cfg(test)] mod name;` names a file that is not in the project, so it is not judged as `tests`; the file is expected next to the module or under a directory of its name"
+                "{files}: a test-only `mod name;` names a file that is not in the project, so it is not judged as `tests`; the file is expected next to the module or under a directory of its name"
             ),
         }
     }
@@ -638,6 +739,61 @@ mod tests {
             ]
         );
         assert!(found.spans.is_empty() && found.doubts.is_empty());
+    }
+
+    #[test]
+    fn the_other_modules_of_a_file_are_followed_only_if_it_is_test_code() {
+        let found = rust(
+            "src/store/db.rs",
+            "mod a;\npub(crate) mod b;\n#[cfg(test)]\nmod t;\n#[path = \"x.rs\"]\n#[allow(dead_code)]\nmod moved;\nmod inline {\n    mod c;\n}\n",
+        );
+        assert_eq!(
+            found.modules,
+            [
+                Module::Files(vec![
+                    "src/store/db/a.rs".into(),
+                    "src/store/db/a/mod.rs".into()
+                ]),
+                Module::Files(vec![
+                    "src/store/db/b.rs".into(),
+                    "src/store/db/b/mod.rs".into()
+                ]),
+                Module::Unplaced(Doubt::ModulePath),
+                Module::Unplaced(Doubt::InsideModule),
+            ]
+        );
+        // `mod t;` is test code whatever its file is: it is in `files`, not here.
+        assert_eq!(
+            found.files,
+            [["src/store/db/t.rs", "src/store/db/t/mod.rs"]]
+        );
+        assert!(found.doubts.is_empty());
+    }
+
+    #[test]
+    fn the_modules_of_test_code_are_test_code() {
+        // A `#![cfg(test)]` file: what it declares is test-only as well.
+        let found = rust(
+            "src/lib.rs",
+            "#![cfg(test)]\nmod a;\n#[path = \"x.rs\"]\nmod b;\nmod inline {\n    mod c;\n}\n",
+        );
+        assert_eq!(found.files, [["src/a.rs", "src/a/mod.rs"]]);
+        assert_eq!(found.doubts, [Doubt::ModulePath, Doubt::InsideModule]);
+        assert!(found.modules.is_empty());
+        // A declaration after a test item on its line is not in it.
+        let after = rust("src/lib.rs", "#[cfg(test)] mod x {} mod same;\n");
+        assert_eq!(
+            after.modules,
+            [Module::Files(vec![
+                "src/same.rs".into(),
+                "src/same/mod.rs".into()
+            ])]
+        );
+        assert!(after.files.is_empty());
+        // An inline test module: the file of what it declares is not placed.
+        let inline = rust("src/lib.rs", "#[cfg(test)]\nmod tests {\n    mod sub;\n}\n");
+        assert_eq!(inline.doubts, [Doubt::InsideModule]);
+        assert!(inline.files.is_empty() && inline.modules.is_empty());
     }
 
     #[test]
