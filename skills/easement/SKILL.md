@@ -22,7 +22,15 @@ Run `easement check`. It exits 0 when the code matches the config, 1 on violatio
 - On a branch, `easement check --diff <base>` judges only the lines you added. Run the full `easement check` too when `easement.yml` or the baseline changed, because a rule change touches no import line.
 - `--format json` gives the same report as data. `narrowed` lists what you asked to judge alone (`--diff`, `--component`, `--scope`). `evidence_gaps` lists code the check could not read or judge, each with its files and how to close it: a pass says nothing about that code, so say so and name the files. `accepted_gaps` lists files `uncovered_ok` accepts, with its reason: they are unread too, but by decision. When `cached` is set, the indexes came from the cache; after changing dependencies outside the project without a lock file, run `easement check --no-cache`.
 - On exit 2, read the message. For a missing indexer or missing dependencies, run `easement doctor`.
-- `easement impact --diff <base>` lists every file that depends on your change: run the tests among them. When it says `Partial`, files no indexer read or files the change deletes may hide more. `Cached:` means the indexes came from the cache; `--no-cache` indexes again.
+- `easement impact --diff <base>` lists every file that depends on your change: run the tests among them. When it says `Partial`, unread files, incomplete analysis or files the change deletes may hide more; report the stated reasons. `Cached:` means the indexes came from the cache; `--no-cache` indexes again.
+
+## Dart and Flutter projects
+
+Prepare dependencies with the project's normal `dart pub get` or `flutter pub get` and run any required code generation before checking. Easement never performs those steps. Run `easement doctor` for missing prerequisites. The indexer and opt-in semantic companion are installed from an easement source checkout with `mise run install-dart-indexer` and `mise run install-dart-semantics`; put that checkout's `target/dart-indexer` on `PATH`. Current semantic rules require companion 1.1.0 and fact format 2; reinstall an older companion instead of accepting incompatible facts. See the README's Dart sections for the pinned SDK pair and platform support.
+
+Follow the existing `rules.<component>.dart` policy. Architecture roles and contract associations are explicit; do not infer them from names. The independent `one_widget_per_file` and `no_widget_helpers` switches need no role assignments. For `dart-one-widget-per-file`, move additional widget classes into separate files and rename private classes when importing across libraries. For `dart-no-widget-helpers`, extract a widget or compose directly in the caller; named local helpers and tear-offs remain checked. Only analyzer-verified framework `build` overrides are exempt.
+
+Run a full `easement check` after dependency, typedef/alias or base-class edits: changed-line checks can miss downstream effects. Use `--no-cache` to regenerate dependency and semantic facts when re-verifying extraction. Partial facts do not prove baseline debt fixed. Generated Dart sources have no automatic exemption; follow existing `exclude` and `target_only` policy. Dart `unused` and Pub declaration edges with `packages: true` are unsupported; `manifests: true` validates external source imports.
 
 ## When the check fails
 
@@ -51,7 +59,7 @@ Change the config only when a human asks for it or agrees to it.
 
 - A new directory that belongs to no component: add a component with `in`, and a rule with `may_depend_on` and `because`. With `strict: true` such a directory fails as `orphan` until it has a component or is listed in `unowned`.
 - Every rule gets a `because` that tells the reader where the code should go instead.
-- `easement suggest` lists the allowances no import uses and the imports nothing allows. `easement suggest --patch | git apply` drops the unused allowances and keeps comments and reasons. Leave alone the entries it lists apart as unreliable: they sit next to files no indexer covered.
+- `easement suggest` lists the allowances no import uses and the imports nothing allows. `easement suggest --patch | git apply` drops the unused allowances and keeps comments and reasons. Leave alone the entries it lists apart as unreliable: missing or incomplete analysis could hide their uses.
 - Run the full `easement check` after every change to the config.
 
 `easement schema` prints the full format of `easement.yml`; the README describes every rule.
