@@ -3163,6 +3163,65 @@ fn reach_crosses_go_packages() {
     ));
 }
 
+/// Go compiles a package whole: an import names the file that defines what it uses,
+/// but the other files of the package come along, and so do their imports. Test
+/// files do not: they are never linked into an importer.
+fn go_package_reach(top: &str) -> (TempDir, PathBuf) {
+    project(&[
+        ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+        (
+            "easement.yml",
+            &format!(
+                "version: 1\n{top}components:\n  domain: {{ in: internal/domain }}\n  util: {{ in: internal/util }}\n  http: {{ in: internal/http }}\n  mock: {{ in: internal/mock }}\nrules:\n  domain: {{ may_depend_on: [util], must_not_reach: [http, mock] }}\n  util: {{ may_depend_on: [http, mock] }}\n"
+            ),
+        ),
+        (
+            "internal/domain/order.go",
+            "package domain\n\nimport \"example.com/app/internal/util\"\n\nfunc Total() int { return util.Add(1, 2) }\n",
+        ),
+        (
+            "internal/util/math.go",
+            "package util\n\nfunc Add(a, b int) int { return a + b }\n",
+        ),
+        (
+            "internal/util/retry.go",
+            "package util\n\nimport \"example.com/app/internal/http\"\n\nfunc Retry() { http.Send() }\n",
+        ),
+        (
+            "internal/util/retry_test.go",
+            "package util\n\nimport \"example.com/app/internal/mock\"\n\nvar _ = mock.Fake\n",
+        ),
+        (
+            "internal/http/client.go",
+            "package http\n\nfunc Send() {}\n",
+        ),
+        ("internal/mock/fake.go", "package mock\n\nvar Fake = 1\n"),
+    ])
+}
+
+#[test]
+fn reach_through_another_file_of_a_go_package() {
+    for top in ["", "reach: symbols\n"] {
+        let (_tmp, root) = go_package_reach(top);
+        let out = stdout_of(easement(&root, &["check"]).code(1));
+        assert!(
+            out.contains("domain reaches http through util: internal/domain/order.go:")
+                && out.contains("-> internal/util/retry.go:3 -> internal/http/client.go [reach]"),
+            "{top}{out}"
+        );
+        assert!(!out.contains("reaches mock"), "{top}{out}");
+        assert!(out.contains("1 violation(s)"), "{top}{out}");
+    }
+}
+
+#[test]
+fn why_follows_the_other_files_of_a_go_package() {
+    let (_tmp, root) = go_package_reach("");
+    easement(&root, &["why", "domain", "http"])
+        .success()
+        .stdout(contains("internal/util/retry.go"));
+}
+
 #[test]
 fn suggest_never_offers_to_allow_a_forbidden_import() {
     let (_tmp, root) = reach_project(&[(

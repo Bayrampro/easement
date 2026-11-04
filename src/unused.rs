@@ -148,9 +148,9 @@ pub fn unused(input: &Input) -> Result<Unused> {
     })
 }
 
-/// Every file a chain of imports from `roots` reaches. Go compiles a package
-/// whole, so reaching one of its files reaches all; Python runs the
-/// `__init__.py` of every package above a module.
+/// Every file a chain of imports from `roots` reaches. A language that builds a
+/// directory whole (a Go package) reaches all of it from one of its files, a
+/// test file too; Python runs the `__init__.py` of every package above a module.
 fn reached_from<'a>(
     roots: Vec<&'a str>,
     graph: &'a BTreeMap<String, BTreeSet<(String, usize)>>,
@@ -160,6 +160,14 @@ fn reached_from<'a>(
     for file in paths {
         in_dir.entry(parent(file)).or_default().push(file);
     }
+    let files: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let together: BTreeMap<(&str, &str), Vec<&str>> = registry::built_together(&files)
+        .into_iter()
+        .filter_map(|group| {
+            let first = *group.first()?;
+            Some(((parent(first), registry::of(first)?.name), group))
+        })
+        .collect();
     reach(roots, |file| {
         let mut next: Vec<&'a str> = graph
             .get(file)
@@ -168,34 +176,28 @@ fn reached_from<'a>(
             .map(|(to, _)| to.as_str())
             .collect();
         let dir = parent(file);
-        match registry::of(file).map(|language| language.name) {
-            Some("go") => next.extend(
-                in_dir
-                    .get(dir)
-                    .into_iter()
-                    .flatten()
-                    .filter(|sibling| sibling.ends_with(".go")),
-            ),
-            Some("python") => {
-                let mut dir = dir;
-                loop {
-                    let init = if dir.is_empty() {
-                        "__init__.py".to_string()
-                    } else {
-                        format!("{dir}/__init__.py")
-                    };
-                    next.extend(
-                        in_dir
-                            .get(dir)
-                            .and_then(|fs| fs.iter().find(|f| **f == init)),
-                    );
-                    if dir.is_empty() {
-                        break;
-                    }
-                    dir = parent(dir);
+        let language = registry::of(file);
+        if let Some(language) = language.filter(|language| language.whole_directory) {
+            next.extend(together.get(&(dir, language.name)).into_iter().flatten());
+        }
+        if language.is_some_and(|language| language.name == "python") {
+            let mut dir = dir;
+            loop {
+                let init = if dir.is_empty() {
+                    "__init__.py".to_string()
+                } else {
+                    format!("{dir}/__init__.py")
+                };
+                next.extend(
+                    in_dir
+                        .get(dir)
+                        .and_then(|fs| fs.iter().find(|f| **f == init)),
+                );
+                if dir.is_empty() {
+                    break;
                 }
+                dir = parent(dir);
             }
-            _ => {}
         }
         next
     })

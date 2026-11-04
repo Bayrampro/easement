@@ -34,6 +34,9 @@ pub struct Language {
     pub tests: &'static [&'static str],
     /// Globs of files that `tests` matches but that are not test files.
     pub not_tests: &'static [&'static str],
+    /// Whether its compiler builds the files of a directory together, as Go does a
+    /// package: reaching one of them reaches the others, but not its test files.
+    pub whole_directory: bool,
     /// Whether a module belongs to its standard library, for `$std`; `None`
     /// when easement cannot tell.
     pub std: Option<fn(&str) -> bool>,
@@ -57,6 +60,7 @@ pub static GO: Language = Language {
     extensions: &["go"],
     tests: &["**/*_test.go"],
     not_tests: &[],
+    whole_directory: true,
     std: Some(stdlib::go),
     unused: &["go"],
     conventional: &[],
@@ -70,6 +74,7 @@ pub static TYPESCRIPT: Language = Language {
     extensions: TYPESCRIPT_EXTENSIONS,
     tests: &["**/*.test.*", "**/*.spec.*", "**/__tests__/**"],
     not_tests: &[],
+    whole_directory: false,
     std: None,
     unused: TYPESCRIPT_EXTENSIONS,
     conventional: &["**/*.d.ts"],
@@ -82,6 +87,7 @@ pub static PYTHON: Language = Language {
     extensions: &["py", "pyi"],
     tests: &["**/test_*.py", "**/*_test.py"],
     not_tests: &[],
+    whole_directory: false,
     std: Some(stdlib::python),
     // A stub (`.pyi`) is imported by type checkers, not by the program.
     unused: &["py"],
@@ -95,6 +101,7 @@ pub static JAVA: Language = Language {
     extensions: &["java"],
     tests: &["**/*Test.java", "**/*Tests.java"],
     not_tests: &[],
+    whole_directory: false,
     std: Some(stdlib::java),
     unused: &["java"],
     conventional: &["**/package-info.java", "**/module-info.java"],
@@ -108,6 +115,7 @@ pub static KOTLIN: Language = Language {
     extensions: &["kt", "kts"],
     tests: &["**/*Test.kt", "**/*Tests.kt"],
     not_tests: &[],
+    whole_directory: false,
     std: Some(stdlib::kotlin),
     unused: &[],
     conventional: &[],
@@ -120,6 +128,7 @@ pub static CSHARP: Language = Language {
     extensions: &["cs"],
     tests: &["**/*Test.cs", "**/*Tests.cs"],
     not_tests: &[],
+    whole_directory: false,
     std: Some(stdlib::csharp),
     unused: &["cs"],
     conventional: &[],
@@ -132,6 +141,7 @@ pub static PHP: Language = Language {
     extensions: &["php"],
     tests: &["**/*Test.php"],
     not_tests: &[],
+    whole_directory: false,
     std: Some(stdlib::php),
     unused: &["php"],
     conventional: &[],
@@ -145,6 +155,7 @@ pub static SWIFT: Language = Language {
     extensions: &["swift"],
     tests: &["**/*Tests.swift"],
     not_tests: &[],
+    whole_directory: false,
     std: Some(stdlib::swift),
     unused: &[],
     conventional: &[],
@@ -158,6 +169,7 @@ pub static RUBY: Language = Language {
     extensions: &["rb"],
     tests: &[],
     not_tests: &[],
+    whole_directory: false,
     std: None,
     unused: &[],
     conventional: &[],
@@ -172,6 +184,7 @@ pub static RUST: Language = Language {
     // own code, and `parts` takes it for tests when `#[cfg(test)]` declares it.
     tests: &["**/tests/**/*.rs"],
     not_tests: &["**/src/**/tests/**/*.rs"],
+    whole_directory: false,
     std: Some(stdlib::rust),
     unused: &["rs"],
     conventional: &[
@@ -232,10 +245,67 @@ pub fn test_patterns() -> Vec<&'static str> {
         .collect()
 }
 
+/// The files built together, as a Go package is: for a `whole_directory`
+/// language, its files of one directory but its test files. Every other file
+/// is built on its own and is in no group.
+pub fn built_together<'a>(files: &[&'a str]) -> Vec<Vec<&'a str>> {
+    let mut groups: std::collections::BTreeMap<(&str, &str), Vec<&'a str>> =
+        std::collections::BTreeMap::new();
+    let mut tests: std::collections::HashMap<&str, Option<globset::GlobSet>> =
+        std::collections::HashMap::new();
+    for file in files {
+        let Some(language) = of(file).filter(|language| language.whole_directory) else {
+            continue;
+        };
+        let is_test = tests
+            .entry(language.name)
+            .or_insert_with(|| {
+                let mut set = globset::GlobSetBuilder::new();
+                for glob in language.tests {
+                    set.add(globset::Glob::new(glob).ok()?);
+                }
+                set.build().ok()
+            })
+            .as_ref()
+            .is_none_or(|set| set.is_match(file));
+        if !is_test {
+            groups
+                .entry((relpath::parent(file), language.name))
+                .or_default()
+                .push(file);
+        }
+    }
+    groups.into_values().collect()
+}
+
 /// The files the test globs match that are not tests, which `tests: auto` gives up.
 pub fn not_test_patterns() -> Vec<&'static str> {
     LANGUAGES
         .iter()
         .flat_map(|language| language.not_tests.iter().copied())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_go_package_is_built_together_without_its_tests() {
+        let files = [
+            "util/math.go",
+            "util/retry.go",
+            "util/retry_test.go",
+            "util/page.ts",
+            "util/inner/deep.go",
+            "web/page.ts",
+        ];
+        assert_eq!(
+            built_together(&files),
+            [
+                vec!["util/math.go", "util/retry.go"],
+                vec!["util/inner/deep.go"]
+            ]
+        );
+    }
 }

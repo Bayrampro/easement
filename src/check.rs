@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::components::ComponentMap;
 use crate::config::{Config, Listed};
 use crate::flow::{self, Flow};
-use crate::lang::Target;
+use crate::lang::{Target, registry};
 use crate::relpath;
 use crate::scan::{Dep, slash};
 use crate::scope::Scope;
@@ -671,10 +671,12 @@ pub fn describe_chain<'a>(
     )
 }
 
-/// The files of a project by directory, and the set of them.
+/// The files of a project by directory, the set of them, and the groups of
+/// them that are built together (see [`registry::built_together`]).
 struct Files<'a> {
     in_dir: BTreeMap<&'a str, Vec<&'a str>>,
     known: BTreeSet<&'a str>,
+    together: BTreeMap<&'a str, std::rc::Rc<Vec<&'a str>>>,
 }
 
 impl<'a> Files<'a> {
@@ -683,17 +685,30 @@ impl<'a> Files<'a> {
         for file in files {
             in_dir.entry(relpath::parent(file)).or_default().push(file);
         }
+        let known: BTreeSet<&str> = files.iter().map(String::as_str).collect();
+        let mut together = BTreeMap::new();
+        for group in registry::built_together(&known.iter().copied().collect::<Vec<_>>()) {
+            let group = std::rc::Rc::new(group);
+            for file in group.iter() {
+                together.insert(*file, group.clone());
+            }
+        }
         Self {
             in_dir,
-            known: files.iter().map(String::as_str).collect(),
+            known,
+            together,
         }
     }
 
-    /// The files an import of `path` names: the file, or one of each file directly in
-    /// a package directory.
+    /// The files an import of `path` names: the file with those built together
+    /// with it (the other files of its Go package), or one of each file directly
+    /// in a package directory.
     fn targets(&self, path: &str) -> Vec<&'a str> {
         match self.known.get(path) {
-            Some(file) => vec![*file],
+            Some(file) => match self.together.get(file) {
+                Some(group) => group.to_vec(),
+                None => vec![*file],
+            },
             None => self.in_dir.get(path).cloned().unwrap_or_default(),
         }
     }
