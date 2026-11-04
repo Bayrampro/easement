@@ -5010,3 +5010,55 @@ fn dart_dependency_check_and_doctor_do_not_need_the_semantic_companion() {
         }
     }
 }
+
+#[test]
+fn dart_normalized_facts_match_fresh_and_cached_reports_including_uncovered_targets() {
+    let (_tmp, root) = dart_project();
+    for exclude_target in [false, true] {
+        fs::write(
+            root.join("analysis_options.yaml"),
+            if exclude_target {
+                "analyzer:\n  exclude: ['lib/domain.dart']\n"
+            } else {
+                "{}\n"
+            },
+        )
+        .unwrap();
+        let cache = TempDir::new().unwrap();
+        let mut cold: serde_json::Value = serde_json::from_str(&stdout_of(
+            easement_cached(&root, &["check", "--format", "json"], cache.path()).code(1),
+        ))
+        .unwrap();
+        let mut warm: serde_json::Value = serde_json::from_str(&stdout_of(
+            easement_cached(
+                &root,
+                &["check", "--cache-only", "--format", "json"],
+                cache.path(),
+            )
+            .code(1),
+        ))
+        .unwrap();
+        assert_eq!(cold["stats"]["indexed"], 1);
+        assert_eq!(warm["stats"]["from_cache"], 1);
+        if exclude_target {
+            assert_eq!(
+                cold["stats"]["uncovered"],
+                serde_json::json!(["lib/domain.dart"])
+            );
+            assert_eq!(cold["confidence"], "partial");
+            assert_eq!(cold["violations"][0]["target"], "lib/domain.dart");
+        } else {
+            assert_eq!(cold["confidence"], "full");
+        }
+        for report in [&mut cold, &mut warm] {
+            report.as_object_mut().unwrap().remove("cached");
+            let stats = report["stats"].as_object_mut().unwrap();
+            stats.remove("indexed");
+            stats.remove("from_cache");
+        }
+        assert_eq!(
+            cold, warm,
+            "normalization depends on whether the raw index was cached"
+        );
+    }
+}

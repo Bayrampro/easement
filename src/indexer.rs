@@ -521,11 +521,15 @@ pub fn run(
         Documents::merged(parts)?
     };
     let indexed: BTreeSet<&str> = documents.0.iter().map(|d| d.path.as_str()).collect();
-    let uncovered = wanted
+    let mut uncovered: BTreeSet<String> = wanted
         .into_iter()
         .filter(|f| !indexed.contains(f.as_str()))
         .cloned()
         .collect();
+    if let Some(dart) = &dart_indexed {
+        uncovered.extend(dart.uncovered.iter().cloned());
+    }
+    let uncovered = uncovered.into_iter().collect();
     Ok(Indexed {
         analysis_partial: dart_indexed.map_or_else(Vec::new, |d| d.analysis_partial),
         documents,
