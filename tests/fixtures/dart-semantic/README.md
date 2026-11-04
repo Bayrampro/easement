@@ -1,7 +1,8 @@
 # Dart semantic extraction evidence
 
-Validated with Flutter 3.47.9, bundled Dart 3.13.7, `scip_dart` 1.8.1,
-analyzer 14.4.0, companion 1.0.0, and semantic fact format 1.
+Historical Stage 2 extraction artifacts below were validated with Flutter 3.47.9, bundled Dart 3.13.7, `scip_dart` 1.8.1,
+analyzer 14.4.0, companion 1.0.0, and semantic fact format 1. Current companion 1.1.0 emits format 2 and adds
+Flutter composition facts; regenerate runtime facts with the current launcher.
 
 ## Extraction decision
 
@@ -66,5 +67,6 @@ Role defaults use existing components or project-relative globs. Explicit
 selectors override defaults; same-precedence conflicts fail configuration.
 Generic contract associations match named type arguments and nullability exactly.
 Unresolved types and missing requested files produce partial analysis. Windows
-launchers, record/function association-argument syntax, widget composition rules,
-and runtime business-completeness checks are not provided.
+launchers, record/function association-argument syntax and runtime
+business-completeness checks are not provided. Flutter composition rules are
+covered by the separate `flutter-ui` fixture.

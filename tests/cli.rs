@@ -5315,10 +5315,10 @@ fn dart_semantic_tool_is_required_only_when_enabled() {
         .stderr(contains("incompatible Dart semantic companion"));
     fs::write(&fake, r#"#!/bin/sh
 if [ "$1" = "--version" ]; then
-  echo 'easement_dart_semantics 1.0.0 facts=1 analyzer=14.4.0'
+  echo 'easement_dart_semantics 1.1.0 facts=2 analyzer=14.4.0'
 else
   cat >/dev/null
-  echo '{"format_version":2,"extractor_version":"1.0.0","analyzer_version":"14.4.0","sdk_version":"3.13.7","files":[],"declarations":[],"gaps":[]}'
+  echo '{"format_version":3,"extractor_version":"1.1.0","analyzer_version":"14.4.0","sdk_version":"3.13.7","files":[],"declarations":[],"gaps":[],"ui_classes":[],"callables":[]}'
 fi
 "#).unwrap();
     run()
@@ -5327,7 +5327,7 @@ fi
         .stderr(contains("incompatible Dart semantic fact format"));
     let malformed = fs::read_to_string(&fake)
         .unwrap()
-        .replace("\"format_version\":2", "\"format_version\":1");
+        .replace("\"format_version\":3", "\"format_version\":2");
     fs::write(&fake, malformed).unwrap();
     run()
         .assert()
@@ -5511,4 +5511,375 @@ fn dart_semantic_same_line_signature_slots_are_distinct_without_field_duplicates
         "formatting changed baseline identities: {reformatted}"
     );
     assert_eq!(reformatted["stale"], serde_json::json!([]));
+}
+
+fn flutter_ui_project() -> (TempDir, PathBuf) {
+    let result = fixture("flutter-ui");
+    prepare_dart(&result.1);
+    result
+}
+
+fn ui_policy(root: &Path, layout: bool, helpers: bool) {
+    fs::write(root.join("easement.yml"), format!("version: 1\ncomponents:\n  presentation: {{in: lib}}\nrules:\n  presentation:\n    dart:\n      one_widget_per_file: {layout}\n      no_widget_helpers: {helpers}\n")).unwrap();
+}
+
+#[test]
+fn dart_ui_rules_are_independent_and_extraction_fixes_both() {
+    let (_tmp, root) = flutter_ui_project();
+    let value = semantic_json(&root, 1);
+    let found = value["violations"].as_array().unwrap();
+    assert_eq!(found.len(), 2, "{value}");
+    assert_eq!(value["confidence"], "full", "{value}");
+    let layout = found
+        .iter()
+        .find(|v| v["rule"] == "dart-one-widget-per-file")
+        .unwrap();
+    assert_eq!(layout["file"], "lib/profile_screen.dart");
+    assert_eq!(layout["line"], 12);
+    assert!(
+        layout["message"]
+            .as_str()
+            .unwrap()
+            .contains("ProfileScreen")
+    );
+    assert!(
+        layout["message"]
+            .as_str()
+            .unwrap()
+            .contains("_ProfileHeader")
+    );
+    let helper = found
+        .iter()
+        .find(|v| v["rule"] == "dart-no-widget-helpers")
+        .unwrap();
+    assert_eq!(helper["line"], 9);
+    assert!(
+        helper["semantic"]["declaration"]
+            .as_str()
+            .unwrap()
+            .contains("_header")
+    );
+    assert!(helper["message"].as_str().unwrap().contains("Widget"));
+    insta::assert_json_snapshot!("dart_ui_composition", &value);
+    for (layout, helpers, count) in [(true, false, 1), (false, true, 1), (false, false, 0)] {
+        ui_policy(&root, layout, helpers);
+        let value = semantic_json(&root, if count == 0 { 0 } else { 1 });
+        assert_eq!(value["violations"].as_array().unwrap().len(), count);
+        if count == 0 {
+            assert_eq!(value["stats"]["semantic_indexed"].as_u64().unwrap_or(0), 0);
+        }
+    }
+    ui_policy(&root, true, true);
+    fs::write(root.join("lib/profile_screen.dart"), "import 'package:flutter/widgets.dart';\nimport 'profile_header.dart';\nclass ProfileScreen extends StatelessWidget {\n  const ProfileScreen({super.key});\n  @override\n  Widget build(BuildContext context) => const ProfileHeader();\n}\n").unwrap();
+    fs::write(root.join("lib/profile_header.dart"), "import 'package:flutter/widgets.dart';\nclass ProfileHeader extends StatelessWidget {\n  const ProfileHeader({super.key});\n  @override\n  Widget build(BuildContext context) => const SizedBox.shrink();\n}\n").unwrap();
+    let output = std::process::Command::new("dart")
+        .args(["analyze", "--fatal-infos"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    semantic_json(&root, 0);
+}
+
+#[test]
+fn dart_ui_resolved_widgets_parts_and_wrapper_builds() {
+    let (_tmp, root) = flutter_ui_project();
+    fs::remove_file(root.join("lib/profile_screen.dart")).unwrap();
+    fs::write(root.join("lib/base.dart"), "import 'package:flutter/widgets.dart';\nabstract class Base extends StatelessWidget { const Base({super.key}); }\ntypedef Alias = Base;\n").unwrap();
+    fs::write(
+        root.join("lib/widgets.dart"),
+        r#"import 'package:flutter/widgets.dart';
+import 'base.dart';
+part 'extra.dart';
+class First extends Alias {
+  const First({super.key});
+  @override
+  Widget build(BuildContext context) => const SizedBox();
+}
+class Second extends First { const Second({super.key}); }
+class Third extends Second { const Third({super.key}); }
+"#,
+    )
+    .unwrap();
+    fs::write(root.join("lib/extra.dart"), "part of 'widgets.dart';\nclass PartWidget extends First { const PartWidget({super.key}); }\n").unwrap();
+    fs::write(root.join("lib/consumer.dart"), r#"import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+class Screen extends ConsumerWidget {
+  const Screen({super.key});
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => ListView.builder(itemBuilder: (_, i) => Text('$i'));
+}
+"#).unwrap();
+    fs::write(
+        root.join("lib/state.dart"),
+        r#"import 'package:flutter/widgets.dart';
+class Screen extends StatefulWidget {
+  const Screen({super.key});
+  @override
+  State<Screen> createState() => _ScreenState();
+}
+class _ScreenState extends State<Screen> {
+  @override
+  Widget build(BuildContext context) => const SizedBox();
+}
+class Unrelated {}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("lib/namesake.dart"),
+        "class Widget {}\nclass One extends Widget {}\nclass Two extends Widget {}\n",
+    )
+    .unwrap();
+    let value = semantic_json(&root, 1);
+    assert_eq!(value["confidence"], "full", "{value}");
+    let found = value["violations"].as_array().unwrap();
+    assert_eq!(found.len(), 2, "{value}");
+    assert!(
+        found
+            .iter()
+            .all(|v| v["rule"] == "dart-one-widget-per-file" && v["file"] == "lib/widgets.dart")
+    );
+    assert!(found.iter().any(|v| v["line"] == 9));
+    assert!(found.iter().any(|v| v["line"] == 10));
+}
+
+#[test]
+fn dart_ui_named_helpers_cover_private_local_nullable_and_broad_returns() {
+    let (_tmp, root) = flutter_ui_project();
+    ui_policy(&root, false, true);
+    fs::write(
+        root.join("lib/profile_screen.dart"),
+        r#"import 'package:flutter/widgets.dart';
+typedef Maybe = Text?;
+Widget top() => const Text('top');
+Widget build() => const SizedBox();
+class Screen extends StatefulWidget {
+  const Screen({super.key});
+  @override
+  State<Screen> createState() => ScreenState();
+  static Text title() => const Text('title');
+}
+class ScreenState extends State<Screen> {
+  @override
+  Widget build(BuildContext context) {
+    Text local() => const Text('local');
+    void other() { Text local() => const Text('other'); local(); }
+    other();
+    return ListView.builder(itemBuilder: (_, i) => local());
+  }
+  Maybe get footer => const Text('footer');
+  _inferred() => const SizedBox();
+  Object broad(bool yes) { if (yes) return const Text('yes'); else return const SizedBox(); }
+  Object? nullable(bool yes) => yes ? const Text('yes') : null;
+  List<Widget> many() => [const Text('many')];
+  Future<Widget> later() async => const Text('later');
+  Widget tearoff(BuildContext c, int i) => const Text('tearoff');
+  Widget useTearoff() => ListView.builder(itemBuilder: tearoff);
+}
+class Unrelated { Widget build() => const Text('ordinary'); }
+"#,
+    )
+    .unwrap();
+    // Equal names in separate libraries must keep independent local identities.
+    fs::copy(
+        root.join("lib/profile_screen.dart"),
+        root.join("lib/other.dart"),
+    )
+    .unwrap();
+    let value = semantic_json(&root, 1);
+    assert_eq!(value["confidence"], "full", "{value}");
+    let found = value["violations"].as_array().unwrap();
+    assert_eq!(found.len(), 24, "{value}");
+    assert!(found.iter().all(|v| v["rule"] == "dart-no-widget-helpers"));
+    for name in [
+        "top",
+        "#build",
+        "title",
+        "footer",
+        "_inferred",
+        "broad",
+        "nullable",
+        "tearoff",
+        "useTearoff",
+        "Unrelated::build",
+    ] {
+        assert!(
+            found.iter().any(|v| v["semantic"]["declaration"]
+                .as_str()
+                .unwrap()
+                .contains(name)),
+            "missing {name}: {value}"
+        );
+    }
+    let locals: Vec<_> = found
+        .iter()
+        .filter(|v| {
+            v["semantic"]["declaration"]
+                .as_str()
+                .unwrap()
+                .contains("::local[")
+        })
+        .collect();
+    assert_eq!(locals.len(), 4, "{value}");
+    assert!(
+        locals
+            .iter()
+            .all(|v| v["target"].as_str().unwrap().ends_with("local[local:1]"))
+    );
+    let identities: std::collections::BTreeSet<_> = locals
+        .iter()
+        .map(|v| v["target"].as_str().unwrap())
+        .collect();
+    assert_eq!(identities.len(), 4);
+    assert!(found.iter().all(|v| {
+        !v["semantic"]["declaration"]
+            .as_str()
+            .unwrap()
+            .ends_with("ScreenState::build")
+    }));
+}
+
+#[test]
+fn dart_ui_partial_results_source_selection_and_mixed_language_scope() {
+    let (_tmp, root) = flutter_ui_project();
+    let file = root.join("lib/profile_screen.dart");
+    let source = fs::read_to_string(&file).unwrap();
+    fs::write(&file, format!("{source}\nObject uncertain(dynamic value) => value;\nclass Broken extends Missing {{}}\n")).unwrap();
+    let value = semantic_json(&root, 1);
+    assert_eq!(value["violations"].as_array().unwrap().len(), 2, "{value}");
+    assert_eq!(value["confidence"], "partial");
+    assert!(
+        value["stats"]["semantic_partial"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["declaration"].as_str().unwrap().contains("uncertain"))
+    );
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("Incomplete analysis:"))
+        .stdout(contains("uncertain"));
+    fs::write(&file, &source).unwrap();
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    fs::write(root.join("lib/extra.dart"), &source).unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        format!(
+            "{config}\nexclude: ['lib/extra.dart']\ntarget_only: ['lib/profile_screen.dart']\n"
+        ),
+    )
+    .unwrap();
+    let value = semantic_json(&root, 0);
+    assert_eq!(value["stats"]["semantic_indexed"].as_u64().unwrap_or(0), 0);
+    fs::create_dir_all(root.join("kotlin")).unwrap();
+    fs::write(root.join("kotlin/model.kt"), "package model\nclass Model\n").unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        format!(
+            "{}\nexclude: ['lib/extra.dart']\n",
+            config.replace(
+                "  presentation: {in: lib}",
+                "  presentation: {in: lib}\n  kotlin: {in: kotlin}"
+            )
+        ),
+    )
+    .unwrap();
+    let value = semantic_json(&root, 1);
+    assert_eq!(value["violations"].as_array().unwrap().len(), 2);
+    easement(&root, &["check", "--scope", "kotlin"]).success();
+}
+
+#[test]
+fn dart_ui_baseline_diff_suppression_and_cache_follow_existing_workflows() {
+    let (_tmp, root) = flutter_ui_project();
+    let file = root.join("lib/profile_screen.dart");
+    let source = fs::read_to_string(&file).unwrap();
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    ui_policy(&root, true, false);
+    semantic_json(&root, 1);
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--cache-only", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    assert_eq!(value["stats"]["semantic_from_cache"], 1);
+    easement(&root, &["baseline", "--accept-new"]).success();
+    fs::write(&file, source.replace("ProfileScreen", "RenamedScreen")).unwrap();
+    easement(&root, &["check"]).success();
+    fs::remove_file(root.join("easement.baseline.yml")).unwrap();
+    fs::write(root.join("easement.yml"), &config).unwrap();
+    fs::write(&file, &source).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "test: Flutter UI base"]);
+    fs::write(&file, source.replace("class ProfileScreen", "class Inserted extends StatelessWidget {\n  const Inserted({super.key});\n  @override\n  Widget build(BuildContext context) => const SizedBox();\n}\n\nclass ProfileScreen")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--diff", "HEAD", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    let found = value["violations"].as_array().unwrap();
+    assert_eq!(found.len(), 2, "{value}");
+    assert!(
+        found
+            .iter()
+            .all(|v| v["rule"] == "dart-one-widget-per-file")
+    );
+    fs::write(&file, source.replace("  Widget _header", "  // easement:disable-next-line dart-no-widget-helpers -- extract separately\n  Widget _header").replace("class _ProfileHeader", "// easement:disable-next-line dart-one-widget-per-file -- legacy widget pair\nclass _ProfileHeader")).unwrap();
+    let value = semantic_json(&root, 0);
+    assert_eq!(value["stats"]["suppressed"], 2);
+    fs::write(&file, &source).unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        format!("{config}\nwarn: [dart-one-widget-per-file, dart-no-widget-helpers]\n"),
+    )
+    .unwrap();
+    let value = semantic_json(&root, 0);
+    assert_eq!(value["warnings"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn dart_ui_local_base_and_alias_edits_invalidate_semantic_cache() {
+    let (_tmp, root) = flutter_ui_project();
+    fs::create_dir_all(root.join("packages/base/lib")).unwrap();
+    fs::write(root.join("packages/base/pubspec.yaml"), "name: ui_base\nenvironment:\n  sdk: ^3.13.0\ndependencies:\n  flutter:\n    sdk: flutter\n").unwrap();
+    let pubspec = root.join("pubspec.yaml");
+    fs::write(
+        &pubspec,
+        format!(
+            "{}  ui_base:\n    path: packages/base\n",
+            fs::read_to_string(&pubspec).unwrap()
+        ),
+    )
+    .unwrap();
+    let base = root.join("packages/base/lib/base.dart");
+    let widget_base = "import 'package:flutter/widgets.dart';\nabstract class Base extends StatelessWidget { const Base({super.key}); }\ntypedef Result = Text;\n";
+    fs::write(&base, widget_base).unwrap();
+    prepare_dart(&root);
+    prepare_dart(&root.join("packages/base"));
+    fs::write(root.join("lib/profile_screen.dart"), "import 'package:flutter/widgets.dart';\nimport 'package:ui_base/base.dart';\nclass First extends Base {\n  const First({super.key});\n  @override\n  Widget build(BuildContext context) => const SizedBox();\n  Result helper(Result value) => value;\n}\nclass Second extends First { const Second({super.key}); }\n").unwrap();
+    let value = semantic_json(&root, 1);
+    assert_eq!(value["violations"].as_array().unwrap().len(), 2, "{value}");
+    fs::write(
+        &base,
+        widget_base.replace("typedef Result = Text;", "typedef Result = String;"),
+    )
+    .unwrap();
+    let value = semantic_json(&root, 1);
+    assert_eq!(value["stats"]["semantic_indexed"], 1, "{value}");
+    assert_eq!(value["violations"].as_array().unwrap().len(), 1);
+    let fresh: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--no-cache", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    assert_eq!(value["violations"], fresh["violations"]);
+    fs::write(&base, "import 'package:flutter/widgets.dart';\nabstract class Base { const Base({Key? key}); Widget build(BuildContext context); }\ntypedef Result = String;\n").unwrap();
+    let value = semantic_json(&root, 0);
+    assert_eq!(value["stats"]["semantic_indexed"], 1, "{value}");
+    assert_eq!(value["confidence"], "full", "{value}");
+    easement(&root, &["check", "--no-cache"]).success();
 }

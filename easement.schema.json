@@ -182,6 +182,8 @@
       "default": [],
       "items": {
         "enum": [
+          "dart-one-widget-per-file",
+          "dart-no-widget-helpers",
           "dart-repository-declaration",
           "dart-contract-api-types",
           "dart-repository-implementation",
@@ -744,6 +746,16 @@
               "type": "null"
             }
           ]
+        },
+        "no_widget_helpers": {
+          "description": "Extract named widget-returning helpers into dedicated widgets.",
+          "type": "boolean",
+          "default": false
+        },
+        "one_widget_per_file": {
+          "description": "At most one resolved Flutter widget class per physical source file.",
+          "type": "boolean",
+          "default": false
         },
         "repository_declaration": {
           "description": "Required class modifiers for repository-contract declarations.",

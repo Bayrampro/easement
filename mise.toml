@@ -129,7 +129,7 @@ run = ["cd tools/dart-indexer && dart pub get --enforce-lockfile", "dart tools/d
 
 [tasks.prepare-dart-fixtures]
 description = "Seed Flutter dependencies before offline Dart integration tests"
-run = "cd tests/fixtures/flutter-basic && flutter pub get --enforce-lockfile"
+run = ["cd tests/fixtures/flutter-basic && flutter pub get --enforce-lockfile", "cd tests/fixtures/flutter-ui && flutter pub get --enforce-lockfile"]
 
 [tasks.fix]
 description = "Apply the automatic fixes"
@@ -141,4 +141,4 @@ run = ["cd tools/dart-indexer && dart pub get --enforce-lockfile", "dart tools/d
 
 [tasks.check-dart-semantics]
 description = "Format, analyze and test the Dart semantic companion"
-run = ["dart format --output=none --set-exit-if-changed tools/dart-indexer/bin tools/dart-indexer/test", "dart analyze --fatal-infos tools/dart-indexer", "dart tools/dart-indexer/test/semantics_test.dart"]
+run = ["dart format --output=none --set-exit-if-changed tools/dart-indexer/bin tools/dart-indexer/test", "dart analyze --fatal-infos tools/dart-indexer", "dart tools/dart-indexer/test/semantics_test.dart", "dart tools/dart-indexer/test/ui_test.dart"]

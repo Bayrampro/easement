@@ -11,8 +11,10 @@ import 'package:analyzer/dart/element/nullability_suffix.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/source/line_info.dart';
 
-const version = '1.0.0';
-const formatVersion = 1;
+part 'ui.dart';
+
+const version = '1.1.0';
+const formatVersion = 2;
 typedef Json = Map<String, dynamic>;
 
 Future<void> main(List<String> args) async {
@@ -71,6 +73,10 @@ Future<void> main(List<String> args) async {
       for (final entry in extractor.elements.entries) {
         extractor.finish(entry.key, entry.value);
       }
+      final ui = UiInventory(extractor);
+      for (final unit in extractor.units.values) {
+        unit.unit.accept(ui);
+      }
       stdout.writeln(
         jsonEncode({
           'format_version': formatVersion,
@@ -84,6 +90,8 @@ Future<void> main(List<String> args) async {
                 ..sort(),
           'declarations': extractor.declarations.values.toList(),
           'gaps': extractor.gaps,
+          'ui_classes': ui.classes,
+          'callables': ui.callables,
         }),
       );
     } finally {

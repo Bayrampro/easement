@@ -20,6 +20,8 @@ use crate::scope::Scope;
 #[serde(rename_all = "kebab-case")]
 pub enum RuleId {
     /// Dart-only opt-in semantic policy rules.
+    DartOneWidgetPerFile,
+    DartNoWidgetHelpers,
     DartRepositoryDeclaration,
     DartContractApiTypes,
     DartRepositoryImplementation,
@@ -68,6 +70,8 @@ pub enum RuleId {
 impl RuleId {
     pub fn as_str(self) -> &'static str {
         match self {
+            RuleId::DartOneWidgetPerFile => "dart-one-widget-per-file",
+            RuleId::DartNoWidgetHelpers => "dart-no-widget-helpers",
             RuleId::DartRepositoryDeclaration => "dart-repository-declaration",
             RuleId::DartContractApiTypes => "dart-contract-api-types",
             RuleId::DartRepositoryImplementation => "dart-repository-implementation",
@@ -103,7 +107,9 @@ impl RuleId {
     }
 
     /// Every rule, in the order of the declaration.
-    pub const ALL: [RuleId; 24] = [
+    pub const ALL: [RuleId; 26] = [
+        RuleId::DartOneWidgetPerFile,
+        RuleId::DartNoWidgetHelpers,
         RuleId::DartRepositoryDeclaration,
         RuleId::DartContractApiTypes,
         RuleId::DartRepositoryImplementation,
@@ -131,7 +137,9 @@ impl RuleId {
     ];
 
     /// Rules that an inline comment can suppress.
-    pub const SUPPRESSIBLE: [RuleId; 13] = [
+    pub const SUPPRESSIBLE: [RuleId; 15] = [
+        RuleId::DartOneWidgetPerFile,
+        RuleId::DartNoWidgetHelpers,
         RuleId::DartRepositoryDeclaration,
         RuleId::DartContractApiTypes,
         RuleId::DartRepositoryImplementation,
