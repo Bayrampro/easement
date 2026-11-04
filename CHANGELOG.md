@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.13](https://github.com/mokevnin/easement/compare/v0.4.12...v0.4.13) (2026-11-04)
+
+
+### Bug Fixes
+
+* take every module that Rust test code declares as test code ([#82](https://github.com/mokevnin/easement/issues/82)) ([4f16454](https://github.com/mokevnin/easement/commit/4f164542dad69b7461bb395eb9663b72c3c009c0))
+* take Rust benchmarks and examples into the tests component ([#81](https://github.com/mokevnin/easement/issues/81)) ([796a519](https://github.com/mokevnin/easement/commit/796a51974234f5a03d5f1468faf5d6ef62ab7a7b))
+
 ## [0.4.12](https://github.com/mokevnin/easement/compare/v0.4.11...v0.4.12) (2026-11-04)
 
 
