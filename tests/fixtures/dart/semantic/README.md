@@ -50,13 +50,13 @@ mise run install-dart-semantics
 mise run prepare-dart-fixtures
 mise run check-dart-semantics
 cargo test dart_semantic_ -- --test-threads=4
-cd tests/fixtures/dart-semantic
+cd tests/fixtures/dart/semantic
 dart pub get
-../../../target/dart-indexer/scip_dart --output /tmp/dart-semantic.scip .
-../../../target/debug/easement doctor
-../../../target/debug/easement check --no-cache --format json
-../../../target/debug/easement check --config clean.yml --no-cache
-../../../target/debug/easement check --config mvvm.yml --no-cache
+../../../../target/dart-indexer/scip_dart --output /tmp/dart-semantic.scip .
+../../../../target/debug/easement doctor
+../../../../target/debug/easement check --no-cache --format json
+../../../../target/debug/easement check --config clean.yml --no-cache
+../../../../target/debug/easement check --config mvvm.yml --no-cache
 ```
 
 The default and Clean Architecture examples deliberately fail because `Orders`

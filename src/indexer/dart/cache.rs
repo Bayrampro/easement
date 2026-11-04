@@ -163,10 +163,13 @@ fn source_tree(path: &Path, seen: &mut BTreeSet<PathBuf>, hash: &mut blake3::Has
             return false;
         }
         entry.path().is_dir()
-            || entry
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "dart" || ext == "json")
+            || entry.path().extension().is_some_and(|ext| {
+                registry::DART
+                    .extensions
+                    .iter()
+                    .any(|source| ext == *source)
+                    || ext == "json"
+            })
             || [
                 "pubspec.yaml",
                 "pubspec.lock",

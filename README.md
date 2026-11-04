@@ -874,7 +874,7 @@ For repository tests, run `mise run prepare-dart-fixtures` once before
 Linux arm64 has no prebuilt Flutter SDK bundle; use the pinned framework
 bootstrap in [CI](.github/workflows/ci.yml), which downloads the native Dart SDK
 and universal analysis artifacts while keeping the ARM test suite enabled.
-See [Dart extraction evidence](tests/fixtures/dart-basic/README.md).
+See [Dart extraction evidence](tests/fixtures/dart/basic/README.md).
 
 ## How it works
 
@@ -1057,7 +1057,7 @@ reindex after configuration or baseline edits. `--cache-only` needs both caches.
 Run the prepared examples from this checkout:
 
 ```sh
-cd tests/fixtures/dart-semantic
+cd tests/fixtures/dart/semantic
 dart pub get
 easement doctor
 easement check --no-cache --format json
@@ -1067,7 +1067,7 @@ easement check --config mvvm.yml --no-cache
 ```
 
 The fixture contains a Clean Architecture policy and an independent MVVM
-policy. See its [extraction evidence](tests/fixtures/dart-semantic/README.md).
+policy. See its [extraction evidence](tests/fixtures/dart/semantic/README.md).
 
 ## Flutter UI composition checks
 
@@ -1126,5 +1126,5 @@ base-class or configuration edits to inspect downstream effects. Cached semantic
 facts include local dependencies and all companion source parts; use `--no-cache`
 to verify again.
 
-The [real Flutter fixture](tests/fixtures/flutter-ui/README.md) pins its wrapper
+The [real Flutter fixture](tests/fixtures/dart/flutter-ui/README.md) pins its wrapper
 dependency and demonstrates both findings and extraction into separate files.

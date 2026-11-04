@@ -24,6 +24,8 @@ mod suggest;
 mod suppress;
 mod unused;
 
+use crate::lang::registry;
+
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{IsTerminal, Write};
@@ -795,7 +797,7 @@ fn run(cli: Cli) -> Result<bool> {
             let map = ComponentMap::new(&project.config)?;
             let target_only = scan::glob_set(&project.config.target_only, "target_only")?;
             if files.iter().any(|file| {
-                relpath::extension(file) == "dart"
+                registry::is(Path::new(file), &registry::DART)
                     && !target_only.is_match(file)
                     && map
                         .component_of(file)

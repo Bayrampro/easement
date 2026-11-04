@@ -496,7 +496,11 @@ pub fn run(
     if let Some(indexed) = dart_indexed.take() {
         ran += indexed.ran;
         cached += indexed.cached;
-        wanted.extend(files.iter().filter(|f| relpath::extension(f) == "dart"));
+        wanted.extend(
+            files
+                .iter()
+                .filter(|f| registry::is(Path::new(f), &registry::DART)),
+        );
         parts.push(indexed.documents.0);
         dart_indexed = Some(Indexed {
             documents: Documents::default(),

@@ -1,7 +1,7 @@
 //! Local SCIP IDs are document-scoped. Keep private-symbol evidence without
 //! inventing cross-file identities, and disclose only gaps relevant to rules.
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ::scip::types::{Document as RawDocument, Occurrence, symbol_information::Kind};
 use anyhow::Result;
@@ -10,7 +10,7 @@ use globset::GlobSet;
 use crate::check::{self, SymbolRef};
 use crate::components::ComponentMap;
 use crate::config::Config;
-use crate::lang::Target;
+use crate::lang::{Target, registry};
 use crate::scan::{AnalysisGap, TypeDef};
 use crate::scip::{Document, occurrence_text};
 
@@ -159,7 +159,7 @@ pub(crate) fn coverage(
     let all: Vec<&Document> = documents
         .iter()
         .chain(hidden)
-        .filter(|d| crate::relpath::extension(&d.path) == "dart")
+        .filter(|d| registry::is(Path::new(&d.path), &registry::DART))
         .collect();
     let mut gaps = BTreeSet::new();
     for document in documents.iter().filter(|d| !target_only.is_match(&d.path)) {
@@ -273,9 +273,9 @@ mod tests {
 
     #[test]
     fn real_dart_index_keeps_private_type_evidence_only_where_present() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dart-basic");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dart/basic");
         let documents = crate::scip::parse(
-            include_bytes!("../../../tests/fixtures/dart-basic/evidence.scip"),
+            include_bytes!("../../../tests/fixtures/dart/basic/evidence.scip"),
             &root,
             Path::new(""),
         )
