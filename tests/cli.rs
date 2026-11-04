@@ -1039,6 +1039,24 @@ fn external_violations_can_be_suppressed() {
         .stdout(contains("1 suppressed"));
 }
 
+#[test]
+fn a_directive_in_a_string_or_a_doc_example_is_not_a_suppression() {
+    let (_tmp, root) = fixture("policy");
+    let page = root.join("src/web/page.ts");
+    let text = fs::read_to_string(&page).unwrap();
+    fs::write(
+        &page,
+        format!(
+            "{text}\nexport const syntax = \"// easement:disable-next-line external -- why\";\n\
+             /** // easement:disable-line privacy -- an example */\n"
+        ),
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(predicates::str::contains("suppression").not());
+}
+
 fn stdout_of(assert: assert_cmd::assert::Assert) -> String {
     String::from_utf8(assert.get_output().stdout.clone()).unwrap()
 }

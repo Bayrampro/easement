@@ -21,14 +21,22 @@ pub struct Suppression {
     pub reason: Option<String>,
 }
 
+/// What opens a comment in the languages easement reads.
+const OPENERS: [&str; 4] = ["//", "/*", "#", "<!--"];
+
+/// A suppression is a comment that begins with the directive. Text in a string
+/// literal or later in a comment (an example in a doc comment) is not one.
 pub fn parse(file: &str, source: &str) -> Vec<Suppression> {
     let mut found = Vec::new();
     for (i, text) in source.lines().enumerate() {
         let line = i + 1;
-        let (rest, target_line) = if let Some(at) = text.find(NEXT_LINE) {
-            (&text[at + NEXT_LINE.len()..], line + 1)
-        } else if let Some(at) = text.find(SAME_LINE) {
-            (&text[at + SAME_LINE.len()..], line)
+        let Some(comment) = directive(text) else {
+            continue;
+        };
+        let (rest, target_line) = if let Some(rest) = comment.strip_prefix(NEXT_LINE) {
+            (rest, line + 1)
+        } else if let Some(rest) = comment.strip_prefix(SAME_LINE) {
+            (rest, line)
         } else {
             continue;
         };
@@ -55,6 +63,53 @@ pub fn parse(file: &str, source: &str) -> Vec<Suppression> {
         });
     }
     found
+}
+
+/// The text of the first comment on the line, from its first word, when it
+/// starts with `easement:`. A line inside a block comment (` * …`) is a comment.
+fn directive(text: &str) -> Option<&str> {
+    if let Some(rest) = text.trim_start().strip_prefix('*')
+        && let Some(found) = word(rest)
+    {
+        return Some(found);
+    }
+    let mut at = 0;
+    while let Some(c) = text[at..].chars().next() {
+        let rest = &text[at..];
+        // A quote that closes on this line opens a string; one that does not
+        // (a Rust lifetime, an apostrophe) is a plain character.
+        if matches!(c, '"' | '\'' | '`')
+            && let Some(end) = closing(&rest[1..], c)
+        {
+            at += 1 + end + 1;
+            continue;
+        }
+        if let Some(opener) = OPENERS.iter().find(|o| rest.starts_with(**o)) {
+            return word(&rest[opener.len()..]);
+        }
+        at += c.len_utf8();
+    }
+    None
+}
+
+/// The comment after its opener, when its first word is a directive.
+fn word(rest: &str) -> Option<&str> {
+    let rest = rest.trim_start_matches(['/', '*', '!']).trim_start();
+    rest.starts_with("easement:").then_some(rest)
+}
+
+/// The byte offset of the unescaped `quote` that closes a string.
+fn closing(text: &str, quote: char) -> Option<usize> {
+    let mut escaped = false;
+    for (at, c) in text.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            _ if c == quote => return Some(at),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Removes suppressed violations. Suppressions without a reason, naming an
@@ -133,10 +188,13 @@ mod tests {
 
     #[test]
     fn parses_comment_styles() {
-        let src = "// easement:disable-next-line dependency -- legacy export\n\
-                   import x from './x'; // easement:disable-line dependency, privacy -- generated\n\
-                   # easement:disable-next-line privacy\n\
-                   /* easement:disable-line privacy -- why */\n";
+        // One literal per line: a directive inside a string is not a suppression.
+        let src = concat!(
+            "// easement:disable-next-line dependency -- legacy export\n",
+            "import x from './x'; // easement:disable-line dependency, privacy -- generated\n",
+            "# easement:disable-next-line privacy\n",
+            "/* easement:disable-line privacy -- why */\n",
+        );
         let got = parse("a.ts", src);
         assert_eq!(got.len(), 4);
         assert_eq!(got[0].target_line, 2);
@@ -146,5 +204,29 @@ mod tests {
         assert_eq!(got[2].reason, None);
         assert_eq!(got[3].rules, ["privacy"]);
         assert_eq!(got[3].reason.as_deref(), Some("why"));
+    }
+
+    #[test]
+    fn a_directive_opens_the_first_comment_of_its_line() {
+        let found = |line: &str| parse("a", line).len();
+        for line in [
+            r#"let url = "http://x/#a"; // easement:disable-line privacy -- why"#,
+            "fn f<'a>(x: &'a str) {} // easement:disable-line dependency -- why",
+            "x = 'a#b'  # easement:disable-line dependency -- why",
+            " * easement:disable-next-line dependency -- in a doc block",
+            "<!-- easement:disable-line dependency -- why -->",
+            "//easement:disable-line dependency -- no space",
+        ] {
+            assert_eq!(found(line), 1, "{line}");
+        }
+        for line in [
+            r#"const NEXT: &str = "easement:disable-next-line";"#,
+            r#"let s = "// easement:disable-next-line dependency -- in a string";"#,
+            "/// // easement:disable-next-line dependency -- an example in a doc comment",
+            "// see easement:disable-line for the syntax",
+            "x = 1 # note // easement:disable-line dependency -- not first",
+        ] {
+            assert_eq!(found(line), 0, "{line}");
+        }
     }
 }

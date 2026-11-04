@@ -557,7 +557,7 @@ import { exportAll } from "../admin/export";
 import { client } from "../billing/generated"; // easement:disable-line privacy -- generated client
 ```
 
-A suppression without a reason does not suppress and fails as `suppression-reason`. One that no longer matches a violation fails as `unused-suppression`, so exceptions do not outlive the code they excused. Prefer the baseline for old debt; suppressions are for deliberate, reviewed exceptions.
+The directive begins the first comment of its line (`//`, `/*`, `#`, `<!--`, or a `*` line inside a block comment), outside the strings that close on that line: a directive in a string literal, or quoted later in a comment as an example, is not a suppression. A string that runs over several lines is not told apart, so a line of it that looks like such a comment counts. A suppression without a reason does not suppress and fails as `suppression-reason`. One that no longer matches a violation fails as `unused-suppression`, so exceptions do not outlive the code they excused. Prefer the baseline for old debt; suppressions are for deliberate, reviewed exceptions.
 
 ## Reporting on a part of the project
 
