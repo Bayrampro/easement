@@ -28,10 +28,10 @@ pub(crate) fn run(
     let version = Command::new(&binary).arg("--version").output().context("cannot run easement_dart_semantics --version; reinstall with mise run install-dart-semantics")?;
     if !version.status.success()
         || String::from_utf8_lossy(&version.stdout).trim()
-            != "easement_dart_semantics 1.0.0 facts=1 analyzer=14.4.0"
+            != "easement_dart_semantics 1.1.0 facts=2 analyzer=14.4.0"
     {
         bail!(
-            "incompatible Dart semantic companion; run mise run install-dart-semantics (requires facts=1, companion 1.0.0, analyzer 14.4.0)"
+            "incompatible Dart semantic companion; run mise run install-dart-semantics (requires facts=2, companion 1.1.0, analyzer 14.4.0)"
         );
     }
     let sdk = sdk(root)?;
@@ -60,7 +60,7 @@ pub(crate) fn run(
             .collect();
         let fingerprint = || -> Result<String> {
             let mut hash = blake3::Hasher::new();
-            hash.update(b"easement-dart-semantics-facts-v1");
+            hash.update(b"easement-dart-semantics-facts-v2");
             hash.update(cache::semantic_fingerprint(&binary, &sdk, &dir, &resolution)?.as_bytes());
             hash.update(&serde_json::to_vec(&(root, &package_files, &catalog))?);
             Ok(hash.finalize().to_hex().to_string())
@@ -73,7 +73,7 @@ pub(crate) fn run(
         let path = key.as_ref().and_then(|key| {
             cache_dir().map(|p| {
                 p.join(format!(
-                    "dart-semantics-v1-{:016x}-{key}.json",
+                    "dart-semantics-v2-{:016x}-{key}.json",
                     content_hash(dir.as_os_str().as_encoded_bytes())
                 ))
             })
@@ -144,8 +144,8 @@ pub(crate) fn run(
 }
 
 fn compatible(facts: &Facts) -> bool {
-    facts.format_version == 1
-        && facts.extractor_version == "1.0.0"
+    facts.format_version == 2
+        && facts.extractor_version == "1.1.0"
         && facts.analyzer_version == "14.4.0"
         && facts.sdk_version.starts_with("3.")
 }
@@ -180,6 +180,18 @@ fn validate(facts: &Facts) -> Result<()> {
             line: 1,
             column: 1,
         })?;
+    }
+    for class in &facts.ui_classes {
+        location(&class.location)?;
+    }
+    for callable in &facts.callables {
+        location(&callable.location)?;
+        ty(&callable.return_type)?;
+        for returned in &callable.returns {
+            location(&returned.location)?;
+            location(&returned.origin)?;
+            ty(&returned.ty)?;
+        }
     }
     for declaration in &facts.declarations {
         location(&declaration.location)?;
@@ -218,7 +230,7 @@ pub(crate) fn diagnosis() -> Diagnosis {
         && !output.as_ref().is_some_and(|o| {
             o.status.success()
                 && version.as_deref()
-                    == Some("easement_dart_semantics 1.0.0 facts=1 analyzer=14.4.0")
+                    == Some("easement_dart_semantics 1.1.0 facts=2 analyzer=14.4.0")
         })
     {
         problems.push("incompatible or unexecutable Dart semantic companion; reinstall with mise run install-dart-semantics".into());

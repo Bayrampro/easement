@@ -173,6 +173,10 @@ jobs:
         working-directory: tests/fixtures/flutter-basic
         run: flutter pub get --enforce-lockfile
 
+      - name: Prepare Flutter UI fixture
+        working-directory: tests/fixtures/flutter-ui
+        run: flutter pub get --enforce-lockfile
+
       - name: Install and verify the opt-in Dart semantic companion
         run: |
           mise run install-dart-semantics

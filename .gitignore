@@ -3,6 +3,7 @@
 tools/dart-indexer/.dart_tool/
 tests/fixtures/dart-basic/.dart_tool/
 tests/fixtures/flutter-basic/.dart_tool/
+tests/fixtures/flutter-ui/.dart_tool/
 node_modules/
 .lycheecache
 # Agent skills installed by `mise run skills`.

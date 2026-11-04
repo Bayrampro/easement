@@ -858,7 +858,7 @@ cross-file private use that `forbid_symbol` or `public_symbols` could restrict.
 Public-only files, ordinary locals, and unrelated private helpers do not inherit
 a project-wide warning. Missing source ranges, symbol classification, or part
 ownership remain conservative; other extraction gaps are reported independently.
-Dart `unused` enforcement and UI composition checks remain unsupported.
+Dart `unused` enforcement remains unsupported.
 Semantic architecture checks are available through the opt-in companion below.
 
 Dart cache keys read hidden resolution state, package and workspace metadata,
@@ -963,7 +963,7 @@ easement_dart_semantics --version
 ```
 
 The tested pair remains Flutter 3.47.9 / Dart 3.13.7. The tooling package requires
-Dart >=3.13.0 <4.0.0 and pins analyzer 14.4.0. Companion 1.0.0 emits fact format 1;
+Dart >=3.13.0 <4.0.0 and pins analyzer 14.4.0. Companion 1.1.0 emits fact format 2;
 its version command checks both identities. Installation currently creates a Unix
 launcher. Keep its source checkout and pinned package resolution available.
 `easement check` never installs tools, runs Pub or generates application code.
@@ -1068,4 +1068,63 @@ easement check --config mvvm.yml --no-cache
 
 The fixture contains a Clean Architecture policy and an independent MVVM
 policy. See its [extraction evidence](tests/fixtures/dart-semantic/README.md).
-Widget file-layout and widget-returning helper checks remain Stage 3 work.
+
+## Flutter UI composition checks
+
+Two independent opt-in checks apply to Dart sources owned by a component:
+
+```yaml
+version: 1
+components:
+  presentation: {in: lib}
+rules:
+  presentation:
+    dart:
+      one_widget_per_file: true
+      no_widget_helpers: true
+```
+
+No architecture roles or repository policies are required. Either switch needs
+`mise run install-dart-semantics`; reinstall older companions for fact format 2.
+Both disabled retain ordinary Dart dependency checks without the companion.
+
+`dart-one-widget-per-file` counts class declarations by physical file, including
+parts. Resolved Flutter ancestry counts private, indirect, aliased and
+`ConsumerWidget` subclasses. A widget plus its `State` is valid. Each class after
+first receives a finding naming all widgets in that file. Move additional widgets
+into separate files; rename private classes when importing across libraries.
+
+`dart-no-widget-helpers` checks named top-level/local functions, methods, static
+methods and getters in physical files declaring widgets, including `State`
+helpers. It checks resolved widget return types, nullable aliases and inferred
+return expressions. Broad returns are classified only when return paths establish
+a widget result; uncertain classification reports partial confidence. Actual
+framework `build` overrides pass, including verified overrides through custom
+bases and Riverpod `ConsumerWidget`. A method merely named `build` still fails.
+
+For example, `ProfileScreen` plus `_ProfileHeader` in one file, with
+`Widget _header() => const _ProfileHeader()`, produces two findings. Move header
+into `profile_header.dart`, expose it as `ProfileHeader`, import it and return
+`const ProfileHeader()` directly from screen's `build`; both findings disappear.
+
+V1 checks named helpers only. Anonymous callbacks, inline `children` composition,
+`List<Widget>` and `Future<Widget>` factories are outside this rule. An inline
+`itemBuilder` passes; a named helper called from it or passed as a tear-off is
+checked at its declaration. These are team conventions, not Flutter correctness
+requirements. No application code is rewritten automatically.
+
+Both IDs support `warn`, baselines and reasoned inline suppressions. Existing
+`exclude` and `target_only` source policy applies; generated files receive no
+implicit exemption. Missing facts retain proven violations and disclose affected
+files/reasons through text and `stats.semantic_partial` in JSON. Missing or
+incompatible tools are setup errors.
+
+Diff evidence includes all widget participants, so inserting a new first widget
+can expose violations on unchanged declarations. Baselines identify offending
+declarations without companion widget names. Run a full check after alias,
+base-class or configuration edits to inspect downstream effects. Cached semantic
+facts include local dependencies and all companion source parts; use `--no-cache`
+to verify again.
+
+The [real Flutter fixture](tests/fixtures/flutter-ui/README.md) pins its wrapper
+dependency and demonstrates both findings and extraction into separate files.

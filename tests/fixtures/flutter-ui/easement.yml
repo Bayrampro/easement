@@ -1,0 +1,8 @@
+version: 1
+components:
+  presentation: {in: lib}
+rules:
+  presentation:
+    dart:
+      one_widget_per_file: true
+      no_widget_helpers: true

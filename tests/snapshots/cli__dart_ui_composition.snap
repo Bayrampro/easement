@@ -1,0 +1,67 @@
+---
+source: tests/cli.rs
+assertion_line: 4627
+expression: "&value"
+---
+{
+  "confidence": "full",
+  "confidence_reasons": [],
+  "legalized": 0,
+  "passed": false,
+  "stale": [],
+  "stats": {
+    "external_deps": 1,
+    "files": 1,
+    "indexed": 1,
+    "internal_deps": 0,
+    "semantic_indexed": 1,
+    "suppressed": 0,
+    "unmapped_files": 0
+  },
+  "violations": [
+    {
+      "file": "lib/profile_screen.dart",
+      "from": "presentation",
+      "line": 9,
+      "message": "package:flutter_ui/profile_screen.dart#ProfileScreen::_header returns Widget (resolved widget evidence: _ProfileHeader); extract a dedicated widget class into its own file",
+      "rule": "dart-no-widget-helpers",
+      "semantic": {
+        "column": 10,
+        "constraint": "named widget-returning helpers must be extracted",
+        "declaration": "package:flutter_ui/profile_screen.dart#ProfileScreen::_header",
+        "offending_type": "Widget",
+        "operation": "method",
+        "origin": null,
+        "type_path": [
+          "Widget",
+          "_ProfileHeader"
+        ]
+      },
+      "specifier": "package:flutter/src/widgets/framework.dart",
+      "target": "package:flutter_ui/profile_screen.dart#ProfileScreen::_header",
+      "to": "package:flutter/src/widgets/framework.dart"
+    },
+    {
+      "file": "lib/profile_screen.dart",
+      "from": "presentation",
+      "line": 12,
+      "message": "lib/profile_screen.dart declares multiple Flutter widgets: ProfileScreen, _ProfileHeader; move _ProfileHeader into its own file",
+      "rule": "dart-one-widget-per-file",
+      "semantic": {
+        "column": 7,
+        "constraint": "one Flutter widget class per physical source file",
+        "declaration": "package:flutter_ui/profile_screen.dart#_ProfileHeader",
+        "offending_type": "Widget",
+        "operation": "declaration",
+        "origin": null,
+        "type_path": [
+          "Widget"
+        ]
+      },
+      "specifier": "package:flutter/src/widgets/framework.dart",
+      "target": "package:flutter_ui/profile_screen.dart#_ProfileHeader",
+      "to": "package:flutter/src/widgets/framework.dart"
+    }
+  ],
+  "warnings": []
+}

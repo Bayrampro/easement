@@ -63,7 +63,7 @@ class Recursive<T extends Comparable<T>> { T value; Recursive(this.value); }
     }
 
     final facts = await run();
-    expect(facts['format_version'] == 1, 'fact version');
+    expect(facts['format_version'] == 2, 'fact version');
     expect(
       (facts['gaps'] as List).isEmpty,
       'valid package is partial: ${facts['gaps']}',
@@ -137,7 +137,7 @@ class Recursive<T extends Comparable<T>> { T value; Recursive(this.value); }
       '--version',
     ]);
     expect(
-      version.stdout.toString().contains('facts=1 analyzer=14.4.0'),
+      version.stdout.toString().contains('facts=2 analyzer=14.4.0'),
       'version handshake missing',
     );
     stdout.writeln('Dart semantic extraction tests passed');

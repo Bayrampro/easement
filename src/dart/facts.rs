@@ -18,6 +18,8 @@ pub struct Facts {
     pub files: Vec<String>,
     pub declarations: Vec<Declaration>,
     pub gaps: Vec<Gap>,
+    pub ui_classes: Vec<UiClass>,
+    pub callables: Vec<Callable>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -60,4 +62,26 @@ pub struct Gap {
     pub file: String,
     pub line: usize,
     pub reason: String,
+}
+
+/// Analyzer classifications are tri-state: unknown must never mean passing.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UiClass {
+    pub identity: Selector,
+    pub location: Location,
+    pub widget: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Callable {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub enclosing: Option<String>,
+    pub location: Location,
+    pub widget_return: Option<bool>,
+    pub framework_build: bool,
+    pub override_targets: Vec<String>,
+    pub return_type: Type,
+    pub returns: Vec<Use>,
 }

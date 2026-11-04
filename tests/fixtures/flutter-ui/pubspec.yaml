@@ -1,0 +1,10 @@
+name: flutter_ui
+environment:
+  sdk: ">=3.13.0 <4.0.0"
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: 3.4.2
+dev_dependencies:
+  dart_flutter_team_lints: 3.5.2
+  lints: 6.1.0

@@ -100,7 +100,16 @@ fn fingerprint_for(
         }
     }
     tree(&launcher.source, &mut seen, &mut hash)?;
-    if prefix == "# easement-dart-semantics-v1 " {
+    if semantic {
+        // Parts next to the executable participate in its implementation identity.
+        tree(
+            launcher
+                .source
+                .parent()
+                .context("companion has no executable directory")?,
+            &mut seen,
+            &mut hash,
+        )?;
         let library = launcher
             .source
             .parent()
@@ -407,6 +416,9 @@ mod tests {
         .unwrap();
         let semantic_key =
             || semantic_fingerprint(&semantic_binary, &sdk, &root, &resolution).unwrap();
+        let before_part = semantic_key();
+        std::fs::write(runner.join("ui.dart"), "// widget classification part\n").unwrap();
+        assert_ne!(before_part, semantic_key());
         let policy_key = semantic_key();
         std::fs::write(root.join("easement.yml"), "version: 1\ndart: {}\n").unwrap();
         assert_eq!(policy_key, semantic_key());
@@ -417,6 +429,7 @@ mod tests {
             sdk.join("version"),
             dependency.join("dep.dart"),
             runner.join("indexer.dart"),
+            runner.join("ui.dart"),
         ] {
             let before = semantic_key();
             let mut content = std::fs::read(&path).unwrap();

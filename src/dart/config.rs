@@ -73,6 +73,12 @@ pub struct Implementation {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Rules {
+    /// At most one resolved Flutter widget class per physical source file.
+    #[serde(default)]
+    pub one_widget_per_file: bool,
+    /// Extract named widget-returning helpers into dedicated widgets.
+    #[serde(default)]
+    pub no_widget_helpers: bool,
     /// Required class modifiers for repository-contract declarations.
     pub repository_declaration: Option<DeclarationPolicy>,
     /// Forbidden types in public repository-contract API signatures.
@@ -107,7 +113,9 @@ pub struct TypePolicy {
 
 impl Rules {
     pub fn enabled(&self) -> bool {
-        self.repository_declaration.is_some()
+        self.one_widget_per_file
+            || self.no_widget_helpers
+            || self.repository_declaration.is_some()
             || self.contract_api_types.is_some()
             || self.repository_implementation
             || self.use_case_dependencies.is_some()

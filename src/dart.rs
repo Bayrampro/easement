@@ -1,6 +1,7 @@
 //! Dart semantic evaluation. Disabled unless a component enables a semantic rule.
 pub(crate) mod config;
 pub(crate) mod facts;
+mod ui;
 
 use crate::check::{RuleId, SemanticDetail, SemanticGap, Violation};
 use crate::components::ComponentMap;
@@ -365,6 +366,7 @@ pub fn evaluate(
             }
         }
     }
+    ui::evaluate(&extracted.facts, config, map, &checked, &mut result);
     Ok(result)
 }
 
@@ -385,6 +387,12 @@ impl Evaluation {
 
 fn active(rules: &config::Rules) -> Vec<RuleId> {
     let mut ids = Vec::new();
+    if rules.one_widget_per_file {
+        ids.push(RuleId::DartOneWidgetPerFile);
+    }
+    if rules.no_widget_helpers {
+        ids.push(RuleId::DartNoWidgetHelpers);
+    }
     if rules.repository_declaration.is_some() {
         ids.push(RuleId::DartRepositoryDeclaration);
     }
