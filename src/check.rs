@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::ComponentMap;
 use crate::config::{Config, Listed};
+use crate::flow::{self, Flow};
 use crate::lang::Target;
 use crate::relpath;
 use crate::scan::{Dep, slash};
@@ -292,9 +293,19 @@ pub struct Stats {
     /// Why `manifests` left some imports unchecked.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub manifests_partial: Vec<String>,
+    /// Test code that `tests: auto` could not take out of the file it sits in.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parts_partial: Vec<String>,
+    /// Manifests, or dependencies of one, that `packages` could not judge as declared.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub packages_partial: Vec<String>,
     /// Why `forbid_symbol` left some uses of names unchecked.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub symbols_partial: Vec<String>,
+    /// `forbid_symbol` names that match no symbol of the index, though one of the
+    /// same name sits deeper under the qualifier: the rule can never fire.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub symbols_unmatched: Vec<String>,
     /// Why `unused` took some files as used without judging them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unused_partial: Vec<String>,
@@ -315,6 +326,8 @@ pub struct Stats {
 pub struct SymbolRef {
     pub file: std::path::PathBuf,
     pub line: usize,
+    /// The node the use is in: the file, or a part of it that only a test build has.
+    pub from: crate::lang::Unit,
     pub specifier: String,
     pub name: String,
     /// The method of `name` that is called, with what `forbid_symbol` names it
@@ -352,10 +365,10 @@ pub fn evaluate(
         // Violations and edges come from the whole project; the counters follow the scope.
         let counted = scope.contains(map, &file);
         let target = match &dep.target {
-            Target::Internal(path) => slash(path),
+            Target::Internal(unit) => unit.key(),
             Target::External(module) => {
                 stats.external_deps += usize::from(counted);
-                if let Some(from) = map.component_of(&file)
+                if let Some(from) = map.component_of_unit(&dep.from)
                     && counted
                     && map.uses_std(from)
                     && !crate::stdlib::knows(&file)
@@ -365,7 +378,7 @@ pub fn evaluate(
                         stats.std_unknown.push(ext);
                     }
                 }
-                if let Some(from) = map.component_of(&file)
+                if let Some(from) = map.component_of_unit(&dep.from)
                     && let Some(problem) = map.external_problem(from, &file, module)
                 {
                     found.push(Violation {
@@ -389,7 +402,7 @@ pub fn evaluate(
             }
         };
         stats.internal_deps += usize::from(counted);
-        let Some(from) = map.component_of(&file) else {
+        let Some(from) = map.component_of_unit(&dep.from) else {
             if counted {
                 unmapped.insert(file);
             }
@@ -403,7 +416,7 @@ pub fn evaluate(
                 file,
                 line: dep.line,
                 message: format!(
-                    "{from} imports {target}, which `exclude` hides, so no rule checks it; list it in `target_only` if it is generated, else do not import it"
+                    "{from} imports {target}, which `exclude` hides, so no rule checks it; list it in `target_only` if it is generated, in a component or `unowned` if it is part of the project, else do not import it"
                 ),
                 because: None,
                 from: from.to_string(),
@@ -413,7 +426,10 @@ pub fn evaluate(
             });
             continue;
         }
-        let Some(to) = map.component_of(&target) else {
+        let Target::Internal(to_unit) = &dep.target else {
+            continue;
+        };
+        let Some(to) = map.component_of_unit(to_unit) else {
             continue;
         };
         if from == to {
@@ -635,6 +651,7 @@ pub fn reaches(
     map: &ComponentMap,
     deps: &[Dep],
     files: &[String],
+    flow: Option<&Flow>,
 ) -> Vec<Violation> {
     let pairs: Vec<(&str, &Listed)> = config
         .rules
@@ -648,11 +665,15 @@ pub fn reaches(
     if pairs.is_empty() {
         return Vec::new();
     }
-    let graph = file_graph(deps, files);
+    let graph = match flow {
+        Some(flow) => symbol_graph(deps, files, flow),
+        None => file_graph(deps, files),
+    };
+    // A node is a file, or with `reach: symbols` a method of one.
     let component: BTreeMap<&str, &str> = graph
         .iter()
         .flat_map(|(f, out)| std::iter::once(f.as_str()).chain(out.iter().map(|(t, _)| t.as_str())))
-        .filter_map(|f| map.component_of(f).map(|c| (f, c)))
+        .filter_map(|f| map.component_of(flow::file_of(f)).map(|c| (f, c)))
         .collect();
     let mut found = Vec::new();
     for (from, to) in pairs {
@@ -668,7 +689,12 @@ pub fn reaches(
         else {
             continue;
         };
-        let (through, chain) = describe_chain(&hops, last, of);
+        let hops: Vec<(String, usize)> = hops
+            .into_iter()
+            .map(|(node, line)| (flow::file_of(&node).to_string(), line))
+            .collect();
+        let last = flow::file_of(last);
+        let (through, chain) = describe_chain(&hops, last, |file| map.component_of(file));
         let (file, line) = hops[0].clone();
         found.push(Violation {
             semantic: None,
@@ -715,28 +741,93 @@ pub fn describe_chain<'a>(
     )
 }
 
+/// The files of a project by directory, and the set of them.
+struct Files<'a> {
+    in_dir: BTreeMap<&'a str, Vec<&'a str>>,
+    known: BTreeSet<&'a str>,
+}
+
+impl<'a> Files<'a> {
+    fn new(files: &'a [String]) -> Self {
+        let mut in_dir: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for file in files {
+            in_dir.entry(relpath::parent(file)).or_default().push(file);
+        }
+        Self {
+            in_dir,
+            known: files.iter().map(String::as_str).collect(),
+        }
+    }
+
+    /// The files an import of `path` names: the file, or one of each file directly in
+    /// a package directory.
+    fn targets(&self, path: &str) -> Vec<&'a str> {
+        match self.known.get(path) {
+            Some(file) => vec![*file],
+            None => self.in_dir.get(path).cloned().unwrap_or_default(),
+        }
+    }
+}
+
 /// Every file -> the files it imports, with the line of the import. An
 /// import of a package directory is one of each file directly in it.
 pub fn file_graph(deps: &[Dep], files: &[String]) -> BTreeMap<String, BTreeSet<(String, usize)>> {
-    let mut in_dir: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for file in files {
-        in_dir.entry(relpath::parent(file)).or_default().push(file);
-    }
-    let known: BTreeSet<&str> = files.iter().map(String::as_str).collect();
+    let files = Files::new(files);
     let mut graph: BTreeMap<String, BTreeSet<(String, usize)>> = BTreeMap::new();
     for dep in deps {
-        let Target::Internal(path) = &dep.target else {
+        let Target::Internal(unit) = &dep.target else {
             continue;
         };
-        let to = slash(path);
-        let targets = if known.contains(to.as_str()) {
-            vec![to.as_str()]
-        } else {
-            in_dir.get(to.as_str()).cloned().unwrap_or_default()
-        };
-        let out = graph.entry(slash(&dep.file)).or_default();
-        for target in targets {
+        let out = graph.entry(dep.from.key()).or_default();
+        for target in files.targets(&unit.key()) {
             out.insert((target.to_string(), dep.line));
+        }
+    }
+    graph
+}
+
+/// The graph of `reach: symbols`: every node (see [`flow::Node::key`]) -> the nodes
+/// its references name, with the line. An import that no reference of its file
+/// accounts for reaches everything in what it names, from the definition that holds
+/// its line.
+fn symbol_graph(
+    deps: &[Dep],
+    files: &[String],
+    flow: &Flow,
+) -> BTreeMap<String, BTreeSet<(String, usize)>> {
+    let files = Files::new(files);
+    let mut graph: BTreeMap<String, BTreeSet<(String, usize)>> = BTreeMap::new();
+    let mut covered: BTreeSet<(&str, usize, &str)> = BTreeSet::new();
+    for edge in &flow.edges {
+        let (from, to) = (edge.from.file.as_str(), edge.to.file.as_str());
+        if !files.known.contains(from) || !files.known.contains(to) {
+            continue;
+        }
+        covered.insert((from, edge.line, to));
+        graph
+            .entry(edge.from.key())
+            .or_default()
+            .insert((edge.to.key(), edge.line));
+    }
+    for dep in deps {
+        let Target::Internal(unit) = &dep.target else {
+            continue;
+        };
+        let file = dep.from.key();
+        // Each file the import names that no reference at its line reaches is reached
+        // whole, as the other files of a Go package are: they run on import too.
+        let targets: Vec<&str> = files
+            .targets(&unit.key())
+            .into_iter()
+            .filter(|target| !covered.contains(&(file.as_str(), dep.line, *target)))
+            .collect();
+        for from in flow.owners(&file, dep.line) {
+            let out = graph.entry(from.key()).or_default();
+            for target in &targets {
+                for node in flow.nodes_of(target) {
+                    out.insert((node.key(), dep.line));
+                }
+            }
         }
     }
     graph
@@ -936,8 +1027,8 @@ pub fn required(
         }
     }
     for dep in deps {
-        let file = slash(&dep.file);
-        let Some(component) = map.component_of(&file) else {
+        let file = dep.from.key();
+        let Some(component) = map.component_of_unit(&dep.from) else {
             continue;
         };
         let Some(unit) = units.get_mut(&(component.to_string(), parent(&file))) else {
@@ -945,7 +1036,7 @@ pub fn required(
         };
         match &dep.target {
             Target::Internal(target) => {
-                if let Some(to) = map.component_of(&slash(target)) {
+                if let Some(to) = map.component_of_unit(target) {
                     unit.components.insert(to.to_string());
                 }
             }
@@ -1052,9 +1143,9 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
     let mut found = Vec::new();
     for used in uses {
         let file = slash(&used.file);
-        let Some(from) = map.component_of(&file) else {
-            continue;
-        };
+        let owner = map.component_of_unit(&used.from);
+        // A file that belongs to no component is judged by the top-level list alone.
+        let from = owner.unwrap_or_default();
         let mut report = |message: String, target: String, to: &str, because: Option<&str>| {
             found.push(Violation {
                 semantic: None,
@@ -1070,26 +1161,43 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
                 specifier: used.specifier.clone(),
             });
         };
-        if let Some(rule) = config.rules.get(from) {
-            for listed in &rule.forbid_symbol {
-                let pattern = listed.name();
-                if names_symbol(pattern, &used.specifier, &used.name)
-                    || used
-                        .method
-                        .as_ref()
-                        .is_some_and(|(owner, method)| names_symbol(pattern, owner, method))
-                {
-                    report(
-                        format!("{from} must not use {}", listed.name()),
-                        listed.name().to_string(),
-                        "",
-                        listed.because().or(rule.because.as_deref()),
-                    );
+        let own = owner
+            .and_then(|component| config.rules.get(component))
+            .into_iter()
+            .flat_map(|rule| {
+                rule.forbid_symbol
+                    .iter()
+                    .map(move |listed| (listed, rule.because.as_deref()))
+            });
+        let global = config.forbid_symbol.iter().map(|listed| (listed, None));
+        let mut seen = std::collections::BTreeSet::new();
+        for (listed, fallback) in global.chain(own) {
+            let pattern = listed.name();
+            if names_symbol(pattern, &used.specifier, &used.name)
+                || used
+                    .method
+                    .as_ref()
+                    .is_some_and(|(owner, method)| names_symbol(pattern, owner, method))
+            {
+                // A name in both lists is one violation.
+                if !seen.insert(pattern) {
+                    continue;
                 }
+                let who = match owner {
+                    Some(component) => component.to_string(),
+                    None => "unowned files".to_string(),
+                };
+                report(
+                    format!("{who} must not use {pattern}"),
+                    pattern.to_string(),
+                    "",
+                    listed.because().or(fallback),
+                );
             }
         }
-        if let Some(Target::Internal(path)) = &used.target
-            && let Some(to) = map.component_of(&slash(path))
+        if owner.is_some()
+            && let Some(Target::Internal(unit)) = &used.target
+            && let Some(to) = map.component_of_unit(unit)
             && to != from
             && let Some(public) = &config.components[to].public_symbols
             && !public.contains(&used.name)
@@ -1112,16 +1220,19 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
 /// Why `forbid_symbol` left uses of names unchecked: the files in `unnamed`
 /// use names of an npm package that the indexer left unnamed, because a
 /// `package.json` with no `name` inside it (`{"type": "module"}`) hides it.
-/// Only files of a component with `forbid_symbol` count.
+/// Only files that a `forbid_symbol` list covers count: all of them for the top-level
+/// list, else those of a component with its own.
 pub fn symbols_partial(config: &Config, map: &ComponentMap, unnamed: &[String]) -> Vec<String> {
     const SHOWN: usize = 3;
     let unnamed: Vec<&str> = unnamed
         .iter()
         .map(String::as_str)
         .filter(|file| {
-            map.component_of(file)
-                .and_then(|component| config.rules.get(component))
-                .is_some_and(|rule| !rule.forbid_symbol.is_empty())
+            !config.forbid_symbol.is_empty()
+                || map
+                    .component_of(file)
+                    .and_then(|component| config.rules.get(component))
+                    .is_some_and(|rule| !rule.forbid_symbol.is_empty())
         })
         .collect();
     if unnamed.is_empty() {
@@ -1132,8 +1243,63 @@ pub fn symbols_partial(config: &Config, map: &ComponentMap, unnamed: &[String]) 
         files.push_str(&format!(" and {} more files", unnamed.len() - SHOWN));
     }
     vec![format!(
-        "`forbid_symbol` cannot tell the npm package of the names used in {files}: a `package.json` without `name` inside the package hides it from the indexer, so those uses were not checked"
+        "`forbid_symbol` cannot tell the npm package of the names used in {files}: a `package.json` without `name` inside the package hides it from the indexer, so those uses were not checked; scip-typescript 0.6.1 or newer names such a package: update the indexer and run again"
     )]
+}
+
+/// The `forbid_symbol` names that no symbol of the index matches, though a symbol
+/// of the same name sits in a namespace under the qualifier (`I18n.locale` is
+/// defined as `I18n::Base.locale`): such a rule cannot fire. A name the index has
+/// never seen stays silent, since banning what the code does not use yet is what
+/// the rule is for. `known` is what the index knows under the names that
+/// `forbid_symbol` lists; `complete` is false when the index is not whole, and then
+/// nothing is said.
+pub fn symbols_unmatched(
+    config: &Config,
+    known: &[(String, String)],
+    complete: bool,
+) -> Vec<String> {
+    if !complete {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    let lists = std::iter::once(("the top level", &config.forbid_symbol)).chain(
+        config
+            .rules
+            .iter()
+            .map(|(component, rule)| (component.as_str(), &rule.forbid_symbol)),
+    );
+    for (component, list) in lists {
+        for listed in list {
+            let pattern = listed.name();
+            let Some((qualifier, wanted)) = pattern.rsplit_once('.') else {
+                continue;
+            };
+            if known
+                .iter()
+                .any(|(specifier, name)| names_symbol(pattern, specifier, name))
+            {
+                continue;
+            }
+            let nested = known
+                .iter()
+                .map(|(specifier, _)| specifier)
+                .find(|specifier| {
+                    known.contains(&((*specifier).clone(), wanted.to_string()))
+                        && specifier.strip_prefix(qualifier).is_some_and(|rest| {
+                            rest.starts_with("::") || rest.starts_with('.') || rest.starts_with('/')
+                        })
+                });
+            if let Some(specifier) = nested {
+                found.push(format!(
+                    "`forbid_symbol` `{pattern}` of {component} matches no symbol of the index, so it can never fire; did you mean `{specifier}.{wanted}`?"
+                ));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
 }
 
 /// Whether `pattern` (`pkg.Name` or `import/path.Name`) names the symbol
@@ -1534,6 +1700,79 @@ components:
         }
     }
 
+    fn forbidding(names: &[&str]) -> Config {
+        let list: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
+        serde_norway::from_str(&format!(
+            "version: 1
+components:
+  web: {{ in: web }}
+rules:
+  web: {{ forbid_symbol: [{}] }}
+",
+            list.join(", ")
+        ))
+        .unwrap()
+    }
+
+    fn known(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(q, n)| (q.to_string(), n.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_name_defined_only_deeper_under_its_qualifier_is_flagged_with_the_candidate() {
+        let config = forbidding(&["I18n.locale"]);
+        let notes = symbols_unmatched(&config, &known(&[("I18n::Base", "locale")]), true);
+        assert_eq!(
+            notes,
+            [
+                "`forbid_symbol` `I18n.locale` of web matches no symbol of the index, so it can never fire; did you mean `I18n::Base.locale`?"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_that_matches_or_that_nothing_defines_stays_silent() {
+        let known = known(&[("I18n::Base", "locale"), ("log", "Println")]);
+        for pattern in [
+            // Matches exactly.
+            "I18n::Base.locale",
+            // Banned before anyone uses it, with another package of the same name around.
+            "fmt.Println",
+            // Not a nested namespace of the qualifier.
+            "Time.locale",
+            // Not defined at all.
+            "I18n.deploy",
+        ] {
+            let config = forbidding(&[pattern]);
+            assert!(
+                symbols_unmatched(&config, &known, true).is_empty(),
+                "{pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn unjudged_npm_names_say_which_scip_typescript_names_them() {
+        let config = forbidding(&["i18next.i18next"]);
+        let map = ComponentMap::new(&config).unwrap();
+        let notes = symbols_partial(&config, &map, &["web/a.ts".to_string()]);
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].contains("scip-typescript 0.6.1 or newer") && notes[0].contains("web/a.ts"),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn nothing_is_said_when_the_index_is_not_whole() {
+        let config = forbidding(&["I18n.locale"]);
+        let known = known(&[("I18n::Base", "locale")]);
+        assert!(symbols_unmatched(&config, &known, false).is_empty());
+    }
+
     fn config(no_cycles: &str) -> Config {
         serde_norway::from_str(&format!(
             "version: 1
@@ -1581,6 +1820,7 @@ rules:
         .unwrap();
         let map = ComponentMap::new(&config).unwrap();
         let dep = |from: &str, to: &str, line| Dep {
+            from: from.into(),
             file: from.into(),
             line,
             specifier: String::new(),
@@ -1599,13 +1839,161 @@ rules:
         ]
         .map(String::from)
         .to_vec();
-        let found = reaches(&config, &map, &deps, &files);
+        let found = reaches(&config, &map, &deps, &files, None);
         assert_eq!(found.len(), 1);
         assert_eq!(
             found[0].message,
             "a reaches c through no component: a/A2.kt:4 -> x/S.kt:5 -> c/C.kt"
         );
         assert_eq!(found[0].target, "c/C.kt");
+    }
+
+    /// `a/A.rb` calls `host` (line 2); `x/G.rb` defines `host` (lines 3-5) and `fetch` (7-9),
+    /// and `fetch` calls `get` of `c/C.rb`. `host_calls` lists what `host` references.
+    fn symbol_world(host_calls: &[&str]) -> (Config, ComponentMap, Vec<Dep>, Vec<String>, Flow) {
+        use crate::scip::{Document, Reference, Scope};
+        let config: Config = serde_norway::from_str(
+            "version: 1
+components:
+  a: { in: a }
+  c: { in: c }
+rules:
+  a: { must_not_reach: [c] }
+",
+        )
+        .unwrap();
+        let map = ComponentMap::new(&config).unwrap();
+        let dep = |from: &str, to: &str, line| Dep {
+            from: from.into(),
+            file: from.into(),
+            line,
+            specifier: String::new(),
+            target: Target::Internal(to.into()),
+        };
+        let reference = |line, symbol: &str| Reference {
+            line,
+            symbol: symbol.to_string(),
+            spelled: None,
+            dart_module: None,
+            dart_internal_package: false,
+            dart_target: None,
+            dart_target_excluded: false,
+        };
+        let scope = |symbol: &str, first, last| Scope {
+            symbol: symbol.to_string(),
+            first,
+            last,
+        };
+        let host: Vec<Reference> = host_calls.iter().map(|s| reference(4, s)).collect();
+        let documents = vec![
+            Document {
+                path: "a/A.rb".into(),
+                references: vec![reference(2, "host().")],
+                ..Document::default()
+            },
+            Document {
+                path: "x/G.rb".into(),
+                definitions: vec!["host().".into(), "fetch().".into()],
+                scopes: vec![scope("host().", 3, 5), scope("fetch().", 7, 9)],
+                references: host.into_iter().chain([reference(8, "get().")]).collect(),
+                ..Document::default()
+            },
+            Document {
+                path: "c/C.rb".into(),
+                definitions: vec!["get().".into()],
+                scopes: vec![scope("get().", 1, 1)],
+                ..Document::default()
+            },
+        ];
+        let deps = vec![dep("a/A.rb", "x/G.rb", 2), dep("x/G.rb", "c/C.rb", 8)];
+        let files = ["a/A.rb", "x/G.rb", "c/C.rb"].map(String::from).to_vec();
+        let flow = crate::flow::build(&documents);
+        (config, map, deps, files, flow)
+    }
+
+    #[test]
+    fn reach_by_symbols_passes_a_method_that_reaches_nothing_forbidden() {
+        let (config, map, deps, files, flow) = symbol_world(&[]);
+        // By files, calling `host` reaches what `fetch` uses.
+        assert_eq!(reaches(&config, &map, &deps, &files, None).len(), 1);
+        assert!(reaches(&config, &map, &deps, &files, Some(&flow)).is_empty());
+    }
+
+    #[test]
+    fn reach_by_symbols_keeps_a_chain_through_the_called_method() {
+        // `host` calls `get` itself (line 4), so the chain stays, at the call of `host`.
+        let (config, map, deps, files, flow) = symbol_world(&["get()."]);
+        let found = reaches(&config, &map, &deps, &files, Some(&flow));
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].message,
+            "a reaches c through no component: a/A.rb:2 -> x/G.rb:4 -> c/C.rb"
+        );
+    }
+
+    #[test]
+    fn reach_by_symbols_reaches_the_files_of_a_package_that_no_reference_names() {
+        use crate::scip::{Document, Reference, Scope};
+        let config: Config = serde_norway::from_str(
+            "version: 1
+components:
+  a: { in: a }
+  c: { in: c }
+rules:
+  a: { must_not_reach: [c] }
+",
+        )
+        .unwrap();
+        let map = ComponentMap::new(&config).unwrap();
+        let dep = |from: &str, to: &str, line| Dep {
+            from: from.into(),
+            file: from.into(),
+            line,
+            specifier: String::new(),
+            target: Target::Internal(to.into()),
+        };
+        // `a/A.go` imports the package `x` at line 3 and calls `One` of `x/one.go`; `x/two.go`
+        // holds code that runs on import and uses `c`.
+        let documents = vec![
+            Document {
+                path: "a/A.go".into(),
+                references: vec![Reference {
+                    line: 3,
+                    symbol: "One().".into(),
+                    spelled: None,
+                    dart_module: None,
+                    dart_internal_package: false,
+                    dart_target: None,
+                    dart_target_excluded: false,
+                }],
+                ..Document::default()
+            },
+            Document {
+                path: "x/one.go".into(),
+                definitions: vec!["One().".into()],
+                scopes: vec![Scope {
+                    symbol: "One().".into(),
+                    first: 1,
+                    last: 2,
+                }],
+                ..Document::default()
+            },
+            Document {
+                path: "x/two.go".into(),
+                ..Document::default()
+            },
+        ];
+        let deps = [dep("a/A.go", "x", 3), dep("x/two.go", "c/C.go", 5)];
+        let files = ["a/A.go", "x/one.go", "x/two.go", "c/C.go"]
+            .map(String::from)
+            .to_vec();
+        let flow = crate::flow::build(&documents);
+        let found = reaches(&config, &map, &deps, &files, Some(&flow));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].message,
+            "a reaches c through no component: a/A.go:3 -> x/two.go:5 -> c/C.go"
+        );
     }
 
     fn limits(rule: &str) -> Config {
@@ -1697,5 +2085,47 @@ rules:
         );
         assert!(cycles(&config("[a, b]"), &edges).is_empty());
         assert!(cycles(&config("false"), &edges).is_empty());
+    }
+
+    #[test]
+    fn a_symbol_used_in_test_code_is_judged_as_tests_not_as_the_file() {
+        use crate::lang::parts::{Kind, Part};
+        let config: Config = serde_norway::from_str(
+            "version: 1
+components:
+  store: { in: src/store.rs }
+tests: auto
+rules:
+  store: { forbid_symbol: [testkit.Clock] }
+",
+        )
+        .unwrap();
+        let map = ComponentMap::new(&config).unwrap();
+        let used = |from: crate::lang::Unit| SymbolRef {
+            file: "src/store.rs".into(),
+            from,
+            line: 3,
+            specifier: "testkit".into(),
+            name: "Clock".into(),
+            method: None,
+            target: Some(Target::External("testkit".into())),
+        };
+        let test_code = crate::lang::Unit::in_part(
+            std::path::Path::new("src/store.rs"),
+            Part {
+                name: "cfg(test)".into(),
+                kind: Some(Kind::Test),
+            },
+        );
+        assert_eq!(
+            symbols(
+                &config,
+                &map,
+                &[used(crate::lang::Unit::from("src/store.rs"))]
+            )
+            .len(),
+            1
+        );
+        assert!(symbols(&config, &map, &[used(test_code)]).is_empty());
     }
 }

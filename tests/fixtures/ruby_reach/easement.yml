@@ -1,0 +1,11 @@
+version: 1
+
+reach: symbols
+
+components:
+  models: { in: app/models }
+  external: { in: app/external }
+
+rules:
+  models:
+    must_not_reach: [external]

@@ -1,0 +1,18 @@
+version: 1
+
+packages: true
+
+components:
+  api: { in: packages/api/package.json }
+  store: { in: packages/store/package.json }
+  web: { in: packages/web/package.json }
+  kit: { in: packages/testkit/package.json }
+
+tests: auto
+
+rules:
+  store:
+    may_depend_on: [api]
+    forbid_external: [axios]
+  web: { may_depend_on: [store] }
+  tests: { may_depend_on: [kit, api] }

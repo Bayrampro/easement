@@ -139,6 +139,8 @@ fn unread_reasons(stats: &Stats) -> Vec<String> {
     reasons.extend(analysis_reasons(stats));
     reasons.extend(stats.unused_partial.iter().cloned());
     reasons.extend(stats.manifests_partial.iter().cloned());
+    reasons.extend(stats.parts_partial.iter().cloned());
+    reasons.extend(stats.packages_partial.iter().cloned());
     reasons.extend(stats.symbols_partial.iter().cloned());
     if !stats.naming_unseen.is_empty() {
         reasons.push(naming_unseen(stats));
@@ -328,8 +330,19 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
         out.push_str(&paint(color, YELLOW, &naming_unseen(stats)));
         out.push('\n');
     }
+    if !stats.symbols_unmatched.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        for note in &stats.symbols_unmatched {
+            out.push_str(&paint(color, YELLOW, note));
+            out.push('\n');
+        }
+    }
     if !stats.unused_partial.is_empty()
         || !stats.manifests_partial.is_empty()
+        || !stats.parts_partial.is_empty()
+        || !stats.packages_partial.is_empty()
         || !stats.symbols_partial.is_empty()
     {
         if !out.is_empty() {
@@ -339,6 +352,8 @@ fn render(verdict: &Verdict, stats: &Stats, changes: Option<&Changes>, color: bo
             .unused_partial
             .iter()
             .chain(&stats.manifests_partial)
+            .chain(&stats.parts_partial)
+            .chain(&stats.packages_partial)
             .chain(&stats.symbols_partial)
         {
             out.push_str(&paint(color, YELLOW, reason));

@@ -2,6 +2,7 @@
 //! Adding a language is one entry here, plus an indexer in `indexer::INDEXERS`
 //! or an adapter in this module; the rules ask this table, never an extension.
 
+use super::parts::{self, Found};
 use crate::relpath;
 use crate::stdlib;
 
@@ -44,6 +45,9 @@ pub struct Language {
     pub conventional: &'static [&'static str],
     /// The manifest the `manifests` rule checks its imports against.
     pub manifest: Option<Manifest>,
+    /// Finds the parts of a source file that a dependency belongs to instead of the
+    /// file, for example the code of a test build. `None` when the file is one unit.
+    pub parts: Option<fn(&str, &str) -> Found>,
 }
 
 const TYPESCRIPT_EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"];
@@ -56,6 +60,7 @@ pub static GO: Language = Language {
     unused: &["go"],
     conventional: &[],
     manifest: Some(Manifest::Go),
+    parts: None,
 };
 
 /// TypeScript and JavaScript, which one indexer reads and the bundlers resolve alike.
@@ -67,6 +72,7 @@ pub static TYPESCRIPT: Language = Language {
     unused: TYPESCRIPT_EXTENSIONS,
     conventional: &["**/*.d.ts"],
     manifest: Some(Manifest::Npm),
+    parts: None,
 };
 
 pub static PYTHON: Language = Language {
@@ -78,6 +84,7 @@ pub static PYTHON: Language = Language {
     unused: &["py"],
     conventional: &["**/conftest.py", "**/__main__.py", "**/setup.py"],
     manifest: None,
+    parts: None,
 };
 
 pub static JAVA: Language = Language {
@@ -88,6 +95,7 @@ pub static JAVA: Language = Language {
     unused: &["java"],
     conventional: &["**/package-info.java", "**/module-info.java"],
     manifest: None,
+    parts: None,
 };
 
 /// Read by imports alone (an adapter), so `unused` cannot judge it.
@@ -99,6 +107,7 @@ pub static KOTLIN: Language = Language {
     unused: &[],
     conventional: &[],
     manifest: None,
+    parts: None,
 };
 
 pub static CSHARP: Language = Language {
@@ -109,6 +118,7 @@ pub static CSHARP: Language = Language {
     unused: &["cs"],
     conventional: &[],
     manifest: None,
+    parts: None,
 };
 
 pub static PHP: Language = Language {
@@ -119,6 +129,7 @@ pub static PHP: Language = Language {
     unused: &["php"],
     conventional: &[],
     manifest: None,
+    parts: None,
 };
 
 /// Read by imports alone (an adapter), so `unused` cannot judge it.
@@ -130,6 +141,7 @@ pub static SWIFT: Language = Language {
     unused: &[],
     conventional: &[],
     manifest: None,
+    parts: None,
 };
 
 /// Ruby loads by convention (autoloading), so `unused` cannot judge it.
@@ -141,6 +153,7 @@ pub static RUBY: Language = Language {
     unused: &[],
     conventional: &[],
     manifest: None,
+    parts: None,
 };
 
 pub static RUST: Language = Language {
@@ -159,6 +172,7 @@ pub static RUST: Language = Language {
         "**/tests/**",
     ],
     manifest: Some(Manifest::Cargo),
+    parts: Some(parts::rust),
 };
 
 /// Every language, in the order their test globs are listed.
@@ -170,6 +184,7 @@ pub static DART: Language = Language {
     unused: &[],
     conventional: &[],
     manifest: Some(Manifest::Pub),
+    parts: None,
 };
 
 pub static LANGUAGES: [&Language; 11] = [
@@ -192,6 +207,14 @@ pub fn of(file: &str) -> Option<&'static Language> {
     LANGUAGES
         .into_iter()
         .find(|language| language.extensions.contains(&ext))
+}
+
+/// The kind of manifest a file is, by its name.
+pub fn manifest_of(file: &str) -> Option<Manifest> {
+    let name = file.rsplit('/').next().unwrap_or(file);
+    [Manifest::Npm, Manifest::Go, Manifest::Cargo, Manifest::Pub]
+        .into_iter()
+        .find(|manifest| manifest.file_name() == name)
 }
 
 /// Whether the file at `path` is of `language`.

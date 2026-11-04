@@ -1,0 +1,26 @@
+version: 1
+
+packages: true
+
+components:
+  api: { in: crates/storage-api/Cargo.toml }
+  telegram: { in: crates/telegram/Cargo.toml }
+  web: { in: crates/web/Cargo.toml }
+  bad: { in: crates/bad/Cargo.toml }
+  core: { in: crates/core/Cargo.toml }
+  kit: { in: crates/testkit/Cargo.toml }
+  fakes:
+    in: 'crates/**/Cargo.toml'
+    part: feature/fake
+    allow_importers: [web, tests]
+    because: the fake channel never gets into a release build
+
+tests: auto
+
+rules:
+  telegram: { may_depend_on: [api] }
+  web: { may_depend_on: [telegram, fakes] }
+  bad: { may_depend_on: [telegram, fakes] }
+  core: { may_depend_on: [fakes] }
+  fakes: { may_depend_on: [api] }
+  tests: { may_depend_on: [kit, api, telegram] }

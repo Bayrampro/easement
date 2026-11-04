@@ -16,7 +16,8 @@ pub fn is_std(file: &str, module: &str) -> bool {
 
 /// Whether `$std` can tell the standard library of `file`'s language.
 pub fn knows(file: &str) -> bool {
-    registry::of(file).is_some_and(|language| language.std.is_some())
+    // What a manifest declares is never the standard library.
+    registry::manifest_of(file).is_some() || registry::of(file).is_some_and(|l| l.std.is_some())
 }
 
 /// The first part of a module path, up to any of `seps`.

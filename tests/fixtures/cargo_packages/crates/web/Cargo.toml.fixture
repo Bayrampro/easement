@@ -1,0 +1,7 @@
+[package]
+name = "web"
+version = "0.1.0"
+
+[dependencies]
+chunk-store = { path = "../chunk-store" }
+testkit = { workspace = true }

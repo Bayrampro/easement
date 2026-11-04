@@ -9,17 +9,21 @@ use ignore::WalkBuilder;
 use crate::check::SymbolRef;
 use crate::config::Config;
 use crate::indexer;
-use crate::lang::{self, Import, Target, registry};
+use crate::lang::{self, Import, Target, Unit, registry};
 use crate::scip;
 use crate::suppress::{self, Suppression};
 
 /// A resolved dependency of one project file.
 #[derive(Debug, Clone)]
 pub struct Dep {
+    /// Where it is written: diff mode, suppressions, the baseline and the
+    /// report read the file and the line.
     pub file: PathBuf,
     pub line: usize,
     pub specifier: String,
     pub target: Target,
+    /// The node it leaves: the file itself.
+    pub from: Unit,
 }
 
 /// What was read from a file, valid while its size and modification time stay the same.
@@ -83,8 +87,18 @@ pub struct Scan {
     /// Checked files that use a name of a package the indexer left unnamed,
     /// which no rule on names judged.
     pub unnamed_uses: Vec<String>,
+    /// Files whose test code a finder of parts could not tell from the file's.
+    pub parts_doubts: Vec<(String, lang::parts::Doubt)>,
+    /// Manifests, or dependencies of one, that `packages` could not judge as declared.
+    pub packages_problems: Vec<String>,
+    /// The qualifier and name of the symbols the index knows under a name that
+    /// `forbid_symbol` lists, and whether that list is whole.
+    pub known_symbols: (Vec<(String, String)>, bool),
     /// Indexers that ran, and indexes taken from the cache.
     pub indexed: (usize, usize),
+    /// With `reach: symbols`, the references of the index by the definition that holds
+    /// them.
+    pub flow: Option<crate::flow::Flow>,
 }
 
 /// Analysis limitations within files that may still appear in an index.
@@ -185,6 +199,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         suppressions.extend(parsed.suppressions.iter().cloned());
         for import in &parsed.imports {
             deps.push(Dep {
+                from: Unit::from(rel.as_path()),
                 file: rel.clone(),
                 line: import.line,
                 specifier: import.specifier.clone(),
@@ -207,12 +222,41 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
     let project: HashSet<&str> = all_files.iter().map(String::as_str).collect();
     // Excluded files are never read as sources, but what they define stays
     // resolvable, so an import of one is seen and fails as `excluded`.
-    let (documents, hidden): (Vec<scip::Document>, Vec<scip::Document>) = indexed
+    let (mut documents, hidden): (Vec<scip::Document>, Vec<scip::Document>) = indexed
         .documents
         .0
         .into_iter()
         .filter(|d| project.contains(d.path.as_str()) || excluded.contains(&d.path))
         .partition(|d| project.contains(d.path.as_str()));
+    let mut parts_doubts: Vec<(String, lang::parts::Doubt)> = Vec::new();
+    // (the file that declares them, the files a test-only module may be in)
+    let mut declared_files: Vec<(String, Vec<String>)> = Vec::new();
+    for document in &mut documents {
+        let Some(find) = lang::registry::of(&document.path).and_then(|language| language.parts)
+        else {
+            continue;
+        };
+        match std::fs::read_to_string(root.join(&document.path)) {
+            Ok(source) => {
+                let found = find(&document.path, &source);
+                document.parts = found.spans;
+                parts_doubts.extend(found.doubts.into_iter().map(|d| (document.path.clone(), d)));
+                declared_files.extend(found.files.into_iter().map(|f| (document.path.clone(), f)));
+            }
+            Err(_) => parts_doubts.push((document.path.clone(), lang::parts::Doubt::Unreadable)),
+        }
+    }
+    // A module that only a test build has is test code as a whole, in its own file.
+    for (declaring, candidates) in declared_files {
+        match candidates.iter().find(|c| project.contains(c.as_str())) {
+            Some(file) => {
+                if let Some(document) = documents.iter_mut().find(|d| d.path == *file) {
+                    document.parts = vec![lang::parts::Span::test(1..=usize::MAX)];
+                }
+            }
+            None => parts_doubts.push((declaring, lang::parts::Doubt::ModuleInAnotherFile)),
+        }
+    }
     for document in documents
         .iter()
         .filter(|d| !target_only.is_match(d.path.as_str()))
@@ -233,7 +277,14 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
             })
         })
         .collect();
-    let facts = scip::facts(&documents, &hidden, config.uses_symbols());
+    let flow =
+        (config.reach == crate::config::Reach::Symbols).then(|| crate::flow::build(&documents));
+    let facts = scip::facts_watching(
+        &documents,
+        &hidden,
+        config.uses_symbols(),
+        &config.forbidden_symbol_names(),
+    );
     let dart_private = indexer::dart::private::coverage(
         config,
         &crate::components::ComponentMap::new(config)?,
@@ -248,6 +299,13 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
     let (sources, unread_deps): (Vec<Dep>, Vec<Dep>) =
         facts.deps.into_iter().partition(|dep| is_source(&dep.file));
     deps.extend(sources);
+    let mut packages_problems = Vec::new();
+    if config.packages {
+        let edges = crate::packages::edges(root, &all_files, |file| !target_only.is_match(file));
+        paths.extend(edges.manifests);
+        deps.extend(edges.deps);
+        packages_problems = edges.problems;
+    }
     let mut unread_deps = unread_deps;
     unread_deps.extend(scip::facts(&hidden, &documents, false).deps);
     let mut unread: Vec<String> = excluded.iter().cloned().collect();
@@ -258,6 +316,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
             .cloned(),
     );
     unread.sort();
+    let known_symbols = (facts.known, facts.known_whole);
     let unnamed_uses = facts
         .unnamed
         .iter()
@@ -271,7 +330,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         // A use of a name an excluded file defines adds nothing: its import
         // already fails as `excluded`.
         .filter(|symbol| {
-            !matches!(&symbol.target, Some(Target::Internal(path)) if exclude.is_match(path))
+            !matches!(&symbol.target, Some(Target::Internal(unit)) if exclude.is_match(unit.path()))
         })
         .collect();
     Ok(Scan {
@@ -294,7 +353,11 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         suppressions,
         uncovered: indexed.uncovered,
         unnamed_uses,
+        parts_doubts,
+        packages_problems,
+        known_symbols,
         indexed: (indexed.ran, indexed.cached),
+        flow,
     })
 }
 

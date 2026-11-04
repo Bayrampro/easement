@@ -1,0 +1,20 @@
+version: 1
+
+packages: true
+
+components:
+  api: { in: crates/storage-api/Cargo.toml }
+  store: { in: crates/chunk-store/Cargo.toml }
+  kit: { in: crates/testkit/Cargo.toml }
+  web: { in: crates/web/Cargo.toml }
+
+tests: auto
+
+rules:
+  store:
+    may_depend_on: [api]
+    forbid_external: [axum]
+  web: { may_depend_on: [store] }
+  tests:
+    may_depend_on: [kit, api, store]
+    because: tests may use the test kit

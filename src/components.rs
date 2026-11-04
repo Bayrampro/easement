@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use globset::{Glob, GlobBuilder, GlobMatcher, GlobSet, GlobSetBuilder};
 
-use crate::config::Config;
+use crate::config::{Config, TESTS};
+use crate::lang::Unit;
 use crate::stdlib::{STD, is_std};
 
 /// Maps repository-relative paths (files or directories, `/`-separated) to components.
@@ -13,6 +14,8 @@ use crate::stdlib::{STD, is_std};
 /// component skips the files its `except` patterns match.
 pub struct ComponentMap {
     entries: Vec<Entry>,
+    /// Whether `tests: auto` made a `tests` component.
+    tests: bool,
     /// Component -> matchers of the paths it gives up, for components with `except`.
     except: std::collections::HashMap<String, Vec<[GlobMatcher; 3]>>,
     /// Files that may belong to no component in strict mode.
@@ -135,6 +138,8 @@ struct Entry {
     parts: usize,
     priority: i32,
     isolated: bool,
+    /// The part of a file it owns, when it owns a part and not the file.
+    part: Option<String>,
     matchers: [GlobMatcher; 3],
 }
 
@@ -197,6 +202,7 @@ impl ComponentMap {
                     parts: glob.split('/').count(),
                     priority: component.priority,
                     isolated: component.isolated,
+                    part: component.part.clone(),
                     matchers: module_matchers(name, &glob)?,
                 });
             }
@@ -231,6 +237,7 @@ impl ComponentMap {
         }
         Ok(Self {
             entries,
+            tests: config.tests.is_some(),
             except,
             unowned: crate::scan::glob_set(&config.unowned, "unowned")?,
             excluded: crate::scan::glob_set(&config.exclude, "exclude")?,
@@ -340,6 +347,20 @@ impl ComponentMap {
             .collect()
     }
 
+    /// The component of a node of the graph: code only a test build has belongs to
+    /// the `tests` of `tests: auto`, whatever file it sits in.
+    pub fn component_of_unit(&self, unit: &Unit) -> Option<&str> {
+        if self.tests && unit.is_test() {
+            return Some(TESTS);
+        }
+        if let Some(part) = unit.part_name()
+            && let Some(entry) = self.matching_part(&unit.key(), Some(part))
+        {
+            return Some(entry.component.as_str());
+        }
+        self.component_of(&unit.key())
+    }
+
     pub fn component_of(&self, rel_path: &str) -> Option<&str> {
         self.matching(rel_path).map(|e| e.component.as_str())
     }
@@ -351,8 +372,14 @@ impl ComponentMap {
     }
 
     fn matching(&self, rel_path: &str) -> Option<&Entry> {
+        self.matching_part(rel_path, None)
+    }
+
+    /// The entry that owns `part` of `rel_path`, or the file itself for `None`.
+    fn matching_part(&self, rel_path: &str, part: Option<&str>) -> Option<&Entry> {
         self.entries
             .iter()
+            .filter(|e| e.part.as_deref() == part)
             .filter(|e| e.matchers.iter().any(|m| m.is_match(rel_path)))
             .filter(|e| {
                 !self
@@ -425,11 +452,61 @@ fn without_extension(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     fn map(yaml: &str) -> ComponentMap {
         let config: Config = serde_norway::from_str(yaml).unwrap();
         ComponentMap::new(&config).unwrap()
+    }
+
+    #[test]
+    fn test_code_of_a_file_is_tests_only_under_tests_auto() {
+        use crate::lang::parts::{Kind, Part};
+        let unit = Unit::in_part(
+            Path::new("src/store.rs"),
+            Part {
+                name: "cfg(test)".to_string(),
+                kind: Some(Kind::Test),
+            },
+        );
+        let own = map("version: 1
+components:
+  store: { in: src/store.rs }
+  tests: { in: spec }
+");
+        assert_eq!(own.component_of_unit(&unit), Some("store"));
+        let auto = map("version: 1
+components:
+  store: { in: src/store.rs }
+tests: auto
+");
+        assert_eq!(auto.component_of_unit(&unit), Some("tests"));
+    }
+
+    #[test]
+    fn a_component_with_a_part_owns_only_that_part_of_a_file() {
+        use crate::lang::parts::Part;
+        let m = map("version: 1
+components:
+  crate: { in: crates/a/Cargo.toml }
+  fakes: { in: 'crates/**/Cargo.toml', part: feature/fake }
+");
+        let part = |name: &str| {
+            Unit::in_part(
+                Path::new("crates/a/Cargo.toml"),
+                Part {
+                    name: name.to_string(),
+                    kind: None,
+                },
+            )
+        };
+        assert_eq!(m.component_of_unit(&part("feature/fake")), Some("fakes"));
+        assert_eq!(m.component_of_unit(&part("feature/other")), Some("crate"));
+        // The file itself is not the part: another crate's manifest has no owner.
+        assert_eq!(m.component_of("crates/a/Cargo.toml"), Some("crate"));
+        assert_eq!(m.component_of("crates/b/Cargo.toml"), None);
     }
 
     #[test]

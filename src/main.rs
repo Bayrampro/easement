@@ -7,12 +7,14 @@ mod diagram;
 mod diff;
 mod doctor;
 mod explain;
+mod flow;
 mod graph;
 mod impact;
 mod indexer;
 mod init;
 mod lang;
 mod manifests;
+mod packages;
 mod patch;
 mod relpath;
 mod report;
@@ -255,6 +257,7 @@ impl Project {
             &map,
             &scan.deps,
             &scan.all_files,
+            scan.flow.as_ref(),
         ));
         violations.extend(check::metrics(&self.config, &edges));
         violations.extend(check::orphans(&self.config, &map, &scan.paths));
@@ -302,6 +305,15 @@ impl Project {
         stats.semantic_from_cache = semantic.cached;
         stats.unused_partial = unused.reasons;
         stats.manifests_partial = undeclared.reasons;
+        if self.config.packages {
+            stats.packages_partial = scan.packages_problems.clone();
+        }
+        if self.config.tests.is_some() {
+            stats.parts_partial = parts_reasons(&scan.parts_doubts);
+        }
+        stats
+            .parts_partial
+            .extend(parts_unmatched(&self.config, &scan.deps));
         stats.symbols_partial = check::symbols_partial(&self.config, &map, &scan.unnamed_uses);
         stats.analysis_partial = scan
             .analysis_partial
@@ -326,6 +338,19 @@ impl Project {
                     ),
                 }),
         );
+        // Only a whole index can tell a name that matches nothing: files it did not
+        // cover, names it left unnamed and languages without an index may hold it.
+        let indexed_whole = scan.analysis_partial.is_empty()
+            && stats.semantic_partial.is_empty()
+            && scan.uncovered.is_empty()
+            && scan.unnamed_uses.is_empty()
+            && scan.known_symbols.1
+            && scan
+                .paths
+                .iter()
+                .all(|f| indexer::INDEXERS.iter().any(|l| l.covers(f)));
+        stats.symbols_unmatched =
+            check::symbols_unmatched(&self.config, &scan.known_symbols.0, indexed_whole);
         stats.files = scan
             .paths
             .iter()
@@ -857,6 +882,68 @@ fn main() -> ExitCode {
 /// repository keeps it in `easement.schema.json`.
 fn schema_text() -> String {
     serde_json::to_string_pretty(&config::schema()).expect("a schema is JSON")
+}
+
+/// How many files a line about test code that was not told apart names.
+const PARTS_SHOWN: usize = 3;
+
+/// A component whose `part` no file of the scan has owns nothing, and no rule on it judges
+/// anything: a typo, or `packages` left off.
+fn parts_unmatched(config: &config::Config, deps: &[scan::Dep]) -> Vec<String> {
+    let found: std::collections::BTreeSet<&str> = deps
+        .iter()
+        .flat_map(|dep| {
+            let target = match &dep.target {
+                lang::Target::Internal(unit) => unit.part_name(),
+                lang::Target::External(_) => None,
+            };
+            [dep.from.part_name(), target]
+        })
+        .flatten()
+        .collect();
+    let list = if found.is_empty() {
+        "none".to_string()
+    } else {
+        found.iter().copied().collect::<Vec<_>>().join(", ")
+    };
+    config
+        .components
+        .iter()
+        .filter(|(_, component)| !component.optional)
+        .filter_map(|(name, component)| {
+            let part = component.part.as_deref()?;
+            (!found.contains(part)).then(|| {
+                format!(
+                    "component `{name}`: `part: {part}` matches no part of the files read (found: {list}), so it owns nothing and no rule on it judges anything; parts come from the manifests `packages` reads (`feature/<name>`, `dev-dependencies`, `build-dependencies`) and from `#[cfg(test)]` code of Rust (`cfg(test)`); `optional: true` accepts it"
+                )
+            })
+        })
+        .collect()
+}
+
+/// One line for each kind of doubt about test code, with the files it holds.
+fn parts_reasons(doubts: &[(String, lang::parts::Doubt)]) -> Vec<String> {
+    let mut by_kind: std::collections::BTreeMap<lang::parts::Doubt, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for (file, doubt) in doubts {
+        by_kind.entry(*doubt).or_default().push(file);
+    }
+    by_kind
+        .into_iter()
+        .map(|(doubt, mut files)| {
+            files.sort_unstable();
+            let mut named = files
+                .iter()
+                .take(PARTS_SHOWN)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            if files.len() > PARTS_SHOWN {
+                named.push_str(&format!(" and {} more", files.len() - PARTS_SHOWN));
+            }
+            doubt.reason(&named)
+        })
+        .collect()
 }
 
 #[cfg(test)]

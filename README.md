@@ -179,13 +179,13 @@ rules:
 exclude: ["**/*_test.go"]
 ```
 
-- **components**: an `in` pattern (a glob or a list of globs) names a module, whether it is a directory or a file: `src/app/cli` covers the `cli/` directory with everything below it and a file `cli.py`. `*` stays within one directory, `**` crosses directories. When several components match a file, the one with the higher `priority` wins (default 0), then the longest pattern, so a single file can be carved out of a larger component. `except` lists patterns a component gives up: its files matching them belong to the next component that matches, if any.
+- **components**: an `in` pattern (a glob or a list of globs) names a module, whether it is a directory or a file: `src/app/cli` covers the `cli/` directory with everything below it and a file `cli.py`. `*` stays within one directory, `**` crosses directories. When several components match a file, the one with the higher `priority` wins (default 0), then the longest pattern, so a single file can be carved out of a larger component. `except` lists patterns a component gives up: its files matching them belong to the next component that matches, if any. `part` makes a component own a part of those files, such as the Cargo feature `feature/fake` (see `packages`).
 - **owner**: who to ask about a component and its rules, such as `owner: "@acme/payments"`. It is printed under each violation the component's code raises, given in `--format json` as `owners` by component (look up a violation's `from`), and shown by `easement explain`.
 - **optional**: every `in` pattern has to match a file, and one that matches nothing (a directory renamed, a typo, files that `exclude` or `.gitignore` hide) fails as `unmatched` at its line in `easement.yml`, so a boundary cannot vanish while the check stays green. `--diff` and `--scope` still report it, the baseline never accepts it, and it cannot be suppressed. `optional: true` lets a component be empty for now; the `tests` component of `tests: auto` is optional.
 - **rules**: an allow-list. A component may depend on itself, on `common` components and on what `may_depend_on` lists — nothing else. `because` is printed with every violation of the rule, so the reader (or an agent) learns where the code should go instead.
 - Files outside every component are not checked, unless `strict: true` turns them into `orphan` violations. External modules are checked only where a rule says so, see [External modules](#external-modules).
 - **target_only**: globs of generated files that stay in the graph as targets but are never checked as sources. Components can own them (`web-generated: { in: src/generated }`), and rules can allow or forbid importing them (`must_not_depend_on: [web-generated]`); their own imports, symbol uses and directives are not checked. `exclude` wins when a file matches both, and then importing it fails.
-- **exclude**: globs to skip, for the whole project. `.gitignore` is honoured and `node_modules` is always skipped. Excluded files are not checked at all, and a checked file that imports one fails as `excluded`, since no rule would see that dependency (an indexer has to index the excluded file to resolve the import; files that `.gitignore` hides are never read): generated code the project imports belongs in `target_only`. To hold tests to rules of their own, see [Tests](#tests).
+- **exclude**: globs to skip, for the whole project. `.gitignore` is honoured and `node_modules` is always skipped. Excluded files are not checked at all, and a checked file that imports one fails as `excluded`, since no rule would see that dependency (an indexer has to index the excluded file to resolve the import; files that `.gitignore` hides are never read): generated code the project imports belongs in `target_only`, and hand-written code that only the rules should skip (such as `config/initializers`) in a component or in `unowned`. To hold tests to rules of their own, see [Tests](#tests).
 
 ## Rules
 
@@ -330,6 +330,12 @@ A direct import is a `dependency` violation (`domain -> http is forbidden`); a c
 src/domain/Order.kt:2: domain reaches http through util: src/domain/Order.kt:2 -> src/util/Retry.kt:2 -> src/http/Client.kt [reach]
 ```
 
+By default an import takes everything its file imports: calling one pure function reaches what any other function of that file uses. `reach: symbols` (top level) follows the definitions a call references instead, from the method or function that holds the call to the one it names, so `Document.host(uid)` reaches what `host` uses and not what `Document.fetch` does. What a file holds outside its methods (a class body, constants) is reached whenever one of its methods is. A class or constant used with no method named (a receiver the indexer cannot type) may run any method of its file, and a package import reaches the files of the package that no reference names, so such a chain stays. A file the index gave no ranges (Kotlin and Swift, which have no index, or an indexer that reports none), a symbol that several files define, and an import that no reference accounts for keep reaching as a whole file: the chains only get shorter, never lost. `why` and `impact` still follow files. The chains read as before, at `file:line`.
+
+```yaml
+reach: symbols
+```
+
 Break any hop to fix it. The baseline keys a chain by its two components, so other files on it do not make it new debt, and `--diff` reports it when a changed line is one of its hops. It cannot be suppressed inline.
 
 ### External modules
@@ -386,7 +392,16 @@ rules:
       - { name: "db.Client", because: use db.Scoped so every query is tenant-bound }
 ```
 
-`forbid_symbol` names what a component must not use, as `package.Name` or `import/path.Name`. `public_symbols` is the other side: other components may use only these names from the component's packages (`only Scoped and Tx`). Both are `symbol` violations at the line of the use and can be suppressed inline.
+`forbid_symbol` names what a component must not use, as `package.Name` or `import/path.Name`. `public_symbols` is the other side: other components may use only these names from the component's packages (`only Scoped and Tx`). Both are `symbol` violations at the line of the use and can be suppressed inline. A `forbid_symbol` name that matches no symbol of the index, while one of the same name is defined in a namespace under its qualifier (`I18n.locale` is defined as `I18n::Base.locale`), can never fire: the report says so in `stats.symbols_unmatched` and in the text, with the name it probably means, and the check does not fail. A name the index has never seen stays silent, since banning what the code does not use yet is what the rule is for; and nothing is said while the index is partial.
+
+A top-level `forbid_symbol` of the same shape applies to every checked file: components and the files that belong to no component (`unowned` in `strict` mode) alike, and a component's own list adds to it. Write a ban that holds across the project once, instead of in every rule:
+
+```yaml
+forbid_symbol:
+  - { name: "I18n::Base.locale", because: the current locale is System.locale }
+```
+
+A use in a file no component owns is reported as `unowned files must not use …`; an exception for one line is an inline suppression with a reason, as for any `symbol` violation.
 
 The indexer resolves every name to its definition, so `db.Client` is matched by what it is, not by how it is spelled: an import alias or a local variable that shadows the package name makes no difference, and a method call on a value of that type (`c.Query()`) counts as a use of `Client`.
 
@@ -415,7 +430,7 @@ rules:
     because: tests reach the database only through testhelper
 ```
 
-`tests: auto` puts the test files of every language into a component named `tests` (`*_test.go`, `*.test.*` and `*.spec.*` for TypeScript and JavaScript, `test_*.py` and `*_test.py`, `*Test.java`, `*Tests.java`, `*Test.kt`, `*Tests.kt`, `*Test.cs`, `*Tests.cs`, `*Test.php`, `*Tests.swift`, `__tests__/`). It beats every other component for those files. Without a `tests` rule tests may import anything, which is the same as not checking them; with one, `may_depend_on` is their allow-list. Name the component `tests` yourself and `tests: auto` refuses to run.
+`tests: auto` puts the test files of every language into a component named `tests` (`*_test.go`, `*.test.*` and `*.spec.*` for TypeScript and JavaScript, `test_*.py` and `*_test.py`, `*Test.java`, `*Tests.java`, `*Test.kt`, `*Tests.kt`, `*Test.cs`, `*Tests.cs`, `*Test.php`, `*Tests.swift`, `__tests__/`). It beats every other component for those files. For Rust it also takes test-only code, whatever file it sits in: the `#[cfg(test)]` and `#[cfg(all(test, …))]` items of a file (a unit-test module, a `use` for tests), a `#![cfg(test)]` file, and the file of a `#[cfg(test)] mod name;` (`name.rs` or `name/mod.rs` in the directory its declaring file owns: that of a `mod.rs`, `lib.rs` or `main.rs`, and for any other file `x.rs` the directory `x/`). A dependency written there, or a symbol used there, is one of `tests`, not of the file's component: the unit tests of a component that has `public_symbols` or `forbid_symbol` are judged by the `tests` rule, not by its own. What it cannot tell is said, not guessed: a module file that is not in the project, a `#[path]` that moves one, an inner `#![cfg(test)]` or a `mod name;` inside an inline module, a file it cannot read and an item whose braces do not match are listed in `stats.parts_partial` and in the text, and judged as the file's. `cfg(any(test, …))` is not seen, nor is a plain `mod helpers;` that a test-only file declares, and `unused` still judges test code as part of its file. Without a `tests` rule tests may import anything, which is the same as not checking them; with one, `may_depend_on` is their allow-list. Name the component `tests` yourself and `tests: auto` refuses to run.
 
 ### Coupling limits
 
@@ -462,6 +477,25 @@ manifests: true
 ```
 
 With `manifests`, every external module a file imports has to be a dependency of the nearest manifest above it: `package.json` (any of `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`; `@types/x` counts for `x`) for JavaScript and TypeScript, `go.mod` (`require`, matched by module prefix) for Go, `Cargo.toml` (any dependency table, `-` and `_` alike) for Rust. An import of anything else fails as `undeclared` at its line: it builds only because a dependency of a dependency happens to bring the package, or because the package is installed on this machine. The standard library is never undeclared, and only a package the file names in an import is judged: a symbol the index finds in another package (a re-export such as `serde_core` behind `serde`, a global type such as `NodeJS.Timeout`) is not. A renamed crate (`json = { package = "serde_json" }`) counts under both names. In a monorepo each package's own manifest counts; a `package.json` that declares neither a name nor dependencies (`{"type": "module"}`) is passed over, and one that cannot be read leaves the files under it unchecked, which the report says. `--diff` judges changed import lines, so a dependency removed from a manifest shows only in a full check. Other languages are not checked, since their imports do not name their packages (Python's `yaml` comes from `PyYAML`), and the report says so with `confidence: partial`. The rule can be suppressed inline.
+
+```yaml
+packages: true
+```
+
+With `packages`, the manifests are checked files, and each dependency one declares is an edge from it, as an import is from a source file: a component that owns `crates/*/Cargo.toml` is judged on what those say. For `Cargo.toml`, a `path` dependency, or `workspace = true` with a `path` in `[workspace.dependencies]`, is a dependency on the manifest of that package (`imports crates/testkit/Cargo.toml`); anything else is an external crate, spelled as an import spells it (`serde_json`), so `forbid_external` and `may_use_external` apply. `[dev-dependencies]` are test code: with `tests: auto` they belong to `tests`, not to the crate. `[build-dependencies]` and `[target.*.dependencies]` are the crate's own. The violation stands on the line of the dependency in the manifest. `strict` fails on a manifest that no component owns (the root manifest of a workspace too: list it in `unowned`). `package.json` and `go.mod` are read the same way, and no other manifest yet. In a `package.json`, `dependencies`, `optionalDependencies` and `peerDependencies` are the package's own and `devDependencies` are test code; a dependency is the `package.json` of the package of the project that goes by that name (`workspace:`, or the same name in the project), or the one at its `file:` or `link:` path, else an external package (`@scope/pkg` as written, `npm:real@1` as `real`). In a `go.mod`, each `require` is the `go.mod` that declares that module path, or the one in the local directory a `replace` points to, else an external module by its path. A `// indirect` requirement is not judged: the module does not import it itself, and only a `replace` by a relative directory (`./x`, `../x`) makes a module one of the project. `workspace:../x` is a path and `workspace:real@*` or `npm:real@1` an alias of `real`; a `package.json` with no `name` cannot be depended on by name. `go.work` and `pnpm-workspace.yaml` are not read: a package is found by its name or its path. `vendor` and `testdata` directories do not count as packages of the project. Two manifests that declare one name are listed in `stats.packages_partial`, and a dependency on it is taken for the first. Manifests are told by their file name (`Cargo.toml`, `package.json`, `go.mod`) and not by an extension, so they are not entries of the language registry, which is by extension. The dependencies of `[workspace.dependencies]` are seen only through the member that uses them. A manifest that cannot be read, or a `workspace = true` whose workspace manifest cannot, is listed in `stats.packages_partial` and in the text, and the verdict is `partial`. A `path` that is excluded or outside the project names an external crate.
+
+A Cargo feature is a part of its manifest, `feature/<name>`, and a component can own it with `part`:
+
+```yaml
+components:
+  fakes:
+    in: 'crates/**/Cargo.toml'
+    part: feature/fake
+    allow_importers: [web, tests]
+    because: the fake channel never gets into a release build
+```
+
+A component with `part` owns that part of the files `in` matches, and the file itself stays with the component that has none. What turns a feature on is a dependency on it: an item of another feature (`fake = ["storage-api/fake"]` reaches the feature `fake` of `storage-api`, and the package), `features = ["fake"]` in a dependency table, and `default = ["fake"]`, which is the crate's own dependency on its feature, since `default` stays the package itself. A weak `x?/f` reaches the feature `f` of `x` and not `x`. An `optional = true` dependency belongs to what turns it on: the features that name it (`dep:x`, `x/f`) and the implicit feature named after it, which exists unless a `dep:x` names it; the crate does not depend on it until then. The external crates a feature turns on are judged as the component that owns the feature, so `forbid_external` on the crate does not cover a crate only a feature of another component enables. A name in a feature that no dependency table declares is no edge, and `default` as an item is the package itself. `default-features = false` is not modelled. A `part` that no file of the scan has (a typo, `packages` left off) is listed in `stats.parts_partial` and in the text, since it owns nothing and no rule on it judges anything; `optional: true` accepts it. A component with a `part` cannot be `isolated`.
 
 ### Names of types
 
@@ -858,7 +892,9 @@ cross-file private use that `forbid_symbol` or `public_symbols` could restrict.
 Public-only files, ordinary locals, and unrelated private helpers do not inherit
 a project-wide warning. Missing source ranges, symbol classification, or part
 ownership remain conservative; other extraction gaps are reported independently.
-Dart `unused` enforcement remains unsupported.
+Dart `unused` enforcement remains unsupported. Pub dependency-declaration edges
+with `packages: true` are also unsupported and report partial coverage;
+`manifests: true` continues to validate Dart source imports.
 Semantic architecture checks are available through the opt-in companion below.
 
 Dart cache keys read hidden resolution state, package and workspace metadata,

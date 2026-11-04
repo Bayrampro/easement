@@ -4,6 +4,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  # macOS runners are scarce and slow to start, so macOS is tested once a night
+  # (and on demand) instead of on every push.
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,6 +20,7 @@ concurrency:
 jobs:
   # Every lint, the same set as `mise run check` locally.
   check:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -43,6 +49,7 @@ jobs:
 
   # Conventional Commits on the pushed range: release-please reads them.
   commits:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -75,7 +82,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        # The nightly and manual runs add macOS to what every push runs.
+        os: ${{ fromJSON((github.event_name == 'pull_request' || github.event_name == 'push') && '["ubuntu-latest","ubuntu-24.04-arm"]' || '["ubuntu-latest","ubuntu-24.04-arm","macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:

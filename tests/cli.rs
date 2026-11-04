@@ -804,7 +804,8 @@ fn an_external_module_the_manifest_does_not_declare_fails() {
 #[test]
 fn a_package_whose_types_sit_under_a_marker_package_json_is_judged_by_its_name() {
     // `{"type": "module"}` in a subdirectory of a package (zod, hono, @simplewebauthn/browser)
-    // hides the package from scip-typescript: what is defined under it has no package.
+    // hid the package from scip-typescript before 0.6.1. Now the index names it, and the
+    // directory is part of the module, as `dist/` is for any package.
     let marker = "{\"type\": \"module\"}\n";
     let stub = "declare const stub: any;\nexport default stub;\n";
     let nested = |name: &'static str| {
@@ -884,7 +885,7 @@ fn a_package_whose_types_sit_under_a_marker_package_json_is_judged_by_its_name()
     assert_eq!(
         found,
         [
-            ("external".to_string(), 5, "nested-ok".to_string()),
+            ("external".to_string(), 5, "nested-ok/esm".to_string()),
             ("undeclared".to_string(), 3, "nested-a".to_string()),
             ("undeclared".to_string(), 4, "nested-b".to_string()),
         ]
@@ -921,7 +922,9 @@ fn an_alias_into_a_project_with_a_nameless_package_json_is_no_package() {
 }
 
 #[test]
-fn a_name_of_a_package_the_index_left_unnamed_is_flagged_as_unjudged() {
+fn forbid_symbol_judges_a_name_of_a_package_under_a_marker_package_json() {
+    // scip-typescript before 0.6.1 left such a name unnamed, and easement said it could not
+    // judge it (`a_name_of_an_unnamed_package_...` in src/scip.rs); now the index names it.
     let (_tmp, root) = project(&[
         (
             "easement.yml",
@@ -954,17 +957,27 @@ fn a_name_of_a_package_the_index_left_unnamed_is_flagged_as_unjudged() {
         ),
     ]);
     let out = easement(&root, &["check", "--format", "json"])
-        .success()
+        .code(1)
         .get_output()
         .stdout
         .clone();
     let report: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    let partial = report["stats"]["symbols_partial"][0].as_str().unwrap();
-    assert!(partial.contains("src/web/a.ts"), "{partial}");
-    assert!(!partial.contains("src/api/b.ts"), "{partial}");
-    easement(&root, &["check"]).success().stdout(contains(
-        "`forbid_symbol` cannot tell the npm package of the names used in src/web/a.ts",
-    ));
+    let files: Vec<&str> = report["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["file"].as_str().unwrap())
+        .collect();
+    // `api` has no rule on names; `web` is judged, and nothing is left unjudged.
+    assert!(
+        !files.is_empty() && files.iter().all(|f| *f == "src/web/a.ts"),
+        "{files:?}"
+    );
+    assert!(report["stats"]["symbols_partial"].is_null(), "{report}");
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("web must not use nested.Thing"))
+        .stdout(contains("cannot tell the npm package").not());
 }
 
 #[test]
@@ -2048,6 +2061,266 @@ fn rust_resolves_the_module_tree() {
     layered("rust", "src/web/mod.rs", "src/infra/repo.rs", 8);
 }
 
+/// A crate's unit tests sit in the file they test, and the dev-dependency they use
+/// is not a dependency of the crate: only the line outside `#[cfg(test)]` is judged
+/// as the file's.
+fn rust_cfg_test_fixture() -> (TempDir, PathBuf) {
+    let (tmp, root) = fixture("rust_cfg_test");
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"shop\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dev-dependencies]\ntestkit = { path = \"testkit\" }\n\n[dependencies]\ntestkit = { path = \"testkit\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("testkit/Cargo.toml"),
+        "[package]\nname = \"testkit\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    (tmp, root)
+}
+
+#[test]
+fn rust_cfg_test_code_is_tests_not_the_file_it_sits_in() {
+    let (_tmp, root) = rust_cfg_test_fixture();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "src/store/mod.rs:1: store -> kit is not allowed (imports testkit/src/lib.rs)",
+        ))
+        .stdout(contains("src/store/ok.rs").not())
+        .stdout(contains("1 violation(s)"));
+}
+
+/// A `#[cfg(test)] mod name;` is test code as a whole: its file is `tests`, not the
+/// component of the file that declares it.
+#[test]
+fn a_cfg_test_module_in_another_file_is_tests_too() {
+    let (_tmp, root) = rust_cfg_test_fixture();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("src/store/extra.rs").not())
+        // `inner.rs` opens with `#![cfg(test)]`: all of it is test code.
+        .stdout(contains("src/store/inner.rs").not())
+        .stdout(contains("1 violation(s)"));
+}
+
+/// A module file easement cannot find is said, not silently judged as the file's.
+#[test]
+fn a_cfg_test_module_whose_file_is_missing_is_flagged_as_not_seen() {
+    let (_tmp, root) = rust_cfg_test_fixture();
+    fs::remove_file(root.join("src/store/extra.rs")).unwrap();
+    let out = easement(&root, &["check", "--format", "json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let partial = report["stats"]["parts_partial"].as_array().unwrap();
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    assert!(partial[0].as_str().unwrap().contains("src/store/mod.rs"));
+}
+
+/// The manifests of a Cargo workspace are stored as `Cargo.toml.fixture`: tools that
+/// walk the repository would take a `Cargo.toml` for a crate.
+fn cargo_packages_fixture() -> (TempDir, PathBuf) {
+    cargo_workspace_fixture("cargo_packages")
+}
+
+fn cargo_workspace_fixture(name: &str) -> (TempDir, PathBuf) {
+    let (tmp, root) = fixture(name);
+    for entry in ignore::WalkBuilder::new(&root).build().flatten() {
+        if entry.file_name() == "Cargo.toml.fixture" {
+            fs::rename(entry.path(), entry.path().with_file_name("Cargo.toml")).unwrap();
+        }
+    }
+    (tmp, root)
+}
+
+#[test]
+fn packages_check_the_dependencies_a_cargo_manifest_declares() {
+    let (_tmp, root) = cargo_packages_fixture();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "crates/chunk-store/Cargo.toml:7: store -> external axum is forbidden",
+        ))
+        .stdout(contains(
+            "crates/web/Cargo.toml:7: web -> kit is not allowed (imports crates/testkit/Cargo.toml)",
+        ))
+        // `testkit` is a dev-dependency of chunk-store: the tests', not the crate's.
+        .stdout(contains("crates/chunk-store/Cargo.toml:10").not())
+        .stdout(contains("2 violation(s)"));
+}
+
+#[test]
+fn a_manifest_packages_cannot_read_is_said_not_passed_as_clean() {
+    let (_tmp, root) = cargo_packages_fixture();
+    fs::write(root.join("crates/web/Cargo.toml"), "[dependencies\nx = ").unwrap();
+    let out = easement(&root, &["check", "--format", "json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let partial = report["stats"]["packages_partial"].as_array().unwrap();
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    assert!(
+        partial[0]
+            .as_str()
+            .unwrap()
+            .contains("crates/web/Cargo.toml")
+    );
+    assert_eq!(report["confidence"], "partial");
+}
+
+#[test]
+fn packages_and_manifests_together_add_no_unjudged_toml() {
+    let (_tmp, root) = cargo_packages_fixture();
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        format!("{config}\nmanifests: true\n"),
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(".toml files").not())
+        .stdout(contains("2 violation(s)"));
+}
+
+/// The feature that must stay out of a release build: only the web build and the tests
+/// may turn it on, and no crate does by default.
+#[test]
+fn a_cargo_feature_is_a_part_that_a_component_owns() {
+    let (_tmp, root) = cargo_workspace_fixture("cargo_features");
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "crates/bad/Cargo.toml:6: bad -> fakes: fakes may be imported only from web, tests",
+        ))
+        .stdout(contains(
+            "crates/core/Cargo.toml:6: core -> fakes: fakes may be imported only from web, tests",
+        ))
+        .stdout(contains(
+            "because: the fake channel never gets into a release build",
+        ))
+        .stdout(contains("crates/web/Cargo.toml:").not())
+        .stdout(contains("crates/telegram/Cargo.toml:").not())
+        .stdout(contains("2 violation(s)"));
+}
+
+/// `must_depend_on` is met by a dependency on a part that a component owns.
+#[test]
+fn a_part_that_a_component_owns_meets_must_depend_on() {
+    let (_tmp, root) = cargo_workspace_fixture("cargo_features");
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    let edited = config.replace(
+        "core: { may_depend_on: [fakes] }",
+        "core: { may_depend_on: [fakes], must_depend_on: [fakes] }",
+    );
+    assert_ne!(config, edited);
+    fs::write(root.join("easement.yml"), edited).unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("crates/core/Cargo.toml:6: core -> fakes"))
+        .stdout(contains("2 violation(s)"));
+}
+
+/// A `part` that no manifest produces would own nothing and be judged by no rule, so it
+/// is said.
+#[test]
+fn a_part_that_matches_no_part_is_said_not_silent() {
+    let (_tmp, root) = cargo_workspace_fixture("cargo_features");
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        config.replace("part: feature/fake", "part: feature/fakee"),
+    )
+    .unwrap();
+    let out = easement(&root, &["check", "--format", "json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let partial = report["stats"]["parts_partial"].as_array().unwrap();
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    let reason = partial[0].as_str().unwrap();
+    assert!(
+        reason.contains("fakes") && reason.contains("feature/fakee"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("feature/fake"),
+        "it names the parts the scan found: {reason}"
+    );
+}
+
+#[test]
+fn packages_check_the_dependencies_a_package_json_declares() {
+    let (_tmp, root) = fixture("npm_packages");
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "packages/store/package.json:5: store -> external axios is forbidden",
+        ))
+        .stdout(contains(
+            "packages/web/package.json:5: web -> kit is not allowed (imports packages/testkit/package.json)",
+        ))
+        // `@acme/testkit` is a devDependency of store: the tests', not the package's.
+        .stdout(contains("packages/store/package.json:8").not())
+        .stdout(contains("2 violation(s)"));
+}
+
+#[test]
+fn packages_check_the_modules_a_go_mod_requires() {
+    let (_tmp, root) = fixture("go_packages");
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "app/go.mod:7: app -> external github.com/lib/pq is forbidden",
+        ))
+        .stdout(contains(
+            "app/go.mod:8: app -> internal is not allowed (imports internal/go.mod)",
+        ))
+        .stdout(contains("2 violation(s)"));
+}
+
+#[test]
+fn packages_and_manifests_together_judge_a_package_json_once() {
+    let (_tmp, root) = fixture("npm_packages");
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        format!("{config}\nmanifests: true\n"),
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(".json files").not())
+        .stdout(contains("2 violation(s)"));
+}
+
+#[test]
+fn two_package_jsons_that_go_by_one_name_are_said() {
+    let (_tmp, root) = fixture("npm_packages");
+    fs::create_dir_all(root.join("packages/copy")).unwrap();
+    fs::write(
+        root.join("packages/copy/package.json"),
+        "{\n  \"name\": \"@acme/api\"\n}\n",
+    )
+    .unwrap();
+    let out = easement(&root, &["check", "--format", "json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let partial = report["stats"]["packages_partial"].as_array().unwrap();
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    assert!(partial[0].as_str().unwrap().contains("@acme/api"));
+    assert_eq!(report["confidence"], "partial");
+}
+
+#[test]
+fn a_go_mod_that_cannot_be_read_is_said_not_passed_as_clean() {
+    let (_tmp, root) = fixture("go_packages");
+    fs::write(
+        root.join("app/go.mod"),
+        "module example.com/app\n\nrequire (\n\texample.com/lib v1.0.0\n",
+    )
+    .unwrap();
+    let out = easement(&root, &["check", "--format", "json"]);
+    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    let partial = report["stats"]["packages_partial"].as_array().unwrap();
+    assert_eq!(partial.len(), 1, "{partial:?}");
+    assert!(partial[0].as_str().unwrap().contains("app/go.mod"));
+}
+
 #[test]
 fn csharp_resolves_namespaces() {
     layered(
@@ -2335,6 +2608,30 @@ fn symbols_are_checked_through_imports() {
 }
 
 #[test]
+fn a_top_level_forbid_symbol_covers_every_file_unowned_included() {
+    let (_tmp, root) = fixture("symbols_global");
+    easement(&root, &["check"])
+        .code(1)
+        // A component gets the global ban and its own.
+        .stdout(contains(
+            "internal/handlers/books.go:5: handler must not use db.Client [symbol]",
+        ))
+        .stdout(contains(
+            "internal/handlers/books.go:6: handler must not use db.Raw [symbol]",
+        ))
+        // A file no component owns is judged too, and an inline suppression holds there.
+        .stdout(contains(
+            "internal/lib/util.go:6: unowned files must not use db.Client [symbol]",
+        ))
+        .stdout(contains("internal/lib/util.go:3").not())
+        // db.Raw is only forbidden to the handler.
+        .stdout(contains("internal/lib/util.go:11").not())
+        .stdout(contains(
+            "because: use db.Scoped so every query is tenant-bound",
+        ));
+}
+
+#[test]
 fn forbid_symbol_catches_every_way_to_use_a_type() {
     let (_tmp, root) = fixture("symbol_uses");
     // One file per way of using db.Client, and a file that uses it twice: every use is reported.
@@ -2364,6 +2661,60 @@ fn forbid_symbol_catches_every_way_to_use_a_type() {
         ))
         .stdout(contains("allowed.go").not())
         .stdout(contains("7 violation(s)"));
+}
+
+#[test]
+fn reach_by_symbols_follows_the_method_a_call_names_not_the_whole_file() {
+    if no_scip_ruby_here() {
+        return;
+    }
+    // `Pure` calls `Document.host`, which only parses; `Document.fetch` and `both` reach `Http`.
+    let (_tmp, root) = fixture("ruby_reach");
+    easement(&root, &["check"]).success();
+    // By files, the same call reaches what `fetch` uses.
+    let config = root.join("easement.yml");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(&config, text.replace("reach: symbols\n", "")).unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains("app/models/pure.rb:4: models reaches external"));
+}
+
+#[test]
+fn reach_by_symbols_keeps_a_chain_through_the_method_that_reaches_it() {
+    if no_scip_ruby_here() {
+        return;
+    }
+    let (_tmp, root) = fixture("ruby_reach");
+    fs::write(
+        root.join("app/models/leaky.rb"),
+        "# typed: true\nclass Leaky\n  def run(uid)\n    Document.both(uid)\n  end\nend\n",
+    )
+    .unwrap();
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(
+            "app/models/leaky.rb:4: models reaches external through no component: app/models/leaky.rb:4 -> app/lib/document.rb:12 -> app/external/http.rb [reach]",
+        ))
+        .stdout(contains("pure.rb").not());
+}
+
+#[test]
+fn reach_by_symbols_keeps_a_chain_when_no_method_is_named() {
+    if no_scip_ruby_here() {
+        return;
+    }
+    // The receiver is opaque to Sorbet, so the index has the class but not the method: any
+    // method of it may be what runs.
+    let (_tmp, root) = fixture("ruby_reach");
+    fs::write(
+        root.join("app/models/opaque.rb"),
+        "# typed: true\nclass Opaque\n  def run(uid)\n    T.unsafe(Document).fetch(uid)\n  end\nend\n",
+    )
+    .unwrap();
+    easement(&root, &["check"]).code(1).stdout(contains(
+        "app/models/opaque.rb:4: models reaches external through no component",
+    ));
 }
 
 #[test]
@@ -2399,6 +2750,35 @@ fn ruby_symbols_are_constants_and_methods() {
         .stdout(contains("controller.rb:17").not())
         .stdout(contains("controller.rb:19").not())
         .stdout(contains("5 violation(s)"));
+}
+
+#[test]
+fn a_forbid_symbol_name_that_only_a_deeper_namespace_defines_is_flagged_not_failed() {
+    if no_scip_ruby_here() {
+        return;
+    }
+    let (_tmp, root) = fixture("ruby_symbols");
+    let config = root.join("easement.yml");
+    let text = fs::read_to_string(&config).unwrap();
+    // `connect` is a method of `Shop::Db::Client`, not of `Shop::Db`; `deploy` is
+    // defined nowhere, which is what a ban on what the code does not use yet looks like.
+    let text = text.replace(
+        "      - { name: \"Shop::Db::Client.connect\"",
+        "      - { name: \"Shop::Db.connect\" }\n      - { name: \"Shop::Db.deploy\" }\n      - { name: \"Shop::Db::Client.connect\"",
+    );
+    fs::write(&config, text).unwrap();
+    let flagged = "`forbid_symbol` `Shop::Db.connect` of web matches no symbol of the index, so it can never fire; did you mean `Shop::Db::Client.connect`?";
+    easement(&root, &["check"])
+        .code(1)
+        .stdout(contains(flagged))
+        .stdout(contains("Shop::Db.deploy").not())
+        // The same 5 violations: the flag is a note, not a violation.
+        .stdout(contains("5 violation(s)"));
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    assert_eq!(report["stats"]["symbols_unmatched"][0], flagged);
 }
 
 #[test]
@@ -3266,7 +3646,7 @@ fn an_import_of_an_excluded_file_fails() {
         ),
     ]);
     easement(&root, &["check"]).code(1).stdout(contains(
-        "src/app/a.ts:1: app imports src/legacy/api.ts, which `exclude` hides, so no rule checks it",
+        "src/app/a.ts:1: app imports src/legacy/api.ts, which `exclude` hides, so no rule checks it; list it in `target_only` if it is generated, in a component or `unowned` if it is part of the project, else do not import it",
     ));
     // Resolved by a tree-sitter adapter.
     let (_tmp, root) = project(&[
@@ -4967,4 +5347,36 @@ fn dart_ui_local_base_and_alias_edits_invalidate_semantic_cache() {
     assert_eq!(value["stats"]["semantic_indexed"], 1, "{value}");
     assert_eq!(value["confidence"], "full", "{value}");
     easement(&root, &["check", "--no-cache"]).success();
+}
+
+#[test]
+fn dart_support_integrates_with_upstream_global_symbols_and_package_coverage() {
+    let (_tmp, root) = dart_project();
+    fs::write(root.join("easement.yml"), "version: 1\ncomponents:\n  app: {in: lib/app.dart}\n  domain: {in: lib/domain.dart}\ncommon: [domain]\nforbid_symbol: [lib/domain.Domain]\n").unwrap();
+    let report = semantic_json(&root, 1);
+    assert_eq!(report["confidence"], "full", "{report}");
+    assert!(
+        report["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["rule"] == "symbol" && v["file"] == "lib/app.dart"),
+        "{report}"
+    );
+    fs::write(
+        root.join("easement.yml"),
+        "version: 1\npackages: true\ncomponents:\n  app: {in: [lib, pubspec.yaml]}\n",
+    )
+    .unwrap();
+    let report = semantic_json(&root, 0);
+    assert_eq!(report["confidence"], "partial", "{report}");
+    assert!(
+        report["stats"]["packages_partial"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str().unwrap().contains("Pub")
+                && v.as_str().unwrap().contains("not yet supported")),
+        "{report}"
+    );
 }

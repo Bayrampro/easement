@@ -18,8 +18,9 @@ use protobuf::Message;
 use scip::types::{Index, Occurrence, PositionEncoding, occurrence::Typed_range};
 
 use crate::check::SymbolRef;
-use crate::lang::Target;
+use crate::lang::parts::Part;
 use crate::lang::registry::{self, Manifest};
+use crate::lang::{Target, Unit};
 use crate::scan::Dep;
 
 /// `SymbolRole::Definition` in the bitset of an occurrence.
@@ -61,6 +62,35 @@ pub struct Document {
     pub dart_private: Vec<crate::indexer::dart::private::Symbol>,
     /// The owning library, only when Dart part ownership was verified.
     pub dart_library: Option<String>,
+    /// The methods and functions this file defines that the index gave a range.
+    pub scopes: Vec<Scope>,
+    /// The parts of the file that a dependency can belong to instead of the file.
+    pub parts: Vec<crate::lang::parts::Span>,
+}
+
+/// A method or function with the lines it spans, 1-based and inclusive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scope {
+    pub symbol: String,
+    pub first: usize,
+    pub last: usize,
+}
+
+/// The first and last line, 0-based, of the enclosing range of an occurrence.
+fn enclosing_lines(occurrence: &Occurrence) -> Option<(usize, usize)> {
+    use scip::types::occurrence::Typed_enclosing_range as Typed;
+    let (first, last) = match (
+        &occurrence.typed_enclosing_range,
+        occurrence.enclosing_range.as_slice(),
+    ) {
+        (Some(Typed::SingleLineEnclosingRange(range)), _) => (range.line, range.line),
+        (Some(Typed::MultiLineEnclosingRange(range)), _) => (range.start_line, range.end_line),
+        (Some(_), _) => return None,
+        (None, [line, _, _]) => (*line, *line),
+        (None, [start, _, end, _]) => (*start, *end),
+        (None, _) => return None,
+    };
+    Some((usize::try_from(first).ok()?, usize::try_from(last).ok()?))
 }
 
 /// The documents of one or more indexes, merged.
@@ -131,6 +161,16 @@ pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
                     && let Some((name, Kind::Type)) = parsed_symbol.descriptors.last()
                 {
                     parsed.types.push((name.clone(), line_of(occurrence) + 1));
+                }
+                // A method or function is `name().`; a parameter is `(name)`.
+                if occurrence.symbol.ends_with(").")
+                    && let Some((first, last)) = enclosing_lines(occurrence)
+                {
+                    parsed.scopes.push(Scope {
+                        symbol: occurrence.symbol.clone(),
+                        first: first + 1,
+                        last: last + 1,
+                    });
                 }
                 parsed.definitions.push(occurrence.symbol.clone());
             } else {
@@ -679,18 +719,36 @@ fn ruby_use(
     }
     let qualified = names.join("::");
     let target = match home {
-        Some(file) => Some(Target::Internal(PathBuf::from(file))),
+        Some(file) => Some(Target::Internal(Unit::from(*file))),
         None if defined.contains_key(class.as_str()) => None,
         None => Some(Target::External(qualified.clone())),
     };
     Some(SymbolRef {
         file: PathBuf::from(path),
+        from: Unit::from(path),
         line: reference.line,
         specifier: outer.join("::"),
         name: name.to_string(),
         method: method.map(|method| (qualified, method)),
         target,
     })
+}
+
+/// The part of `document` that `line` is in.
+fn part_at(document: &Document, line: usize) -> Option<&Part> {
+    document
+        .parts
+        .iter()
+        .find(|span| span.lines.contains(&line))
+        .map(|span| &span.part)
+}
+
+/// The node of `document` that `line` is in: a part of the file, or the file.
+fn unit_at(document: &Document, line: usize) -> Unit {
+    match part_at(document, line) {
+        Some(part) => Unit::in_part(Path::new(&document.path), part.clone()),
+        None => Unit::from(document.path.as_str()),
+    }
 }
 
 /// Dependencies and symbol uses of the documents.
@@ -701,6 +759,11 @@ pub struct Facts {
     /// With `symbols`, the files that use a name of an unnamed package, whose
     /// uses are left out of `symbols`.
     pub unnamed: BTreeSet<String>,
+    /// With `watched`, the qualifier and name of every symbol the index defines or
+    /// references whose name is one of `watched`: what a `forbid_symbol` name can mean.
+    pub known: Vec<(String, String)>,
+    /// Whether `known` is whole: false when the index left some definitions unnamed.
+    pub known_whole: bool,
 }
 
 /// One `Dep` per file and module it refers to, at the first line that does:
@@ -709,6 +772,16 @@ pub struct Facts {
 /// `excluded` are documents of files that `exclude` hides: never read as
 /// sources, they only resolve the names that no document of `documents` defines.
 pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Facts {
+    facts_watching(documents, excluded, symbols, &HashSet::new())
+}
+
+/// [`facts`] that also collects `Facts::known` for the names in `watched`.
+pub fn facts_watching(
+    documents: &[Document],
+    excluded: &[Document],
+    symbols: bool,
+    watched: &HashSet<String>,
+) -> Facts {
     let mut analysis_partial = Vec::new();
     let mut defined: HashMap<&str, &str> = HashMap::new();
     // Symbols that more than one file defines: a Ruby module reopened in each file under it.
@@ -771,7 +844,27 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
     let mut deps = Vec::new();
     let mut uses = Vec::new();
     let mut unnamed = BTreeSet::new();
-    for document in documents {
+    // What the index defines is read as if a file of no project referenced it, so that
+    // a definition no one uses still tells what a name can mean.
+    let definitions = (symbols && !watched.is_empty()).then(|| Document {
+        path: String::new(),
+        references: defined
+            .keys()
+            .chain(hidden.keys())
+            .enumerate()
+            .map(|(line, symbol)| Reference {
+                line: line + 1,
+                symbol: (*symbol).to_string(),
+                spelled: None,
+                dart_module: None,
+                dart_internal_package: false,
+                dart_target: None,
+                dart_target_excluded: false,
+            })
+            .collect(),
+        ..Document::default()
+    });
+    for document in documents.iter().chain(definitions.as_ref()) {
         // Rust writes `crate::domain::order::Order` as a reference to every module on
         // the path, and Ruby `Shop::Domain::Order` as one to every module and the class;
         // only the deepest one is what the line depends on.
@@ -799,8 +892,8 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                     })
                 })
         };
-        // (target, module) -> first line
-        let mut first: BTreeMap<(Option<&str>, String), usize> = BTreeMap::new();
+        // (target, module, part the line is in) -> first line
+        let mut first: BTreeMap<(Option<&str>, String, Option<&Part>), usize> = BTreeMap::new();
         let mine: HashSet<&str> = document.definitions.iter().map(String::as_str).collect();
         for reference in &document.references {
             if symbols && reference.symbol.starts_with("scip-ruby ") {
@@ -880,7 +973,10 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                     if internal.is_none() && module.is_empty() {
                         continue;
                     }
-                    let line = first.entry((internal, module)).or_insert(reference.line);
+                    let part = part_at(document, reference.line);
+                    let line = first
+                        .entry((internal, module, part))
+                        .or_insert(reference.line);
                     *line = (*line).min(reference.line);
                 }
                 Referent::Package => {}
@@ -902,7 +998,7 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                         continue;
                     }
                     let target = match home {
-                        Some(path) => Target::Internal(PathBuf::from(path)),
+                        Some(path) => Target::Internal(Unit::from(path)),
                         None => Target::External(
                             reference
                                 .dart_module
@@ -912,6 +1008,7 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                     };
                     uses.push(SymbolRef {
                         file: PathBuf::from(&document.path),
+                        from: unit_at(document, reference.line),
                         line: reference.line,
                         specifier: if parsed.scheme == "scip-dart" && home.is_none() {
                             reference
@@ -928,12 +1025,16 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
                 }
             }
         }
-        for ((internal, module), line) in first {
+        for ((internal, module, part), line) in first {
             let (specifier, target) = match internal {
-                Some(path) => (path.to_string(), Target::Internal(PathBuf::from(path))),
+                Some(path) => (path.to_string(), Target::Internal(Unit::from(path))),
                 None => (module.clone(), Target::External(module)),
             };
             deps.push(Dep {
+                from: match part {
+                    Some(part) => Unit::in_part(Path::new(&document.path), part.clone()),
+                    None => Unit::from(document.path.as_str()),
+                },
                 file: PathBuf::from(&document.path),
                 line,
                 specifier,
@@ -941,11 +1042,34 @@ pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Fa
             });
         }
     }
+    let known_whole = !unnamed.remove("");
+    deps.retain(|dep| !dep.file.as_os_str().is_empty());
+    let mut known = Vec::new();
+    uses.retain(|used| {
+        if !used.file.as_os_str().is_empty() {
+            return true;
+        }
+        known.push(used.clone());
+        false
+    });
+    let known = known
+        .iter()
+        .chain(&uses)
+        .flat_map(|used| {
+            let method = used.method.clone();
+            std::iter::once((used.specifier.clone(), used.name.clone())).chain(method)
+        })
+        .filter(|(_, name)| watched.contains(name))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     Facts {
         analysis_partial,
         deps,
         symbols: uses,
         unnamed,
+        known,
+        known_whole,
     }
 }
 
@@ -1059,7 +1183,7 @@ mod tests {
                 .iter()
                 .any(|dep| dep.file == Path::new("lib/main.dart")
                     && dep.line == 2
-                    && dep.target == Target::Internal(PathBuf::from("lib/other.dart")))
+                    && dep.target == Target::Internal(Unit::from("lib/other.dart")))
         );
         assert!(
             facts
@@ -1090,6 +1214,8 @@ mod tests {
             path: path.to_string(),
             definitions: defs.iter().map(|s| s.to_string()).collect(),
             types: Vec::new(),
+            scopes: Vec::new(),
+            parts: Vec::new(),
             references: refs
                 .iter()
                 .map(|(line, symbol)| Reference {
@@ -1108,6 +1234,40 @@ mod tests {
 
     const DB: &str = "scip-go gomod example.com/app . `example.com/app/internal/db`/";
     const FMT: &str = "scip-go gomod github.com/golang/go/src go1.25 fmt/";
+
+    #[test]
+    fn a_use_in_a_cfg_test_part_is_a_dependency_of_that_part_apart_from_the_file() {
+        let testkit = "rust-analyzer cargo testkit 0.1.0 crate/";
+        let mut document = doc("src/blob_db.rs", &[], &[(1, testkit), (9, testkit)]);
+        document.parts = crate::lang::parts::rust(
+            "src/blob_db.rs",
+            "pub fn open() {}\n\n#[cfg(test)]\nmod tests {\n    fn a() {}\n    fn b() {}\n    fn c() {}\n    fn d() {}\n    fn e() {}\n}\n",
+        )
+        .spans;
+        let deps = facts(&[document], &[], false).deps;
+        let found: Vec<_> = deps
+            .iter()
+            .map(|d| (d.line, d.from.is_test(), d.file.to_str().unwrap()))
+            .collect();
+        assert_eq!(
+            found,
+            [(1, false, "src/blob_db.rs"), (9, true, "src/blob_db.rs")]
+        );
+    }
+
+    #[test]
+    fn a_symbol_used_in_a_cfg_test_part_leaves_the_part() {
+        let tablet = "rust-analyzer cargo testkit 0.1.0 tablet().";
+        let mut document = doc("src/blob_db.rs", &[], &[(1, tablet), (9, tablet)]);
+        document.parts = crate::lang::parts::rust(
+            "src/blob_db.rs",
+            "pub fn open() {}\n\n#[cfg(test)]\nmod tests {\n    fn a() {}\n    fn b() {}\n    fn c() {}\n    fn d() {}\n    fn e() {}\n}\n",
+        )
+        .spans;
+        let uses = facts(&[document], &[], true).symbols;
+        let found: Vec<_> = uses.iter().map(|u| (u.line, u.from.is_test())).collect();
+        assert_eq!(found, [(1, false), (9, true)]);
+    }
 
     #[test]
     fn ruby_depends_on_the_deepest_constant_of_a_line() {
@@ -1209,7 +1369,7 @@ mod tests {
                 )
             })
             .collect();
-        let db = || Some(Target::Internal(PathBuf::from("lib/shop/db/client.rb")));
+        let db = || Some(Target::Internal(Unit::from("lib/shop/db/client.rb")));
         let method = |m: &str| Some(m.to_string());
         assert_eq!(
             uses,
@@ -1247,7 +1407,7 @@ mod tests {
                     14,
                     ".Shop".into(),
                     method("Shop.config"),
-                    Some(Target::Internal(PathBuf::from("lib/shop.rb")))
+                    Some(Target::Internal(Unit::from("lib/shop.rb")))
                 ),
             ]
         );
@@ -1324,7 +1484,7 @@ mod tests {
                 (
                     "internal/handlers/h.go",
                     6,
-                    Target::Internal(PathBuf::from("internal/db/db.go"))
+                    Target::Internal(Unit::from("internal/db/db.go"))
                 ),
             ]
         );
@@ -1352,11 +1512,11 @@ mod tests {
             vec![
                 (
                     "internal/handlers/h.go".to_string(),
-                    Target::Internal(PathBuf::from("gen/gen.go"))
+                    Target::Internal(Unit::from("gen/gen.go"))
                 ),
                 (
                     "internal/handlers/h.go".to_string(),
-                    Target::Internal(PathBuf::from("internal/db/db.go"))
+                    Target::Internal(Unit::from("internal/db/db.go"))
                 ),
             ]
         );
@@ -1381,7 +1541,7 @@ mod tests {
         assert_eq!(uses[0].specifier, "example.com/app/internal/db");
         assert_eq!(
             uses[0].target,
-            Some(Target::Internal(PathBuf::from("internal/db/db.go")))
+            Some(Target::Internal(Unit::from("internal/db/db.go")))
         );
         assert_eq!(uses[1].target, Some(Target::External("fmt".into())));
         assert!(facts(&documents, &[], false).symbols.is_empty());
@@ -1414,7 +1574,7 @@ mod tests {
             got,
             vec![
                 (5, Target::External("Illuminate\\Support\\Str".into())),
-                (4, Target::Internal(PathBuf::from("src/Domain/Order.php"))),
+                (4, Target::Internal(Unit::from("src/Domain/Order.php"))),
             ]
         );
     }
@@ -1433,6 +1593,23 @@ mod tests {
         assert_eq!(facts.deps[0].target, Target::External("lodash".into()));
         let deep = split("scip-typescript npm moment 2.0.0 locale/`ru.d.ts`/").unwrap();
         assert_eq!(deep.external_module(), "moment/locale/ru");
+    }
+
+    #[test]
+    fn a_name_of_an_unnamed_package_is_no_symbol_use_but_is_reported_as_unjudged() {
+        // scip-typescript before 0.6.1 indexes what sits under a `package.json` without
+        // `name` (`{"type": "module"}` in `esm/`) as the unnamed package `. .`.
+        let documents = vec![doc(
+            "src/web/a.ts",
+            &[],
+            &[(1, "scip-typescript npm . . esm/`index.d.ts`/Thing#")],
+        )];
+        let facts = facts(&documents, &[], true);
+        assert!(facts.symbols.is_empty());
+        assert_eq!(
+            facts.unnamed.into_iter().collect::<Vec<_>>(),
+            ["src/web/a.ts"]
+        );
     }
 
     #[test]

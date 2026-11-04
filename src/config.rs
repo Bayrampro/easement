@@ -104,6 +104,11 @@ pub struct Config {
     /// Per component: what it may depend on and use.
     #[serde(default)]
     pub rules: BTreeMap<String, Rule>,
+    /// Names that no checked file may use, components and files that belong to none alike,
+    /// as `package.Name` or `import/path.Name`. A component's own `forbid_symbol` adds to
+    /// it. An item may carry its own reason.
+    #[serde(default)]
+    pub forbid_symbol: Vec<Listed>,
     /// Globs of paths to skip.
     #[serde(default)]
     pub exclude: Vec<String>,
@@ -118,6 +123,12 @@ pub struct Config {
     /// Fail on dependency cycles between components: true for all, or a list of components.
     #[serde(default)]
     pub no_cycles: NoCycles,
+    /// What `must_not_reach` follows: `files` (the default) takes an import for everything
+    /// its file imports; `symbols` follows the definitions a call references, so calling
+    /// one pure method does not reach what another method of its file uses. A file the
+    /// index gave no ranges keeps reaching as a whole.
+    #[serde(default)]
+    pub reach: Reach,
     /// Components from the top layer to the bottom one: a layer may depend on any layer below
     /// it, never on one above. A list in place of a name holds sibling components of one
     /// layer, which do not depend on each other; {name, closed: true} is a layer the ones
@@ -159,6 +170,12 @@ pub struct Config {
     /// languages are not checked.
     #[serde(default)]
     pub manifests: bool,
+    /// Manifests are checked files: each dependency a `Cargo.toml`, `package.json` or `go.mod`
+    /// declares is a dependency of the component that owns it, on a package of the project or
+    /// on an external module, so the rules apply to it. A dev-dependency is test code, which
+    /// `tests: auto` takes. Other manifests are not read yet.
+    #[serde(default)]
+    pub packages: bool,
     /// Rules whose violations are reported as warnings and do not fail the check. Rules about
     /// the config, such as unmatched, cannot be listed.
     #[serde(default)]
@@ -322,6 +339,11 @@ pub struct Component {
     /// read from the index; Kotlin and Swift are not seen.
     #[serde(default)]
     pub defines: Vec<String>,
+    /// With `packages`, the part of the files `in` matches that the component owns, as the
+    /// language or manifest names it: `feature/fake` for the Cargo feature `fake`. The file
+    /// itself stays with the component that has no `part`.
+    #[serde(default)]
+    pub part: Option<String>,
 }
 
 /// One layer of `layers`: a component, sibling components that do not
@@ -391,6 +413,15 @@ impl Patterns {
             Patterns::Many(ps) => ps.iter().map(String::as_str).collect(),
         }
     }
+}
+
+/// What a chain of `must_not_reach` follows.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Reach {
+    #[default]
+    Files,
+    Symbols,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -483,7 +514,22 @@ impl Config {
     /// Whether any rule needs the uses of names, not only the imports.
     pub fn uses_symbols(&self) -> bool {
         self.components.values().any(|c| c.public_symbols.is_some())
+            || !self.forbid_symbol.is_empty()
             || self.rules.values().any(|r| !r.forbid_symbol.is_empty())
+    }
+
+    /// The names that `forbid_symbol` lists, without the qualifier: `locale` of `I18n.locale`.
+    pub fn forbidden_symbol_names(&self) -> std::collections::HashSet<String> {
+        self.forbid_symbol
+            .iter()
+            .chain(
+                self.rules
+                    .values()
+                    .flat_map(|rule| rule.forbid_symbol.iter()),
+            )
+            .filter_map(|listed| listed.name().rsplit_once('.'))
+            .map(|(_, name)| name.to_string())
+            .collect()
     }
 
     /// Adds the `tests` component when `tests: auto` asks for it.
@@ -514,6 +560,7 @@ impl Config {
                 optional: true,
                 owner: None,
                 defines: Vec::new(),
+                part: None,
             },
         );
         Ok(self)
@@ -568,6 +615,11 @@ impl Config {
         };
         for name in &self.common {
             check(name, "common")?;
+        }
+        for symbol in self.forbid_symbol.iter().map(Listed::name) {
+            if !symbol.contains('.') {
+                bail!("forbid_symbol `{symbol}` must look like `package.Name`");
+            }
         }
         for (from, rule) in &self.rules {
             check(from, "rules")?;
@@ -660,6 +712,9 @@ impl Config {
         for (name, component) in &self.components {
             if component.patterns.as_vec().is_empty() {
                 bail!("component `{name}` has no `in` patterns");
+            }
+            if component.part.is_some() && component.isolated {
+                bail!("component `{name}` owns a `part`, which cannot be `isolated`");
             }
             for pattern in component.patterns.as_vec() {
                 crate::components::glob_and_placeholders(pattern)
@@ -986,6 +1041,35 @@ rules:
     }
 
     #[test]
+    fn a_top_level_forbid_symbol_counts_as_a_use_of_names_and_must_name_a_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("easement.yml");
+        std::fs::write(
+            &path,
+            "version: 1
+components:
+  a: { in: a }
+forbid_symbol: [\"d.T\"]
+",
+        )
+        .unwrap();
+        let c = Config::load(&path).unwrap();
+        assert!(c.uses_symbols());
+        assert!(c.forbidden_symbol_names().contains("T"));
+        std::fs::write(
+            &path,
+            "version: 1
+components:
+  a: { in: a }
+forbid_symbol: [T]
+",
+        )
+        .unwrap();
+        let error = format!("{:#}", Config::load(&path).unwrap_err());
+        assert!(error.contains("must look like `package.Name`"), "{error}");
+    }
+
+    #[test]
     fn merge_keys_share_a_part_of_several_rules() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("easement.yml");
@@ -1065,6 +1149,18 @@ rules:
         let config = config.with_tests()?;
         config.validate()?;
         Ok(config)
+    }
+
+    #[test]
+    fn a_part_cannot_be_isolated() {
+        let err = parse(
+            "version: 1
+components:
+  a: { in: 'crates/*/Cargo.toml', part: feature/fake, isolated: true }
+",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("part"), "{err}");
     }
 
     #[test]

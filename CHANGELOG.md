@@ -1,5 +1,68 @@
 # Changelog
 
+## [0.4.10](https://github.com/mokevnin/easement/compare/v0.4.9...v0.4.10) (2026-11-03)
+
+
+### Features
+
+* take a cfg(test) module file, a cfg(test) file and cfg(all(test, ...)) as test code ([f538508](https://github.com/mokevnin/easement/commit/f53850821e9270ec06d6dd0d7ccb5c8df7ef9fd3))
+
+
+### Bug Fixes
+
+* place test-only modules as Rust does, and say what cannot be placed ([8b60eaa](https://github.com/mokevnin/easement/commit/8b60eaa45c47affc9dc2add602f0e46649034e8f))
+
+## [0.4.9](https://github.com/mokevnin/easement/compare/v0.4.8...v0.4.9) (2026-11-03)
+
+
+### Features
+
+* check the dependencies a Cargo manifest declares with packages: true ([4292705](https://github.com/mokevnin/easement/commit/429270570f779ce8f1ac554c63b452526e5279fc))
+* follow the definitions a call references in `must_not_reach` with `reach: symbols` ([d0d10ae](https://github.com/mokevnin/easement/commit/d0d10ae319c2a3e2d180638063241d8ec2ca60ae)), closes [#58](https://github.com/mokevnin/easement/issues/58)
+* let a component own a Cargo feature of a manifest with part ([eeaccdd](https://github.com/mokevnin/easement/commit/eeaccddef4f4e14a79a008e81f16ebf71b9930c9))
+* read package.json and go.mod with packages: true ([0a033ed](https://github.com/mokevnin/easement/commit/0a033ed06693cd8b605c2730dc48f08c35cd05a0))
+* say which test code of a Rust file tests: auto could not tell apart ([5da4f31](https://github.com/mokevnin/easement/commit/5da4f312be5178ad035ed8164a6bc695b520ce80))
+* take #[cfg(test)] code of a Rust file into the tests component of tests: auto ([4b02319](https://github.com/mokevnin/easement/commit/4b023198fb1327ab86d55ac48bc4f6b55ff0b3f2))
+
+
+### Bug Fixes
+
+* judge the part a dependency reaches, and say a part that nothing has ([38803c4](https://github.com/mokevnin/easement/commit/38803c420a4615d51ffab244c464f1bc918f26ec))
+* keep cfg(test) parts to real items and to tests: auto ([4496621](https://github.com/mokevnin/easement/commit/44966218215aa90356b24a496bc8e58aeeb72f6e))
+* read package.json and go.mod as the tools do, and say what cannot be read ([0669fbb](https://github.com/mokevnin/easement/commit/0669fbb4dfa856ef3ef4e21601d18bb01060e137))
+* say which manifests packages could not read, and keep manifests from judging them ([2d429cc](https://github.com/mokevnin/easement/commit/2d429cca6e5ca2f6a0701484accf0b371ef98ab8))
+
+## [0.4.8](https://github.com/mokevnin/easement/compare/v0.4.7...v0.4.8) (2026-11-03)
+
+
+### Features
+
+* forbid_symbol at the top level, for every checked file ([8e4d64c](https://github.com/mokevnin/easement/commit/8e4d64cf58c4dd35a7077f2f4aa81d89081b1465)), closes [#57](https://github.com/mokevnin/easement/issues/57)
+
+
+### Bug Fixes
+
+* say how to judge an npm package under a nameless package.json ([d6e5e98](https://github.com/mokevnin/easement/commit/d6e5e9876369c060c54127b57f2aeb0fa0615a32)), closes [#66](https://github.com/mokevnin/easement/issues/66)
+
+## [0.4.7](https://github.com/mokevnin/easement/compare/v0.4.6...v0.4.7) (2026-11-03)
+
+
+### Features
+
+* say when a `forbid_symbol` name can never fire because a deeper namespace defines it ([580369f](https://github.com/mokevnin/easement/commit/580369f54e38aa32db37f2b9c8f3b826f5ede352)), closes [#56](https://github.com/mokevnin/easement/issues/56)
+
+
+### Bug Fixes
+
+* name `unowned` and a component as the way out of an `excluded` import ([eb36493](https://github.com/mokevnin/easement/commit/eb36493a0320bb349e39512ff620199731509616)), closes [#59](https://github.com/mokevnin/easement/issues/59)
+
+## [0.4.6](https://github.com/mokevnin/easement/compare/v0.4.5...v0.4.6) (2026-11-03)
+
+
+### Bug Fixes
+
+* **deps:** update scip-typescript to 0.6.1 and the cargo lockfile ([5a33e94](https://github.com/mokevnin/easement/commit/5a33e949f3f1c49fc413781bceabe6f69d7e61ca))
+
 ## [0.4.5](https://github.com/mokevnin/easement/compare/v0.4.4...v0.4.5) (2026-11-02)
 
 

@@ -5,6 +5,7 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor, Tree};
 
 pub mod kotlin;
+pub mod parts;
 pub mod registry;
 pub mod swift;
 
@@ -17,11 +18,76 @@ pub struct Import {
     pub line: usize,
 }
 
+/// A node of the dependency graph: a file or a package directory inside the
+/// project (what a Go import names), relative to the root. A dependency leaves
+/// one and reaches one; the file and line it is written at are its place, kept
+/// apart in [`crate::scan::Dep`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Unit {
+    path: PathBuf,
+    part: Option<parts::Part>,
+}
+
+impl Unit {
+    /// A part of the file at `path`.
+    pub fn in_part(path: &Path, part: parts::Part) -> Self {
+        Self {
+            path: path.into(),
+            part: Some(part),
+        }
+    }
+
+    /// Whether the unit is code that only a test build has.
+    pub fn is_test(&self) -> bool {
+        self.part
+            .as_ref()
+            .is_some_and(|part| part.kind == Some(parts::Kind::Test))
+    }
+
+    /// The name of the part of the file, when it is one.
+    pub fn part_name(&self) -> Option<&str> {
+        self.part.as_ref().map(|part| part.name.as_str())
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The path with `/` separators, as components and rules read it.
+    pub fn key(&self) -> String {
+        crate::scan::slash(&self.path)
+    }
+}
+
+impl From<PathBuf> for Unit {
+    fn from(path: PathBuf) -> Self {
+        Self { path, part: None }
+    }
+}
+
+impl From<&Path> for Unit {
+    fn from(path: &Path) -> Self {
+        Self {
+            path: path.into(),
+            part: None,
+        }
+    }
+}
+
+impl From<&str> for Unit {
+    fn from(path: &str) -> Self {
+        Self {
+            path: path.into(),
+            part: None,
+        }
+    }
+}
+
 /// Where an import points to after resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    /// A file or package directory inside the project, relative to the root.
-    Internal(PathBuf),
+    /// A file or package directory inside the project.
+    Internal(Unit),
     /// A third-party or standard-library module.
     External(String),
 }

@@ -1,0 +1,13 @@
+version: 1
+
+components:
+  store: { in: src/store }
+  kit: { in: testkit/src }
+
+tests: auto
+
+rules:
+  store: { may_depend_on: [] }
+  tests:
+    may_depend_on: [store, kit]
+    because: unit tests may use the test kit

@@ -75,6 +75,13 @@
         }
       ]
     },
+    "forbid_symbol": {
+      "description": "Names that no checked file may use, components and files that belong to none alike, as `package.Name` or `import/path.Name`. A component's own `forbid_symbol` adds to it. An item may carry its own reason.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Listed"
+      }
+    },
     "go": {
       "description": "How the Go indexer builds the project.",
       "allOf": [
@@ -100,6 +107,19 @@
       "allOf": [
         {
           "$ref": "#/definitions/NoCycles"
+        }
+      ]
+    },
+    "packages": {
+      "description": "Manifests are checked files: each dependency a `Cargo.toml`, `package.json` or `go.mod` declares is a dependency of the component that owns it, on a package of the project or on an external module, so the rules apply to it. A dev-dependency is test code, which `tests: auto` takes. Other manifests are not read yet.",
+      "type": "boolean",
+      "default": false
+    },
+    "reach": {
+      "description": "What `must_not_reach` follows: `files` (the default) takes an import for everything its file imports; `symbols` follows the definitions a call references, so calling one pure method does not reach what another method of its file uses. A file the index gave no ranges keeps reaching as a whole.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Reach"
         }
       ]
     },
@@ -335,6 +355,14 @@
           ],
           "default": null
         },
+        "part": {
+          "description": "With `packages`, the part of the files `in` matches that the component owns, as the language or manifest names it: `feature/fake` for the Cargo feature `fake`. The file itself stays with the component that has no `part`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
         "priority": {
           "description": "Which component wins when several match a file: the higher priority, then the longer pattern. Default 0.",
           "type": "integer",
@@ -529,6 +557,14 @@
           },
           "minItems": 1
         }
+      ]
+    },
+    "Reach": {
+      "description": "What a chain of `must_not_reach` follows.",
+      "type": "string",
+      "enum": [
+        "files",
+        "symbols"
       ]
     },
     "Reasoned": {

@@ -206,12 +206,12 @@ impl Adapter for Kotlin {
         if specifier.ends_with(".*")
             && let Some(dir) = self.packages.get(name).and_then(|d| d.first())
         {
-            return Target::Internal(dir.clone());
+            return Target::Internal(dir.clone().into());
         }
         let parts: Vec<&str> = name.split('.').collect();
         for k in (1..=parts.len()).rev() {
             if let Some(file) = self.declarations.get(&parts[..k].join(".")) {
-                return Target::Internal(file.clone());
+                return Target::Internal(file.clone().into());
             }
         }
         Target::External(specifier.to_string())
