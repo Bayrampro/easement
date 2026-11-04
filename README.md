@@ -855,7 +855,7 @@ Using both is reasonable: keep a language-specific tool for the deep rules of on
 
 ## Development
 
-Tools are pinned in `mise.toml`: `mise install`, `mise run setup` for the git hooks, then `mise run check` (every lint, the same set CI runs) and `cargo test`. Commits follow Conventional Commits; releases are cut by merging the release-please pull request.
+Tools are pinned in `mise.toml`: `mise install`, `mise run setup` for the git hooks, then `mise run check` (every lint, the same set CI runs) and `cargo test`. Commits follow Conventional Commits; releases are cut by merging the release-please pull request. Before proposing a new language, rule or config key, read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
