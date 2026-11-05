@@ -306,6 +306,8 @@ pub struct Report<'a> {
     pub stats: &'a Stats,
     pub coverage: &'a Coverage,
     pub changes: Option<&'a Changes>,
+    /// `--require-evidence`: an evidence gap fails a run without violations.
+    pub require_evidence: bool,
 }
 
 /// How many uncovered files the text report names before it counts the rest.
@@ -343,14 +345,23 @@ fn file_lines(files: &[String], indent: &str) -> String {
 
 /// The evidence gaps, each with how to close it and its files, then the
 /// accepted gaps, each with its reason and files.
-fn gap_lines(coverage: &Coverage, color: bool) -> String {
+/// Under `--require-evidence` the gaps fail the run, and their heading says so.
+fn gap_lines(coverage: &Coverage, required: bool, color: bool) -> String {
     let mut out = String::new();
     if !coverage.evidence_gaps.is_empty() {
-        out.push_str(&paint(
-            color,
-            YELLOW,
-            "Evidence gaps (a pass says nothing about this code):",
-        ));
+        out.push_str(&if required {
+            paint(
+                color,
+                RED,
+                "Evidence required (`--require-evidence`), but the check could not read or judge this code:",
+            )
+        } else {
+            paint(
+                color,
+                YELLOW,
+                "Evidence gaps (a pass says nothing about this code):",
+            )
+        });
         out.push('\n');
         for gap in &coverage.evidence_gaps {
             out.push_str(&format!("  {}\n", paint(color, YELLOW, &gap.message)));
@@ -398,6 +409,18 @@ fn violation_lines(v: &Violation, owner: Option<&str>, tag: Style, color: bool) 
 }
 
 impl Report<'_> {
+    /// Whether `--require-evidence` fails the run: it has an evidence gap.
+    /// Violations and stale entries fail it first.
+    pub fn evidence_required(self) -> bool {
+        self.require_evidence && !self.coverage.evidence_gaps.is_empty()
+    }
+
+    /// Whether the run passes: no violations, no stale entries, and the
+    /// evidence `--require-evidence` asks for.
+    pub fn passed(self) -> bool {
+        self.verdict.passed() && !self.evidence_required()
+    }
+
     /// The report as data.
     pub fn json(self) -> String {
         let Report {
@@ -405,9 +428,10 @@ impl Report<'_> {
             stats,
             coverage,
             changes,
+            require_evidence: _,
         } = self;
         let report = JsonReport {
-            passed: verdict.passed(),
+            passed: self.passed(),
             violations: &verdict.new,
             warnings: &verdict.warnings,
             owners: &verdict.owners,
@@ -443,6 +467,7 @@ impl Report<'_> {
             stats,
             coverage,
             changes,
+            require_evidence: _,
         } = self;
         let mut out = String::new();
         if let Some(c) = changes {
@@ -512,7 +537,7 @@ impl Report<'_> {
                 out.push('\n');
             }
         }
-        let gaps = gap_lines(coverage, color);
+        let gaps = gap_lines(coverage, self.evidence_required(), color);
         if !gaps.is_empty() {
             if !out.is_empty() {
                 out.push('\n');
@@ -529,7 +554,7 @@ impl Report<'_> {
         if !out.is_empty() {
             out.push('\n');
         }
-        let status = if verdict.passed() {
+        let status = if self.passed() {
             paint(color, GREEN, "passed")
         } else {
             paint(color, RED, "failed")
@@ -669,6 +694,7 @@ impl Report<'_> {
             stats,
             coverage,
             changes: _,
+            require_evidence: _,
         } = self;
         let mut out = String::new();
         for (level, v) in verdict.reported() {
@@ -708,10 +734,15 @@ impl Report<'_> {
             .narrowed_reasons()
             .into_iter()
             .map(|reason| ("notice", reason));
+        let gap_level = if self.evidence_required() {
+            "error"
+        } else {
+            "warning"
+        };
         let gaps = coverage
             .evidence_gaps
             .iter()
-            .map(|gap| ("warning", gap.message.clone()));
+            .map(|gap| (gap_level, gap.message.clone()));
         for (level, reason) in narrowed.chain(gaps) {
             out.push_str(&format!(
                 "::{level} title={}::{}\n",
@@ -845,6 +876,7 @@ mod tests {
             stats: &Stats::default(),
             coverage: &Coverage::default(),
             changes: None,
+            require_evidence: false,
         }
         .github();
         assert!(out.starts_with(
@@ -883,6 +915,7 @@ mod tests {
                 stats: &stats,
                 coverage: &Coverage::default(),
                 changes: None,
+                require_evidence: false,
             }
             .json(),
         )
@@ -897,6 +930,7 @@ mod tests {
             stats: &stats,
             coverage: &Coverage::default(),
             changes: None,
+            require_evidence: false,
         }
         .text();
         assert!(out.contains(cached), "{out}");
@@ -907,6 +941,7 @@ mod tests {
                 stats: &Stats::default(),
                 coverage: &Coverage::default(),
                 changes: None,
+                require_evidence: false,
             }
             .json(),
         )
@@ -917,7 +952,8 @@ mod tests {
                 verdict: &verdict(),
                 stats: &Stats::default(),
                 coverage: &Coverage::default(),
-                changes: None
+                changes: None,
+                require_evidence: false,
             }
             .text()
             .contains("--no-cache")
@@ -942,6 +978,7 @@ mod tests {
             stats: &Stats::default(),
             coverage: &coverage,
             changes: None,
+            require_evidence: false,
         }
         .text();
         assert!(
@@ -980,6 +1017,53 @@ mod tests {
     }
 
     #[test]
+    fn require_evidence_turns_the_gaps_of_a_clean_run_into_errors() {
+        let clean = Verdict {
+            new: vec![],
+            warnings: vec![],
+            owners: BTreeMap::new(),
+            stale: vec![],
+            legalized: 0,
+        };
+        let stats = Stats {
+            uncovered: vec!["tools/gen.go".into()],
+            ..Stats::default()
+        };
+        let coverage = Coverage::of_check(&stats, vec![], vec![]);
+        let report = |require_evidence| Report {
+            verdict: &clean,
+            stats: &stats,
+            coverage: &coverage,
+            changes: None,
+            require_evidence,
+        };
+        assert!(report(false).passed());
+        let github = report(false).github();
+        assert!(
+            github.contains("::warning title=easement partial::"),
+            "{github}"
+        );
+        assert!(github.contains("easement passed"), "{github}");
+
+        assert!(!report(true).passed());
+        let github = report(true).github();
+        assert!(
+            github.contains("::error title=easement partial::"),
+            "{github}"
+        );
+        assert!(github.contains("easement failed"), "{github}");
+        // Nothing to require of a run that reads everything.
+        let whole = Coverage::default();
+        assert!(
+            Report {
+                coverage: &whole,
+                ..report(true)
+            }
+            .passed()
+        );
+    }
+
+    #[test]
     fn github_says_why_a_verdict_is_partial_and_when_it_was_cached() {
         let stats = Stats {
             from_cache: 1,
@@ -991,6 +1075,7 @@ mod tests {
             stats: &stats,
             coverage: &Coverage::of_check(&stats, vec![], vec![]),
             changes: None,
+            require_evidence: false,
         }
         .github();
         assert!(
@@ -1010,7 +1095,8 @@ mod tests {
                 verdict: &verdict(),
                 stats: &Stats::default(),
                 coverage: &Coverage::default(),
-                changes: None
+                changes: None,
+                require_evidence: false,
             }
             .github()
             .contains("::warning")
@@ -1027,6 +1113,7 @@ mod tests {
             stats: &Stats::default(),
             coverage: &narrowed,
             changes: None,
+            require_evidence: false,
         }
         .github();
         assert!(

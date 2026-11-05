@@ -17,7 +17,7 @@ Run `easement explain <path>` for the file or directory you are about to add or 
 
 ## After changing code
 
-Run `easement check`. It exits 0 when the code matches the config, 1 on violations and 2 on an error.
+Run `easement check`. It exits 0 when the code matches the config, 1 on violations and 2 on an error. With `--require-evidence` it exits 4 when there are no violations but the check could not read or judge some code (`evidence_gaps`): close each gap as its `close` says, or ask a human to accept it in `uncovered_ok`.
 
 - On a branch, `easement check --diff <base>` judges only the lines you added. Run the full `easement check` too when `easement.yml` or the baseline changed, because a rule change touches no import line.
 - `--format json` gives the same report as data. `narrowed` lists what you asked to judge alone (`--diff`, `--component`, `--scope`). `evidence_gaps` lists code the check could not read or judge, each with its files and how to close it: a pass says nothing about that code, so say so and name the files. `accepted_gaps` lists files `uncovered_ok` accepts, with its reason: they are unread too, but by decision. When `cached` is set, the indexes came from the cache; after changing dependencies outside the project without a lock file, run `easement check --no-cache`.

@@ -60,7 +60,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Check the project. Exit code 0: passed, 1: violations, 2: error.
+    /// Check the project. Exit code 0: passed, 1: violations, 2: error, 3: an
+    /// index not cached under `--cache-only`, 4: evidence required.
     Check {
         #[arg(long, short, default_value = config::DEFAULT_CONFIG)]
         config: PathBuf,
@@ -89,6 +90,11 @@ enum Command {
         /// cached. For CI, to set up an indexer's toolchain only when it has to run.
         #[arg(long)]
         cache_only: bool,
+        /// Fail a run without violations, with exit code 4, when its verdict rests
+        /// on an evidence gap: code the check could not read or judge. Narrowing
+        /// (`--diff`, `--component`, `--scope`), `uncovered_ok` and the cache never do.
+        #[arg(long)]
+        require_evidence: bool,
     },
     /// Record current violations as legalized debt in the baseline file. Once
     /// the file exists, it only shrinks: new violations are listed, not written.
@@ -387,9 +393,29 @@ struct CheckOptions {
     paths: Vec<String>,
     index_cache: indexer::CacheUse,
     jobs: indexer::Jobs,
+    require_evidence: bool,
 }
 
-fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
+/// How a command ends, which its exit code says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Passed,
+    Failed,
+    /// No violations, but `--require-evidence` and an evidence gap.
+    EvidenceRequired,
+}
+
+impl From<bool> for Outcome {
+    fn from(passed: bool) -> Self {
+        if passed {
+            Outcome::Passed
+        } else {
+            Outcome::Failed
+        }
+    }
+}
+
+fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<Outcome> {
     let project = Project::open(&options.config)?;
     let scope = scope::Scope::new(&project.config, &options.components, &options.paths)?;
     let Analysis {
@@ -447,6 +473,7 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
         stats: &stats,
         coverage: &coverage,
         changes,
+        require_evidence: options.require_evidence,
     };
     match options.format {
         Format::Text => anstream::print!("{}", report.colored()),
@@ -455,7 +482,13 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
         Format::Github => print!("{}", report.github()),
         Format::Junit => print!("{}", report::junit(&verdict)),
     }
-    Ok(verdict.passed())
+    Ok(if !verdict.passed() {
+        Outcome::Failed
+    } else if report.evidence_required() {
+        Outcome::EvidenceRequired
+    } else {
+        Outcome::Passed
+    })
 }
 
 /// Runs the check, then again after every change of the project. Never returns
@@ -482,7 +515,7 @@ fn watch(options: &CheckOptions) -> Result<bool> {
     }
 }
 
-fn run(cli: Cli) -> Result<bool> {
+fn run(cli: Cli) -> Result<Outcome> {
     let jobs = cli.jobs;
     let fresh = || scan::Cache::new(indexer::CacheUse::default(), jobs);
     match cli.command {
@@ -496,6 +529,7 @@ fn run(cli: Cli) -> Result<bool> {
             scope,
             no_cache,
             cache_only,
+            require_evidence,
         } => {
             let index_cache = if no_cache {
                 indexer::CacheUse::Off
@@ -513,15 +547,16 @@ fn run(cli: Cli) -> Result<bool> {
                 paths: scope,
                 index_cache,
                 jobs,
+                require_evidence,
             };
-            if watching {
-                watch(&options)
+            return if watching {
+                watch(&options).map(Outcome::from)
             } else {
                 check(
                     &options,
                     &mut scan::Cache::new(options.index_cache, options.jobs),
                 )
-            }
+            };
         }
         Command::Baseline { config, accept_new } => {
             let project = Project::open(&config)?;
@@ -712,7 +747,7 @@ fn run(cli: Cli) -> Result<bool> {
                 }
                 let name = config.to_string_lossy().replace('\\', "/");
                 print!("{}", patch::unified_diff(&name, &text, &new));
-                return Ok(true);
+                return Ok(Outcome::Passed);
             }
             print!(
                 "{}",
@@ -764,6 +799,7 @@ fn run(cli: Cli) -> Result<bool> {
             Ok(true)
         }
     }
+    .map(Outcome::from)
 }
 
 fn main() -> ExitCode {
@@ -774,8 +810,9 @@ fn main() -> ExitCode {
         ColorChoice::Never => anstream::ColorChoice::Never,
     });
     match run(cli) {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::from(1),
+        Ok(Outcome::Passed) => ExitCode::SUCCESS,
+        Ok(Outcome::Failed) => ExitCode::from(1),
+        Ok(Outcome::EvidenceRequired) => ExitCode::from(4),
         Err(err) => {
             let red = anstyle::AnsiColor::Red.on_default().bold();
             anstream::eprintln!("easement: {red}error{red:#}: {err:#}");

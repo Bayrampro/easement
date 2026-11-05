@@ -2386,6 +2386,81 @@ uncovered_ok:
     );
 }
 
+/// `--require-evidence` fails a pass that rests on code the check could not read,
+/// with exit code 4; a gap accepted in `uncovered_ok` does not count.
+#[test]
+fn require_evidence_fails_a_pass_with_an_evidence_gap() {
+    let (_tmp, root) = fixture("uncovered");
+    let out = easement(&root, &["check", "--require-evidence"]).code(4);
+    let text = stdout_of(out);
+    assert!(text.contains("Evidence required"), "{text}");
+    assert!(text.contains("    tools/gen.go"), "{text}");
+    assert!(text.contains("easement failed"), "{text}");
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--require-evidence", "--format", "json"]).code(4),
+    ))
+    .unwrap();
+    assert_eq!(report["passed"], false);
+    assert_eq!(report["evidence_gaps"][0]["kind"], "uncovered");
+    // Without the flag the same run passes, as before.
+    easement(&root, &["check"]).success();
+
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        format!("{config}uncovered_ok:\n  - {{ name: tools/**, because: build helpers }}\n"),
+    )
+    .unwrap();
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--require-evidence", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(report["passed"], true);
+    assert_eq!(
+        report["accepted_gaps"][0]["files"],
+        serde_json::json!(["tools/gen.go", "tools/other.go"])
+    );
+}
+
+/// A narrowed run reads the whole project all the same, so `--diff` alone is no
+/// reason to fail; that is the combination CI is meant to run.
+#[test]
+fn require_evidence_passes_a_narrowed_run_without_gaps() {
+    let (_tmp, root) = fixture("go");
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-q", "-m", "base"]);
+    easement(&root, &["check", "--diff", "main", "--require-evidence"]).success();
+}
+
+/// Violations come before missing evidence: such a run exits 1, not 4.
+#[test]
+fn require_evidence_leaves_a_run_with_violations_at_exit_code_1() {
+    let (_tmp, root) = project(&[
+        ("go.mod", "module example.com/m\n\ngo 1.22\n"),
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  app: { in: app }\n  lib: { in: lib }\n",
+        ),
+        (
+            "app/main.go",
+            "package app\n\nimport \"example.com/m/lib\"\n\nfunc Run() { lib.L() }\n",
+        ),
+        // Built only with the `race` tag: no indexer reads it.
+        ("app/race.go", "//go:build race\n\npackage app\n"),
+        ("lib/lib.go", "package lib\n\nfunc L() {}\n"),
+    ]);
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--require-evidence", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    assert_eq!(report["violations"][0]["rule"], "dependency", "{report}");
+    assert_eq!(
+        report["evidence_gaps"][0]["files"],
+        serde_json::json!(["app/race.go"])
+    );
+}
+
 /// What the text report says of evidence gaps and accepted gaps is read by
 /// agents as much as the JSON, so it is pinned too.
 #[test]

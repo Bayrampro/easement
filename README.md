@@ -106,7 +106,7 @@ internal/handlers/books.go:6: handlers -> repository is not allowed (imports int
 easement failed: 1 violation(s), 0 stale, 0 legalized; 5 files, 6 internal deps, 1 files outside components
 ```
 
-It exits 0 when the code matches the config, 1 on violations and 2 on an error (a broken config, a missing indexer). Fix the import (or, if it is right, the rule) and run it again.
+It exits 0 when the code matches the config, 1 on violations and 2 on an error (a broken config, a missing indexer); 3 and 4 come from `--cache-only` and `--require-evidence`. Fix the import (or, if it is right, the rule) and run it again.
 
 The commands you will use most:
 
@@ -782,6 +782,8 @@ For TypeScript a file is covered when a `tsconfig.json` includes it, so generate
 Those files are named in the text report under `Evidence gaps` (the first twenty; all of them in `--format json`, `evidence_gaps` and `stats.uncovered`).
 
 A report of `check` or `impact` says what its verdict leaves out in three lists. `narrowed` holds the parts a run judges by request, each with its `kind` (`diff`, `component`, `scope`) and what it is `limited_to`: `passed` then says nothing about the rest of the project. `evidence_gaps` holds code or facts the check could not read or judge, each with its `kind` (`uncovered`, `naming_unseen`, `std_unknown`, `manifests`, `parts`, `packages`, `symbols`, `unused`, and `deleted` for `impact`), its `files` and `count` or `extensions` where they are known, a `message` and how to `close` it: a green verdict covers only the code an indexer read, and whoever acts on it has to treat the rest as unchecked. `accepted_gaps` holds the files `uncovered_ok` accepts, by entry, with its `because`. The JSON report also says `"confidence": "partial"`, with the reasons in `confidence_reasons`, when a run is narrowed or has an evidence gap. Cache provenance (`cached`) is reported apart: a cache hit is not a gap.
+
+`check --require-evidence` makes an evidence gap fail the run: a run without violations or stale entries exits 4 when it has one, says `passed: false` in JSON, and prints the gaps under `Evidence required` (as errors on GitHub). Narrowing never triggers it, so `--diff --require-evidence` is the combination for CI; neither do accepted gaps nor a cache hit. Every gap counts, not only those in the changed files, since an unread file can hide a cycle or a chain of imports through the changed lines: accept a deliberate one in `uncovered_ok`. Violations come first: a run with both exits 1.
 
 Files that are meant to stay outside an indexer (build helpers, generated code) are accepted with `uncovered_ok`, each with the reason. They then no longer count against the verdict of `check`, and `check` lists them under `accepted_gaps` instead of `evidence_gaps`. No indexer read their imports all the same, so `suggest`, `impact`, `why` and `baseline` stay as careful about them as about any uncovered file: `impact` lists them under `accepted_gaps` with the reason, and also under its `uncovered` evidence gap, since dependents through them may be missing:
 
