@@ -6,10 +6,10 @@ use serde::Serialize;
 use crate::check::{
     NO_COMPONENT, Unjudged, Violation, describe_chain, file_graph, reach, shortest_chain,
 };
-use crate::components::ComponentMap;
+use crate::components::{AcceptedGap, ComponentMap};
 use crate::config::Config;
 use crate::decision::{self, Refusal};
-use crate::report::{self, AcceptedGap, Confidence, Coverage, EvidenceGap, GapKind};
+use crate::report::{self, Confidence, Coverage, EvidenceGap, GapKind};
 use crate::scan::Dep;
 
 /// What depends on a set of files, directly or through other files.

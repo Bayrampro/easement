@@ -5,8 +5,7 @@ use std::collections::BTreeMap;
 
 use crate::baseline::Verdict;
 use crate::check::{Key, RuleId, Stats, Unjudged, Violation};
-use crate::components::ComponentMap;
-use crate::config::Config;
+use crate::components::AcceptedGap;
 use crate::diff::Changes;
 
 #[derive(Serialize)]
@@ -118,16 +117,6 @@ pub enum GapKind {
     Deleted,
 }
 
-/// The files no indexer read that one `uncovered_ok` entry accepts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct AcceptedGap {
-    /// The globs of the entry.
-    pub uncovered_ok: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub because: Option<String>,
-    pub files: Vec<String>,
-}
-
 /// The parts that `--diff`, `--component` and `--scope` narrow a check to.
 pub fn narrowed(
     changes: Option<&Changes>,
@@ -155,37 +144,6 @@ pub fn limited_to(narrowed: &[Narrowing]) -> Vec<String> {
             NarrowingKind::Diff => None,
             NarrowingKind::Component => Some(format!("component {}", n.limited_to)),
             NarrowingKind::Scope => Some(format!("path {}", n.limited_to)),
-        })
-        .collect()
-}
-
-/// The `uncovered_ok` entries that accept some of the `unread` files, each with
-/// the files it accepts; an entry that accepts none of them is no gap.
-pub fn accepted_gaps<'a>(
-    config: &Config,
-    map: &ComponentMap,
-    unread: impl IntoIterator<Item = &'a String>,
-) -> Vec<AcceptedGap> {
-    let mut by_entry: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    for file in unread {
-        if let Some(entry) = map.uncovered_ok_entry(file) {
-            by_entry.entry(entry).or_default().push(file.clone());
-        }
-    }
-    by_entry
-        .into_iter()
-        .map(|(entry, mut files)| {
-            files.sort();
-            let accepted = &config.uncovered_ok[entry];
-            AcceptedGap {
-                uncovered_ok: accepted
-                    .patterns()
-                    .into_iter()
-                    .map(str::to_string)
-                    .collect(),
-                because: accepted.because().map(str::to_string),
-                files,
-            }
         })
         .collect()
 }
@@ -340,30 +298,14 @@ pub fn cache_note(stats: &Stats) -> Option<String> {
     })
 }
 
-pub fn json(
-    verdict: &Verdict,
-    stats: &Stats,
-    coverage: &Coverage,
-    changes: Option<&Changes>,
-) -> String {
-    let report = JsonReport {
-        passed: verdict.passed(),
-        violations: &verdict.new,
-        warnings: &verdict.warnings,
-        owners: &verdict.owners,
-        stale: &verdict.stale,
-        legalized: verdict.legalized,
-        confidence: coverage.confidence(),
-        confidence_reasons: coverage.reasons(),
-        coverage,
-        cached: cache_note(stats),
-        diff: changes.map(|c| DiffInfo {
-            base: &c.base,
-            merge_base: &c.merge_base,
-        }),
-        stats,
-    };
-    serde_json::to_string_pretty(&report).expect("report serializes")
+/// What a run of the check says: its verdict, what it saw, what it leaves out
+/// and, in diff mode, the change it judged.
+#[derive(Clone, Copy)]
+pub struct Report<'a> {
+    pub verdict: &'a Verdict,
+    pub stats: &'a Stats,
+    pub coverage: &'a Coverage,
+    pub changes: Option<&'a Changes>,
 }
 
 /// How many uncovered files the text report names before it counts the rest.
@@ -382,27 +324,6 @@ fn paint(color: bool, style: Style, text: &str) -> String {
     } else {
         text.to_string()
     }
-}
-
-/// The plain text report.
-pub fn text(
-    verdict: &Verdict,
-    stats: &Stats,
-    coverage: &Coverage,
-    changes: Option<&Changes>,
-) -> String {
-    render(verdict, stats, coverage, changes, false)
-}
-
-/// The text report with ANSI styles; the caller strips them where the output
-/// is not a terminal.
-pub fn colored(
-    verdict: &Verdict,
-    stats: &Stats,
-    coverage: &Coverage,
-    changes: Option<&Changes>,
-) -> String {
-    render(verdict, stats, coverage, changes, true)
 }
 
 /// The first files of a list, one per line under `indent`, and how many more.
@@ -476,109 +397,149 @@ fn violation_lines(v: &Violation, owner: Option<&str>, tag: Style, color: bool) 
     out
 }
 
-fn render(
-    verdict: &Verdict,
-    stats: &Stats,
-    coverage: &Coverage,
-    changes: Option<&Changes>,
-    color: bool,
-) -> String {
-    let mut out = String::new();
-    if let Some(c) = changes {
-        let short = &c.merge_base[..c.merge_base.len().min(12)];
-        out.push_str(&format!(
-            "Checking lines changed since {} (merge-base {short})\n\n",
-            c.base
-        ));
+impl Report<'_> {
+    /// The report as data.
+    pub fn json(self) -> String {
+        let Report {
+            verdict,
+            stats,
+            coverage,
+            changes,
+        } = self;
+        let report = JsonReport {
+            passed: verdict.passed(),
+            violations: &verdict.new,
+            warnings: &verdict.warnings,
+            owners: &verdict.owners,
+            stale: &verdict.stale,
+            legalized: verdict.legalized,
+            confidence: coverage.confidence(),
+            confidence_reasons: coverage.reasons(),
+            coverage,
+            cached: cache_note(stats),
+            diff: changes.map(|c| DiffInfo {
+                base: &c.base,
+                merge_base: &c.merge_base,
+            }),
+            stats,
+        };
+        serde_json::to_string_pretty(&report).expect("report serializes")
     }
-    for v in &verdict.new {
-        out.push_str(&violation_lines(
-            v,
-            verdict.owner_of(v).as_deref(),
-            RED,
-            color,
-        ));
+
+    /// The plain text report.
+    pub fn text(self) -> String {
+        self.render(false)
     }
-    if !verdict.warnings.is_empty() {
-        if !out.is_empty() {
-            out.push('\n');
+
+    /// The text report with ANSI styles; the caller strips them where the output
+    /// is not a terminal.
+    pub fn colored(self) -> String {
+        self.render(true)
+    }
+
+    fn render(self, color: bool) -> String {
+        let Report {
+            verdict,
+            stats,
+            coverage,
+            changes,
+        } = self;
+        let mut out = String::new();
+        if let Some(c) = changes {
+            let short = &c.merge_base[..c.merge_base.len().min(12)];
+            out.push_str(&format!(
+                "Checking lines changed since {} (merge-base {short})\n\n",
+                c.base
+            ));
         }
-        out.push_str(&paint(
-            color,
-            YELLOW,
-            "Warnings (rules in `warn`; do not add more):",
-        ));
-        out.push('\n');
-        for v in &verdict.warnings {
+        for v in &verdict.new {
             out.push_str(&violation_lines(
                 v,
                 verdict.owner_of(v).as_deref(),
-                YELLOW,
+                RED,
                 color,
             ));
         }
-    }
-    if !verdict.stale.is_empty() {
+        if !verdict.warnings.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&paint(
+                color,
+                YELLOW,
+                "Warnings (rules in `warn`; do not add more):",
+            ));
+            out.push('\n');
+            for v in &verdict.warnings {
+                out.push_str(&violation_lines(
+                    v,
+                    verdict.owner_of(v).as_deref(),
+                    YELLOW,
+                    color,
+                ));
+            }
+        }
+        if !verdict.stale.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&paint(
+                color,
+                YELLOW,
+                "Stale baseline entries (fixed, run `easement baseline` to shrink it):",
+            ));
+            out.push('\n');
+            for k in &verdict.stale {
+                let what = stale_description(k);
+                out.push_str(&format!("  [{}] {what}\n", k.rule.as_str()));
+            }
+        }
+        if !stats.new_dependencies.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("New dependencies between components in this change:\n");
+            for d in &stats.new_dependencies {
+                out.push_str(&format!("  {d}\n"));
+            }
+        }
+        if !stats.symbols_unmatched.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            for note in &stats.symbols_unmatched {
+                out.push_str(&paint(color, YELLOW, note));
+                out.push('\n');
+            }
+        }
+        let gaps = gap_lines(coverage, color);
+        if !gaps.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&gaps);
+        }
+        if let Some(note) = cache_note(stats) {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&note);
+            out.push('\n');
+        }
         if !out.is_empty() {
             out.push('\n');
         }
-        out.push_str(&paint(
-            color,
-            YELLOW,
-            "Stale baseline entries (fixed, run `easement baseline` to shrink it):",
-        ));
-        out.push('\n');
-        for k in &verdict.stale {
-            let what = stale_description(k);
-            out.push_str(&format!("  [{}] {what}\n", k.rule.as_str()));
-        }
-    }
-    if !stats.new_dependencies.is_empty() {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str("New dependencies between components in this change:\n");
-        for d in &stats.new_dependencies {
-            out.push_str(&format!("  {d}\n"));
-        }
-    }
-    if !stats.symbols_unmatched.is_empty() {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        for note in &stats.symbols_unmatched {
-            out.push_str(&paint(color, YELLOW, note));
-            out.push('\n');
-        }
-    }
-    let gaps = gap_lines(coverage, color);
-    if !gaps.is_empty() {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(&gaps);
-    }
-    if let Some(note) = cache_note(stats) {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(&note);
-        out.push('\n');
-    }
-    if !out.is_empty() {
-        out.push('\n');
-    }
-    let status = if verdict.passed() {
-        paint(color, GREEN, "passed")
-    } else {
-        paint(color, RED, "failed")
-    };
-    let warnings = if verdict.warnings.is_empty() {
-        String::new()
-    } else {
-        format!(", {} warning(s)", verdict.warnings.len())
-    };
-    out.push_str(&format!(
+        let status = if verdict.passed() {
+            paint(color, GREEN, "passed")
+        } else {
+            paint(color, RED, "failed")
+        };
+        let warnings = if verdict.warnings.is_empty() {
+            String::new()
+        } else {
+            format!(", {} warning(s)", verdict.warnings.len())
+        };
+        out.push_str(&format!(
         "easement {status}: {} violation(s), {} stale, {} legalized{warnings}; {} files, {} internal deps",
         verdict.new.len(),
         verdict.stale.len(),
@@ -586,26 +547,27 @@ fn render(
         stats.files,
         stats.internal_deps,
     ));
-    if !stats.limited_to.is_empty() {
-        out.push_str(&format!(", limited to {}", stats.limited_to.join(", ")));
+        if !stats.limited_to.is_empty() {
+            out.push_str(&format!(", limited to {}", stats.limited_to.join(", ")));
+        }
+        if stats.suppressed > 0 {
+            out.push_str(&format!(", {} suppressed", stats.suppressed));
+        }
+        if !stats.uncovered.is_empty() {
+            out.push_str(&format!(
+                ", {} files not covered by an indexer",
+                stats.uncovered.len()
+            ));
+        }
+        if stats.unmapped_files > 0 {
+            out.push_str(&format!(
+                ", {} files outside components",
+                stats.unmapped_files
+            ));
+        }
+        out.push('\n');
+        out
     }
-    if stats.suppressed > 0 {
-        out.push_str(&format!(", {} suppressed", stats.suppressed));
-    }
-    if !stats.uncovered.is_empty() {
-        out.push_str(&format!(
-            ", {} files not covered by an indexer",
-            stats.uncovered.len()
-        ));
-    }
-    if stats.unmapped_files > 0 {
-        out.push_str(&format!(
-            ", {} files outside components",
-            stats.unmapped_files
-        ));
-    }
-    out.push('\n');
-    out
 }
 
 fn stale_description(k: &Key) -> String {
@@ -699,76 +661,80 @@ fn escape_property(text: &str) -> String {
     escape_command(text).replace(':', "%3A").replace(',', "%2C")
 }
 
-/// GitHub Actions workflow commands: annotations on the changed files.
-pub fn github(
-    verdict: &Verdict,
-    stats: &Stats,
-    coverage: &Coverage,
-    changes: Option<&Changes>,
-) -> String {
-    let mut out = String::new();
-    for (level, v) in verdict.reported() {
-        let mut text = match &v.because {
-            Some(because) => format!("{} (because: {because})", v.message),
-            None => v.message.clone(),
-        };
-        if let Some(owner) = verdict.owner_of(v) {
-            text.push_str(&format!(" (owner: {owner})"));
+impl Report<'_> {
+    /// GitHub Actions workflow commands: annotations on the changed files.
+    pub fn github(self) -> String {
+        let Report {
+            verdict,
+            stats,
+            coverage,
+            changes: _,
+        } = self;
+        let mut out = String::new();
+        for (level, v) in verdict.reported() {
+            let mut text = match &v.because {
+                Some(because) => format!("{} (because: {because})", v.message),
+                None => v.message.clone(),
+            };
+            if let Some(owner) = verdict.owner_of(v) {
+                text.push_str(&format!(" (owner: {owner})"));
+            }
+            out.push_str(&format!(
+                "::{level} file={},line={},title={}::{}\n",
+                escape_property(&v.file),
+                v.line,
+                escape_property(&format!("easement {}", v.rule.as_str())),
+                escape_command(&text)
+            ));
         }
-        out.push_str(&format!(
-            "::{level} file={},line={},title={}::{}\n",
-            escape_property(&v.file),
-            v.line,
-            escape_property(&format!("easement {}", v.rule.as_str())),
-            escape_command(&text)
-        ));
+        for k in &verdict.stale {
+            out.push_str(&format!(
+                "::error title={}::{}\n",
+                escape_property(&format!("easement {STALE}")),
+                escape_command(&stale_message(k))
+            ));
+        }
+        if !stats.new_dependencies.is_empty() {
+            out.push_str(&format!(
+                "::notice title={}::{}\n",
+                escape_property("easement graph"),
+                escape_command(&format!(
+                    "New component dependencies in this change: {}",
+                    stats.new_dependencies.join(", ")
+                ))
+            ));
+        }
+        let narrowed = coverage
+            .narrowed_reasons()
+            .into_iter()
+            .map(|reason| ("notice", reason));
+        let gaps = coverage
+            .evidence_gaps
+            .iter()
+            .map(|gap| ("warning", gap.message.clone()));
+        for (level, reason) in narrowed.chain(gaps) {
+            out.push_str(&format!(
+                "::{level} title={}::{}\n",
+                escape_property("easement partial"),
+                escape_command(&reason)
+            ));
+        }
+        if let Some(note) = cache_note(stats) {
+            out.push_str(&format!(
+                "::notice title={}::{}\n",
+                escape_property("easement cache"),
+                escape_command(&note)
+            ));
+        }
+        out.push_str(
+            &self
+                .text()
+                .lines()
+                .last()
+                .map_or_else(String::new, |l| format!("{l}\n")),
+        );
+        out
     }
-    for k in &verdict.stale {
-        out.push_str(&format!(
-            "::error title={}::{}\n",
-            escape_property(&format!("easement {STALE}")),
-            escape_command(&stale_message(k))
-        ));
-    }
-    if !stats.new_dependencies.is_empty() {
-        out.push_str(&format!(
-            "::notice title={}::{}\n",
-            escape_property("easement graph"),
-            escape_command(&format!(
-                "New component dependencies in this change: {}",
-                stats.new_dependencies.join(", ")
-            ))
-        ));
-    }
-    let narrowed = coverage
-        .narrowed_reasons()
-        .into_iter()
-        .map(|reason| ("notice", reason));
-    let gaps = coverage
-        .evidence_gaps
-        .iter()
-        .map(|gap| ("warning", gap.message.clone()));
-    for (level, reason) in narrowed.chain(gaps) {
-        out.push_str(&format!(
-            "::{level} title={}::{}\n",
-            escape_property("easement partial"),
-            escape_command(&reason)
-        ));
-    }
-    if let Some(note) = cache_note(stats) {
-        out.push_str(&format!(
-            "::notice title={}::{}\n",
-            escape_property("easement cache"),
-            escape_command(&note)
-        ));
-    }
-    out.push_str(
-        &text(verdict, stats, coverage, changes)
-            .lines()
-            .last()
-            .map_or_else(String::new, |l| format!("{l}\n")),
-    );
-    out
 }
 
 fn escape_xml(text: &str) -> String {
@@ -874,7 +840,13 @@ mod tests {
 
     #[test]
     fn github_annotations_are_escaped() {
-        let out = github(&verdict(), &Stats::default(), &Coverage::default(), None);
+        let out = Report {
+            verdict: &verdict(),
+            stats: &Stats::default(),
+            coverage: &Coverage::default(),
+            changes: None,
+        }
+        .github();
         assert!(out.starts_with(
             "::error file=src/a.ts,line=3,title=easement dependency::a -> b is not allowed <x> 100%25 (because: layers)\n"
         ));
@@ -905,64 +877,73 @@ mod tests {
             from_cache: 2,
             ..Stats::default()
         };
-        let report: serde_json::Value =
-            serde_json::from_str(&json(&verdict(), &stats, &Coverage::default(), None)).unwrap();
+        let report: serde_json::Value = serde_json::from_str(
+            &Report {
+                verdict: &verdict(),
+                stats: &stats,
+                coverage: &Coverage::default(),
+                changes: None,
+            }
+            .json(),
+        )
+        .unwrap();
         let cached = report["cached"].as_str().unwrap();
         assert!(
             cached.contains("2 index(es)") && cached.contains("--no-cache"),
             "{cached}"
         );
-        let out = text(&verdict(), &stats, &Coverage::default(), None);
+        let out = Report {
+            verdict: &verdict(),
+            stats: &stats,
+            coverage: &Coverage::default(),
+            changes: None,
+        }
+        .text();
         assert!(out.contains(cached), "{out}");
 
-        let fresh: serde_json::Value = serde_json::from_str(&json(
-            &verdict(),
-            &Stats::default(),
-            &Coverage::default(),
-            None,
-        ))
+        let fresh: serde_json::Value = serde_json::from_str(
+            &Report {
+                verdict: &verdict(),
+                stats: &Stats::default(),
+                coverage: &Coverage::default(),
+                changes: None,
+            }
+            .json(),
+        )
         .unwrap();
         assert!(fresh.get("cached").is_none());
         assert!(
-            !text(&verdict(), &Stats::default(), &Coverage::default(), None).contains("--no-cache")
+            !Report {
+                verdict: &verdict(),
+                stats: &Stats::default(),
+                coverage: &Coverage::default(),
+                changes: None
+            }
+            .text()
+            .contains("--no-cache")
         );
     }
 
     #[test]
     fn an_accepted_gap_leaves_the_verdict_full_and_is_still_reported() {
-        let config: Config = serde_norway::from_str(
-            "version: 1
-components:
-  app: { in: app }
-uncovered_ok:
-  - { name: [gen/**, tools/**], because: generated }
-  - nothing/**
-  - tools/a.go
-",
-        )
-        .unwrap();
-        let map = ComponentMap::new(&config).unwrap();
-        let unread: Vec<String> = ["tools/a.go", "gen/b.go", "app/c.go"]
-            .map(String::from)
-            .into();
-        // A file two entries accept belongs to the first; an entry that
-        // accepts none of the files is no gap.
-        let accepted = accepted_gaps(&config, &map, &unread);
-        assert_eq!(
-            accepted,
-            [AcceptedGap {
-                uncovered_ok: vec!["gen/**".into(), "tools/**".into()],
-                because: Some("generated".into()),
-                files: vec!["gen/b.go".into(), "tools/a.go".into()],
-            }]
-        );
+        let accepted = vec![AcceptedGap {
+            uncovered_ok: vec!["gen/**".into(), "tools/**".into()],
+            because: Some("generated".into()),
+            files: vec!["gen/b.go".into(), "tools/a.go".into()],
+        }];
         let coverage = Coverage {
             accepted_gaps: accepted,
             ..Coverage::default()
         };
         assert_eq!(coverage.confidence(), Confidence::Full);
         assert!(coverage.reasons().is_empty());
-        let out = text(&verdict(), &Stats::default(), &coverage, None);
+        let out = Report {
+            verdict: &verdict(),
+            stats: &Stats::default(),
+            coverage: &coverage,
+            changes: None,
+        }
+        .text();
         assert!(
             out.contains("  gen/**, tools/** because: generated\n    gen/b.go\n    tools/a.go\n"),
             "{out}"
@@ -1005,12 +986,13 @@ uncovered_ok:
             uncovered: vec!["tools/gen.go".into()],
             ..Stats::default()
         };
-        let out = github(
-            &verdict(),
-            &stats,
-            &Coverage::of_check(&stats, vec![], vec![]),
-            None,
-        );
+        let out = Report {
+            verdict: &verdict(),
+            stats: &stats,
+            coverage: &Coverage::of_check(&stats, vec![], vec![]),
+            changes: None,
+        }
+        .github();
         assert!(
             out.contains(
                 "::warning title=easement partial::1 source files were not covered by an indexer"
@@ -1024,8 +1006,14 @@ uncovered_ok:
             "{out}"
         );
         assert!(
-            !github(&verdict(), &Stats::default(), &Coverage::default(), None)
-                .contains("::warning")
+            !Report {
+                verdict: &verdict(),
+                stats: &Stats::default(),
+                coverage: &Coverage::default(),
+                changes: None
+            }
+            .github()
+            .contains("::warning")
         );
 
         // A run narrowed by design is a notice: a warning on every pull request
@@ -1034,7 +1022,13 @@ uncovered_ok:
             narrowed: super::narrowed(None, &["web".into()], &[]),
             ..Coverage::default()
         };
-        let out = github(&verdict(), &Stats::default(), &narrowed, None);
+        let out = Report {
+            verdict: &verdict(),
+            stats: &Stats::default(),
+            coverage: &narrowed,
+            changes: None,
+        }
+        .github();
         assert!(
             out.contains("::notice title=easement partial::the report is limited to component web"),
             "{out}"

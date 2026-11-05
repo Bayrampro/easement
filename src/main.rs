@@ -328,11 +328,7 @@ impl Project {
             .filter(|f| scope.contains(&map, f) && !map.is_uncovered_ok(f))
             .cloned()
             .collect();
-        let accepted = report::accepted_gaps(
-            &self.config,
-            &map,
-            scan.uncovered.iter().filter(|f| scope.contains(&map, f)),
-        );
+        let accepted = map.accepted_gaps(scan.uncovered.iter().filter(|f| scope.contains(&map, f)));
         Ok(Analysis {
             accepted,
             unindexed: scan.uncovered,
@@ -376,7 +372,7 @@ struct Analysis {
     /// `suggest`, `impact`, `why` and `baseline` say about them stays careful.
     unindexed: Vec<String>,
     /// The files of `unindexed` in the scope that `uncovered_ok` accepts, by entry.
-    accepted: Vec<report::AcceptedGap>,
+    accepted: Vec<components::AcceptedGap>,
     /// Every file that is not excluded, source or not.
     all_files: Vec<String>,
     edges: Vec<check::Edge>,
@@ -450,13 +446,17 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
     let narrowed = report::narrowed(changes, &options.components, &options.paths);
     stats.limited_to = report::limited_to(&narrowed);
     let coverage = report::Coverage::of_check(&stats, narrowed, accepted);
+    let report = report::Report {
+        verdict: &verdict,
+        stats: &stats,
+        coverage: &coverage,
+        changes,
+    };
     match options.format {
-        Format::Text => {
-            anstream::print!("{}", report::colored(&verdict, &stats, &coverage, changes))
-        }
-        Format::Json => println!("{}", report::json(&verdict, &stats, &coverage, changes)),
+        Format::Text => anstream::print!("{}", report.colored()),
+        Format::Json => println!("{}", report.json()),
         Format::Sarif => println!("{}", report::sarif(&verdict)),
-        Format::Github => print!("{}", report::github(&verdict, &stats, &coverage, changes)),
+        Format::Github => print!("{}", report.github()),
         Format::Junit => print!("{}", report::junit(&verdict)),
     }
     Ok(verdict.passed())
