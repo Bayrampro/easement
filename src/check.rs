@@ -1274,6 +1274,7 @@ pub fn unmatched(
     config: &Config,
     map: &ComponentMap,
     files: &[String],
+    deps: &[Dep],
     config_file: &str,
     config_text: &str,
 ) -> Vec<Violation> {
@@ -1313,6 +1314,62 @@ pub fn unmatched(
                     evidence: Vec::new(),
                 }),
         )
+        .chain(unmatched_parts(config, deps, config_file, config_text))
+        .collect()
+}
+
+/// A `part` that names no part of the files read, unless its component is
+/// `optional`: it owns nothing, so no rule on it judges anything. A typo, or
+/// `packages` left off.
+fn unmatched_parts(
+    config: &Config,
+    deps: &[Dep],
+    config_file: &str,
+    config_text: &str,
+) -> Vec<Violation> {
+    let found: BTreeSet<&str> = deps
+        .iter()
+        .flat_map(|dep| {
+            let target = match &dep.target {
+                Target::Internal(unit) => unit.part_name(),
+                Target::External(_) => None,
+            };
+            [dep.from.part_name(), target]
+        })
+        .flatten()
+        .collect();
+    let list = if found.is_empty() {
+        "none".to_string()
+    } else {
+        found.iter().copied().collect::<Vec<_>>().join(", ")
+    };
+    config
+        .components
+        .iter()
+        .filter(|(_, component)| !component.optional)
+        .filter_map(|(name, component)| {
+            let part = component.part.as_deref()?;
+            if found.contains(part) {
+                return None;
+            }
+            let guess = crate::config::closest(part, found.iter().copied())
+                .map(|p| format!("did you mean `{p}`? "))
+                .unwrap_or_default();
+            Some(Violation {
+                rule: RuleId::Unmatched,
+                file: config_file.to_string(),
+                line: config_line(config_text, name, part),
+                message: format!(
+                    "component `{name}`: `part: {part}` matches no part of the files read (found: {list}), so it owns nothing and no rule on it judges anything; {guess}parts come from the manifests `packages` reads (`feature/<name>`, `dev-dependencies`, `build-dependencies`) and from `#[cfg(test)]` code of Rust (`cfg(test)`); fix the part, or set `optional: true` if it may own nothing"
+                ),
+                because: None,
+                from: name.clone(),
+                to: String::new(),
+                target: part.to_string(),
+                specifier: String::new(),
+                evidence: Vec::new(),
+            })
+        })
         .collect()
 }
 

@@ -1655,30 +1655,65 @@ fn a_part_that_a_component_owns_meets_must_depend_on() {
         .stdout(contains("2 violation(s)"));
 }
 
-/// A `part` that no manifest produces would own nothing and be judged by no rule, so it
-/// is said.
+/// A `part` that no manifest produces is a typo in the policy: it would own nothing
+/// and be judged by no rule, so it fails as `unmatched` at its line, like a pattern
+/// that matches no file, and names the part it likely means.
 #[test]
-fn a_part_that_matches_no_part_is_said_not_silent() {
+fn a_part_that_matches_no_part_is_an_unmatched_violation() {
     let (_tmp, root) = cargo_workspace_fixture("cargo_features");
     let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    let typo = config.replace("part: feature/fake", "part: feature/fakee");
+    assert_ne!(config, typo);
+    fs::write(root.join("easement.yml"), &typo).unwrap();
+    let line = typo
+        .lines()
+        .position(|l| l.contains("part: feature/fakee"))
+        .unwrap()
+        + 1;
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--format", "json"]).code(1),
+    ))
+    .unwrap();
+    let unmatched: Vec<&serde_json::Value> = report["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|v| v["rule"] == "unmatched")
+        .collect();
+    assert_eq!(unmatched.len(), 1, "{report}");
+    assert_eq!(unmatched[0]["file"], "easement.yml");
+    assert_eq!(unmatched[0]["line"], line);
+    let message = unmatched[0]["message"].as_str().unwrap();
+    assert!(
+        message.contains("`fakes`")
+            && message.contains("feature/fakee")
+            && message.contains("did you mean `feature/fake`?"),
+        "{message}"
+    );
+    // A typo in the policy is no evidence gap.
+    assert!(report["stats"]["parts_partial"].is_null(), "{report}");
+    assert_eq!(report["evidence_gaps"], serde_json::json!([]));
+
+    // `optional: true` accepts a part that may own nothing.
     fs::write(
         root.join("easement.yml"),
-        config.replace("part: feature/fake", "part: feature/fakee"),
+        typo.replace(
+            "    part: feature/fakee\n",
+            "    part: feature/fakee\n    optional: true\n",
+        ),
     )
     .unwrap();
-    let out = easement(&root, &["check", "--format", "json"]);
-    let report: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
-    let partial = report["stats"]["parts_partial"].as_array().unwrap();
-    assert_eq!(partial.len(), 1, "{partial:?}");
-    let reason = partial[0].as_str().unwrap();
+    let report: serde_json::Value =
+        serde_json::from_str(&stdout_of(easement(&root, &["check", "--format", "json"]))).unwrap();
     assert!(
-        reason.contains("fakes") && reason.contains("feature/fakee"),
-        "{reason}"
+        !report["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v["rule"] == "unmatched"),
+        "{report}"
     );
-    assert!(
-        reason.contains("feature/fake"),
-        "it names the parts the scan found: {reason}"
-    );
+    assert!(report["stats"]["parts_partial"].is_null(), "{report}");
 }
 
 #[test]

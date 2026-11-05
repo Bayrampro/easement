@@ -906,16 +906,22 @@ fn unknown_component<'a>(
     place: &str,
     known: impl IntoIterator<Item = &'a str>,
 ) -> anyhow::Error {
+    match closest(name, known) {
+        Some(k) => anyhow!("unknown component `{name}`{place}; did you mean `{k}`?"),
+        None => anyhow!("unknown component `{name}`{place}"),
+    }
+}
+
+/// The name in `known` that `name` is likely a typo of: a few edits away, a
+/// transposition counting as one.
+pub fn closest<'a>(name: &str, known: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
     let limit = (name.chars().count() / 3).max(1);
-    let closest = known
+    known
         .into_iter()
         .map(|k| (strsim::damerau_levenshtein(name, k), k))
         .filter(|(distance, _)| *distance <= limit)
-        .min();
-    match closest {
-        Some((_, k)) => anyhow!("unknown component `{name}`{place}; did you mean `{k}`?"),
-        None => anyhow!("unknown component `{name}`{place}"),
-    }
+        .min()
+        .map(|(_, k)| k)
 }
 
 /// Reads a config file and merges the files it `extends` underneath it.

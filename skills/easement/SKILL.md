@@ -43,7 +43,7 @@ An `unused` violation means no chain of imports from an `entry` reaches the file
 
 An `excluded` violation means the code imports a file that `exclude` hides, so no rule sees the dependency. Import from a checked component instead; if the file is generated code the project needs, ask a human to move its pattern to `target_only`.
 
-An `unmatched` violation is about the config, not the code: an `in` pattern of a component points at no file, usually because the code moved. It needs a change to `easement.yml`, so tell a human which pattern it is and where the code went.
+An `unmatched` violation is about the config, not the code: an `in` pattern of a component points at no file, usually because the code moved, or a `part` names no part of the files, usually a typo the message suggests a fix for. It needs a change to `easement.yml`, so tell a human which pattern it is and where the code went.
 
 ## Changing easement.yml
 

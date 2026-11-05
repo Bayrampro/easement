@@ -237,6 +237,7 @@ impl Project {
             &self.config,
             &map,
             &scan.all_files,
+            &scan.deps,
             &scan::slash(self.config_path.strip_prefix(&self.root)?),
             &std::fs::read_to_string(&self.config_path).unwrap_or_default(),
         ));
@@ -298,11 +299,6 @@ impl Project {
         if self.config.tests.is_some() {
             stats.parts_partial = parts_reasons(&scan.parts_doubts);
         }
-        stats.parts_partial.extend(
-            parts_unmatched(&self.config, &scan.deps)
-                .into_iter()
-                .map(check::Unjudged::new),
-        );
         stats.symbols_partial = check::symbols_partial(&self.config, &map, &scan.unnamed_uses);
         // Only a whole index can tell a name that matches nothing: files it did not
         // cover, names it left unnamed and languages without an index may hold it.
@@ -800,40 +796,6 @@ fn schema_text() -> String {
 
 /// How many files a line about test code that was not told apart names.
 const PARTS_SHOWN: usize = 3;
-
-/// A component whose `part` no file of the scan has owns nothing, and no rule on it judges
-/// anything: a typo, or `packages` left off.
-fn parts_unmatched(config: &config::Config, deps: &[scan::Dep]) -> Vec<String> {
-    let found: std::collections::BTreeSet<&str> = deps
-        .iter()
-        .flat_map(|dep| {
-            let target = match &dep.target {
-                lang::Target::Internal(unit) => unit.part_name(),
-                lang::Target::External(_) => None,
-            };
-            [dep.from.part_name(), target]
-        })
-        .flatten()
-        .collect();
-    let list = if found.is_empty() {
-        "none".to_string()
-    } else {
-        found.iter().copied().collect::<Vec<_>>().join(", ")
-    };
-    config
-        .components
-        .iter()
-        .filter(|(_, component)| !component.optional)
-        .filter_map(|(name, component)| {
-            let part = component.part.as_deref()?;
-            (!found.contains(part)).then(|| {
-                format!(
-                    "component `{name}`: `part: {part}` matches no part of the files read (found: {list}), so it owns nothing and no rule on it judges anything; parts come from the manifests `packages` reads (`feature/<name>`, `dev-dependencies`, `build-dependencies`) and from `#[cfg(test)]` code of Rust (`cfg(test)`); `optional: true` accepts it"
-                )
-            })
-        })
-        .collect()
-}
 
 /// One line for each kind of doubt about test code, with the files it holds.
 fn parts_reasons(doubts: &[(String, lang::parts::Doubt)]) -> Vec<check::Unjudged> {

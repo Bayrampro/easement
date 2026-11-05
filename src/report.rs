@@ -105,7 +105,7 @@ pub enum GapKind {
     StdUnknown,
     /// Imports that `manifests` could not judge.
     Manifests,
-    /// Test code that could not be told from the rest of its file, or a `part` that owns nothing.
+    /// Test code that could not be told from the rest of its file.
     Parts,
     /// Manifests, or dependencies of one, that `packages` could not judge.
     Packages,
