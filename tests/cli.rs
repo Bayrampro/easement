@@ -1646,6 +1646,57 @@ fn dart_manifests_require_direct_declarations_not_overrides_or_transitive_instal
     easement(&app, &["check"])
         .code(1)
         .stdout(contains("leaf is not declared in pubspec.yaml"));
+    let config_path = app.join("easement.yml");
+    let config = fs::read_to_string(&config_path).unwrap();
+    let ignore_path = app.join(".gitignore");
+    let original_ignore = fs::read_to_string(&ignore_path).ok();
+    for ignored in [false, true] {
+        if ignored {
+            fs::write(&config_path, &config).unwrap();
+            fs::write(
+                &ignore_path,
+                format!(
+                    "{}\npubspec.yaml\n",
+                    original_ignore.as_deref().unwrap_or_default()
+                ),
+            )
+            .unwrap();
+        } else {
+            fs::write(&config_path, format!("{config}exclude: [pubspec.yaml]\n")).unwrap();
+        }
+        easement(&app, &["doctor"]).success();
+        let report: serde_json::Value = serde_json::from_str(&stdout_of(
+            easement(&app, &["check", "--no-cache", "--format", "json"]).success(),
+        ))
+        .unwrap();
+        assert_eq!(report["confidence"], "partial", "{report}");
+        assert!(
+            report["violations"].as_array().unwrap().is_empty(),
+            "{report}"
+        );
+        assert!(
+            report["stats"]["external_deps"].as_u64().unwrap() > 0,
+            "{report}"
+        );
+        assert!(
+            report["stats"].get("analysis_partial").is_none(),
+            "{report}"
+        );
+        let reasons = report["stats"]["manifests_partial"].as_array().unwrap();
+        assert_eq!(reasons.len(), 1, "{report}");
+        assert!(
+            reasons[0]
+                .as_str()
+                .unwrap()
+                .contains("no pubspec.yaml above"),
+            "{report}"
+        );
+    }
+    fs::write(&config_path, config).unwrap();
+    match original_ignore {
+        Some(text) => fs::write(ignore_path, text).unwrap(),
+        None => fs::remove_file(ignore_path).unwrap(),
+    }
     let manifest = app.join("pubspec.yaml");
     let text = fs::read_to_string(&manifest).unwrap();
     fs::write(&manifest, format!("{text}dev_dependencies:\n  leaf: any\n")).unwrap();

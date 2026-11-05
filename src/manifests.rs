@@ -1,6 +1,6 @@
 //! The `undeclared` rule: an external module a file imports has to be a
 //! dependency of the nearest manifest above it (`package.json`, `go.mod`,
-//! `Cargo.toml`), or the build works only by accident.
+//! `Cargo.toml`, `pubspec.yaml`), or the build works only by accident.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -313,7 +313,8 @@ pub fn undeclared(
 }
 
 /// The manifest that governs `file`: the nearest one above it that declares
-/// a package, passing over a `package.json` that only marks its directory.
+/// a package, considering only `known` project files and passing over a
+/// `package.json` that only marks its directory.
 /// An unreadable one stops the search and is recorded in `unreadable`.
 fn package_manifest(
     file: &str,
@@ -325,20 +326,17 @@ fn package_manifest(
 ) -> Option<String> {
     let mut below = file.to_string();
     loop {
-        let manifest = if kind == Manifest::Pub {
-            let parent = Path::new(&below).parent().unwrap_or(Path::new(""));
-            parent
-                .ancestors()
-                .map(|dir| dir.join(kind.file_name()))
-                .find(|path| root.join(path).is_file())
-                .map(|path| crate::scan::slash(&path))?
-        } else {
-            nearest(&below, kind.file_name(), known)?
-        };
+        let manifest = nearest(&below, kind.file_name(), known)?;
         let declares = manifests
             .entry(manifest.clone())
             .or_insert_with(|| {
-                let text = std::fs::read_to_string(root.join(&manifest)).unwrap_or_default();
+                let text = match std::fs::read_to_string(root.join(&manifest)) {
+                    Ok(text) => text,
+                    Err(_) => {
+                        unreadable.insert(manifest.clone());
+                        return None;
+                    }
+                };
                 let names = declared(kind, &text);
                 let marker = kind == Manifest::Npm
                     && serde_json::from_str::<serde_json::Value>(&text).is_ok();
@@ -526,5 +524,239 @@ mod tests {
         );
         assert_eq!(found.as_deref(), Some("package.json"));
         assert!(unreadable.is_empty());
+    }
+    fn manifest_samples() -> [(Manifest, &'static str); 4] {
+        [
+            (Manifest::Npm, r#"{"name":"owner"}"#),
+            (Manifest::Go, "module example.com/owner\n"),
+            (Manifest::Cargo, "[package]\nname = 'owner'\n"),
+            (Manifest::Pub, "name: owner\n"),
+        ]
+    }
+
+    #[test]
+    fn every_manifest_kind_uses_the_nearest_known_ancestor() {
+        for (kind, text) in manifest_samples() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("project");
+            std::fs::create_dir_all(root.join("web/src")).unwrap();
+            std::fs::create_dir_all(root.join("neighbor")).unwrap();
+            let name = kind.file_name();
+            let nested = format!("web/{name}");
+            let neighbor = format!("neighbor/{name}");
+            for path in [name, nested.as_str(), neighbor.as_str()] {
+                std::fs::write(root.join(path), text).unwrap();
+            }
+            std::fs::write(tmp.path().join(name), text).unwrap();
+            for (source, known, expected) in [
+                (
+                    "web/src/file",
+                    BTreeSet::from([name, nested.as_str(), neighbor.as_str()]),
+                    Some(nested.as_str()),
+                ),
+                (
+                    "api/file",
+                    BTreeSet::from([name, nested.as_str(), neighbor.as_str()]),
+                    Some(name),
+                ),
+                ("file", BTreeSet::from([name]), Some(name)),
+                ("api/file", BTreeSet::from([neighbor.as_str()]), None),
+                ("web/src/file", BTreeSet::new(), None),
+            ] {
+                let (mut manifests, mut unreadable) = (BTreeMap::new(), BTreeSet::new());
+                let found =
+                    package_manifest(source, kind, &root, &known, &mut manifests, &mut unreadable);
+                assert_eq!(found.as_deref(), expected, "{kind:?}: {source}");
+                assert!(unreadable.is_empty());
+            }
+            // Even when only the manifest outside the analysis root remains,
+            // lookup cannot discover it as a fallback.
+            for path in [name, nested.as_str(), neighbor.as_str()] {
+                std::fs::remove_file(root.join(path)).unwrap();
+            }
+            let (mut manifests, mut unreadable) = (BTreeMap::new(), BTreeSet::new());
+            assert!(
+                package_manifest(
+                    "web/src/file",
+                    kind,
+                    &root,
+                    &BTreeSet::new(),
+                    &mut manifests,
+                    &mut unreadable
+                )
+                .is_none()
+            );
+            assert!(unreadable.is_empty());
+        }
+    }
+
+    #[test]
+    fn manifests_outside_known_never_shadow_a_known_parent_or_supply_a_fallback() {
+        for (kind, text) in manifest_samples() {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::create_dir(tmp.path().join("nested")).unwrap();
+            let name = kind.file_name();
+            let child = format!("nested/{name}");
+            std::fs::write(tmp.path().join(name), text).unwrap();
+            std::fs::write(tmp.path().join(&child), text).unwrap();
+            for known in [BTreeSet::from([name]), BTreeSet::new()] {
+                let (mut manifests, mut unreadable) = (BTreeMap::new(), BTreeSet::new());
+                let found = package_manifest(
+                    "nested/file",
+                    kind,
+                    tmp.path(),
+                    &known,
+                    &mut manifests,
+                    &mut unreadable,
+                );
+                assert_eq!(
+                    found.as_deref(),
+                    known.contains(name).then_some(name),
+                    "{kind:?}"
+                );
+                assert!(!manifests.contains_key(&child));
+                assert!(unreadable.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn unreadable_known_manifests_block_parent_fallback_for_every_kind() {
+        for (kind, text) in manifest_samples() {
+            for state in ["missing", "directory", "invalid UTF-8"] {
+                let tmp = tempfile::tempdir().unwrap();
+                std::fs::create_dir(tmp.path().join("nested")).unwrap();
+                let name = kind.file_name();
+                let child = format!("nested/{name}");
+                std::fs::write(tmp.path().join(name), text).unwrap();
+                let child_path = tmp.path().join(&child);
+                match state {
+                    "directory" => std::fs::create_dir(&child_path).unwrap(),
+                    "invalid UTF-8" => std::fs::write(&child_path, [0xff]).unwrap(),
+                    _ => {}
+                }
+                let known = BTreeSet::from([name, child.as_str()]);
+                let (mut manifests, mut unreadable) = (BTreeMap::new(), BTreeSet::new());
+                for _ in 0..2 {
+                    let found = package_manifest(
+                        "nested/file",
+                        kind,
+                        tmp.path(),
+                        &known,
+                        &mut manifests,
+                        &mut unreadable,
+                    );
+                    assert_eq!(found.as_deref(), Some(child.as_str()), "{kind:?}: {state}");
+                    assert!(unreadable.contains(&child), "{kind:?}: {state}");
+                    assert_eq!(manifests.get(&child), Some(&None));
+                    assert!(!manifests.contains_key(name));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn broken_manifests_stop_the_search_instead_of_becoming_markers() {
+        for (kind, valid, broken) in [
+            (Manifest::Npm, r#"{"name":"owner"}"#, "{"),
+            (
+                Manifest::Cargo,
+                "[package]\nname = 'owner'\n",
+                "[dependencies\n",
+            ),
+            (Manifest::Pub, "name: owner\n", "dependencies: [bad]\n"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::create_dir(tmp.path().join("nested")).unwrap();
+            let name = kind.file_name();
+            let child = format!("nested/{name}");
+            std::fs::write(tmp.path().join(name), valid).unwrap();
+            std::fs::write(tmp.path().join(&child), broken).unwrap();
+            let known = BTreeSet::from([name, child.as_str()]);
+            let (mut manifests, mut unreadable) = (BTreeMap::new(), BTreeSet::new());
+            let found = package_manifest(
+                "nested/file",
+                kind,
+                tmp.path(),
+                &known,
+                &mut manifests,
+                &mut unreadable,
+            );
+            assert_eq!(found.as_deref(), Some(child.as_str()));
+            assert_eq!(unreadable, BTreeSet::from([child]));
+            assert!(!manifests.contains_key(name));
+        }
+    }
+
+    #[test]
+    fn pub_workspace_declarations_are_not_merged_into_the_member_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("packages/member/lib")).unwrap();
+        std::fs::write(
+            tmp.path().join("pubspec.yaml"),
+            concat!(
+                "name: workspace\nworkspace: [packages/member]\n",
+                "dependencies: {root_only: any}\n",
+            ),
+        )
+        .unwrap();
+        let child = "packages/member/pubspec.yaml";
+        std::fs::write(
+            tmp.path().join(child),
+            concat!(
+                "name: member\nresolution: workspace\n",
+                "dependencies: {member_only: any}\n",
+            ),
+        )
+        .unwrap();
+        let known = BTreeSet::from(["pubspec.yaml", child]);
+        let (mut manifests, mut unreadable) = (BTreeMap::new(), BTreeSet::new());
+        let found = package_manifest(
+            "packages/member/lib/file.dart",
+            Manifest::Pub,
+            tmp.path(),
+            &known,
+            &mut manifests,
+            &mut unreadable,
+        );
+        assert_eq!(found.as_deref(), Some(child));
+        let names = manifests.get(child).unwrap().as_ref().unwrap();
+        assert!(names.contains("member_only"));
+        assert!(!names.contains("root_only"));
+        assert!(!manifests.contains_key("pubspec.yaml"));
+        assert!(unreadable.is_empty());
+    }
+
+    #[test]
+    fn failed_manifest_reads_report_partial_instead_of_undeclared_or_orphaned_imports() {
+        let config: Config =
+            serde_norway::from_str("version: 1\nmanifests: true\ncomponents:\n  app: {in: src}\n")
+                .unwrap();
+        let map = ComponentMap::new(&config).unwrap();
+        for (kind, source, module) in [
+            (Manifest::Npm, "src/file.ts", "dep/sub"),
+            (Manifest::Go, "src/file.go", "example.com/dep"),
+            (Manifest::Cargo, "src/file.rs", "dep::Thing"),
+            (Manifest::Pub, "src/file.dart", "package:dep/api.dart"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let files = [kind.file_name().to_string(), source.to_string()];
+            let deps = [Dep {
+                file: source.into(),
+                from: crate::lang::Unit::from(source),
+                line: 1,
+                specifier: module.into(),
+                target: Target::External(module.into()),
+            }];
+            let result = undeclared(&config, &map, tmp.path(), &deps, &files);
+            assert!(result.violations.is_empty(), "{kind:?}");
+            assert_eq!(result.reasons.len(), 1, "{kind:?}: {:?}", result.reasons);
+            assert!(
+                result.reasons[0].contains("could not be read"),
+                "{kind:?}: {:?}",
+                result.reasons
+            );
+            assert!(result.reasons[0].contains(kind.file_name()));
+        }
     }
 }

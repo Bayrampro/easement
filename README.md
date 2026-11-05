@@ -478,6 +478,14 @@ manifests: true
 
 With `manifests`, every external module a file imports has to be a dependency of the nearest manifest above it: `package.json` (any of `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`; `@types/x` counts for `x`) for JavaScript and TypeScript, `go.mod` (`require`, matched by module prefix) for Go, `Cargo.toml` (any dependency table, `-` and `_` alike) for Rust, and `pubspec.yaml` (`dependencies` and `dev_dependencies`) for Dart. Dart overrides and transitive installation alone do not declare a direct dependency; internal workspace packages follow component rules, so this does not prove their dependency declarations. An import of anything else fails as `undeclared` at its line: it builds only because a dependency of a dependency happens to bring the package, or because the package is installed on this machine. The standard library is never undeclared, and only a package the file names in an import is judged: a symbol the index finds in another package (a re-export such as `serde_core` behind `serde`, a global type such as `NodeJS.Timeout`) is not. A renamed crate (`json = { package = "serde_json" }`) counts under both names. In a monorepo each package's own manifest counts; a `package.json` that declares neither a name nor dependencies (`{"type": "module"}`) is passed over, and one that cannot be read leaves the files under it unchecked, which the report says. `--diff` judges changed import lines, so a dependency removed from a manifest shows only in a full check. Other languages are not checked, since their imports do not name their packages (Python's `yaml` comes from `PyYAML`), and the report says so with `confidence: partial`. The rule can be suppressed inline.
 
+Manifest lookup uses only files discovered by the ordinary project walk.
+Manifests hidden by `exclude` or `.gitignore` are not rediscovered from disk;
+the nearest known ancestor of the same manifest kind is used instead. Without
+one, the report records incomplete manifest coverage. A known manifest that
+cannot be read stops the search and reports partial coverage, so a parent cannot
+hide the failure. This lookup is separate from indexer markers and toolchain
+resolution, which may still use those files to prepare dependency facts.
+
 ```yaml
 packages: true
 ```
