@@ -1,0 +1,8 @@
+version: 1
+components:
+  app: {in: lib/main.dart}
+  domain: {in: lib/other.dart}
+  support:
+    in: [lib/deferred.dart, lib/named.dart, lib/native.dart, lib/stub.dart, lib/uri.dart]
+rules:
+  app: {may_depend_on: [support]}

@@ -1047,7 +1047,7 @@ mod tests {
                 .iter()
                 .any(|dep| dep.file == Path::new("lib/main.dart")
                     && dep.line == 2
-                    && dep.target == Target::Internal(PathBuf::from("lib/other.dart")))
+                    && dep.target == Target::Internal(Unit::from("lib/other.dart")))
         );
         assert!(
             facts

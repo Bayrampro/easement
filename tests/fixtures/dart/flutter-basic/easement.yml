@@ -1,0 +1,5 @@
+version: 1
+components:
+  app: {in: lib}
+rules:
+  app: {may_use_external: [$std]}

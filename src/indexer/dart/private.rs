@@ -8,7 +8,7 @@ use globset::GlobSet;
 use crate::check::{self, SymbolRef};
 use crate::components::ComponentMap;
 use crate::config::Config;
-use crate::lang::{Target, registry};
+use crate::lang::{Target, Unit, registry};
 use crate::scan::{AnalysisGap, TypeDef};
 use crate::scip::dart::private::{Evidence, Symbol};
 
@@ -48,11 +48,15 @@ pub(crate) fn coverage(
         .collect();
     let mut gaps = BTreeSet::new();
     for document in documents.iter().filter(|d| !target_only.is_match(&d.path)) {
-        let Some(from) = map.component_of(&document.path) else {
+        let from = map.component_of(&document.path);
+        if from.is_none() && config.forbid_symbol.is_empty() {
             continue;
-        };
+        }
         for symbol in &document.symbols {
             if symbol.definition {
+                let Some(from) = from else {
+                    continue;
+                };
                 if symbol.is_type == Some(false) {
                     continue;
                 }
@@ -108,6 +112,7 @@ pub(crate) fn coverage(
                 // could apply. They never become resolved symbols or violations.
                 let potential = SymbolRef {
                     file: PathBuf::from(&document.path),
+                    from: Unit::from(document.path.as_str()),
                     line: symbol.line,
                     specifier: target
                         .path
@@ -116,7 +121,7 @@ pub(crate) fn coverage(
                         .into(),
                     name: name.clone(),
                     method: None,
-                    target: Some(Target::Internal(PathBuf::from(&target.path))),
+                    target: Some(Target::Internal(Unit::from(target.path.as_str()))),
                 };
                 relevant |= !check::symbols(config, map, &[potential]).is_empty();
             }
@@ -127,15 +132,17 @@ pub(crate) fn coverage(
             {
                 // Missing definitions or source ranges are not proof of full
                 // coverage. Retain a warning under potentially applicable rules.
-                relevant |= config
-                    .rules
-                    .get(from)
-                    .is_some_and(|r| !r.forbid_symbol.is_empty())
+                relevant |= !config.forbid_symbol.is_empty()
+                    || from
+                        .and_then(|from| config.rules.get(from))
+                        .is_some_and(|r| !r.forbid_symbol.is_empty())
                     || all
                         .iter()
                         .filter(|d| same_library(document, d))
                         .filter_map(|d| map.component_of(&d.path))
-                        .any(|to| to != from && config.components[to].public_symbols.is_some());
+                        .any(|to| {
+                            Some(to) != from && config.components[to].public_symbols.is_some()
+                        });
             }
             if relevant {
                 gaps.insert(gap(
@@ -248,6 +255,40 @@ mod tests {
             )
             .unwrap()
             .is_empty()
+        );
+        let global_config: Config = serde_norway::from_str(
+            "version: 1\nforbid_symbol: [lib/target._unknown]\ncomponents:\n  source: {in: lib/source.dart}\n",
+        )
+        .unwrap();
+        let global_map = ComponentMap::new(&global_config).unwrap();
+        assert_eq!(
+            coverage(
+                &global_config,
+                &global_map,
+                &[source.clone()],
+                &[],
+                &GlobSet::empty(),
+            )
+            .unwrap()
+            .len(),
+            1,
+        );
+        let unowned_config: Config = serde_norway::from_str(
+            "version: 1\nforbid_symbol: [lib/target._unknown]\ncomponents: {}\n",
+        )
+        .unwrap();
+        let unowned_map = ComponentMap::new(&unowned_config).unwrap();
+        assert_eq!(
+            coverage(
+                &unowned_config,
+                &unowned_map,
+                &[source.clone()],
+                &[],
+                &GlobSet::empty(),
+            )
+            .unwrap()
+            .len(),
+            1,
         );
         // Ambiguous part ownership cannot prove that the restricted target is unrelated.
         source.library = None;

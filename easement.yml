@@ -12,10 +12,20 @@ components:
   # What easement knows of each language, as data.
   registry: { in: [src/lang/mod.rs, src/lang/parts.rs, src/lang/registry.rs, src/stdlib.rs] }
   # Code for particular languages: indexers, reading their indexes, adapters, manifests.
-  languages: { in: [src/indexer.rs, src/scip.rs, src/lang/kotlin.rs, src/lang/swift.rs, src/packages] }
+  languages:
+    in:
+      - src/indexer.rs
+      - src/indexer
+      - src/scip.rs
+      - src/scip
+      - src/lang/kotlin.rs
+      - src/lang/swift.rs
+      - src/packages
+      - tools/scip-dart
   # Commands, the scan that feeds them, and the rules that need the whole project.
   commands:
     in:
+      - src/coverage.rs
       - src/diagram.rs
       - src/doctor.rs
       - src/explain.rs

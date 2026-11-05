@@ -228,17 +228,21 @@ pub static RUST: Language = Language {
     parts: Some(parts::rust),
 };
 
-/// Every language, in the order their test globs are listed.
+/// Dart and Flutter sources, resolved by the Pub indexer.
 pub static DART: Language = Language {
     name: "dart",
     extensions: &["dart"],
     tests: &["**/*_test.dart"],
+    not_tests: &[],
+    whole_directory: false,
     std: Some(stdlib::dart),
     unused: &[],
     conventional: &[],
     manifest: Some(Manifest::Pub),
+    parts: None,
 };
 
+/// Every language, in the order their test globs are listed.
 pub static LANGUAGES: [&Language; 11] = [
     &GO,
     &TYPESCRIPT,
@@ -264,7 +268,7 @@ pub fn of(file: &str) -> Option<&'static Language> {
 /// The kind of manifest a file is, by its name.
 pub fn manifest_of(file: &str) -> Option<Manifest> {
     let name = file.rsplit('/').next().unwrap_or(file);
-    [Manifest::Npm, Manifest::Go, Manifest::Cargo]
+    [Manifest::Npm, Manifest::Go, Manifest::Cargo, Manifest::Pub]
         .into_iter()
         .find(|manifest| manifest.file_name() == name)
 }

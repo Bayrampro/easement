@@ -22,7 +22,7 @@ jobs:
   check:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,6 +34,17 @@ jobs:
         uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The self-architecture check also indexes the Dart installer source.
+      - name: Install the pinned Dart indexer for the self-check
+        working-directory: tools/scip-dart
+        run: |
+          dart pub get --enforce-lockfile
+          dart bin/install.dart
+
+      - name: Put the Dart indexer on PATH
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/target/dart-indexer" >> "$GITHUB_PATH"
 
       - name: Restore lychee cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -176,6 +187,16 @@ jobs:
       - name: Put the Dart indexer on PATH
         shell: bash
         run: echo "$GITHUB_WORKSPACE/target/dart-indexer" >> "$GITHUB_PATH"
+
+      - name: Verify the Dart dependency tools
+        shell: bash
+        run: |
+          command -v flutter
+          command -v dart
+          command -v scip_dart
+          flutter --suppress-analytics --version
+          dart --version
+          scip_dart --version
 
       - name: Prepare the real Flutter fixture
         working-directory: tests/fixtures/dart/flutter-basic

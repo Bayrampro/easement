@@ -67,12 +67,13 @@ impl Declared {
 }
 
 /// The dependencies a manifest of `kind` declares, with the line of each.
-/// `None` for a manifest that cannot be read, which is not one that declares nothing.
+/// `None` for an unreadable or unsupported manifest, not a manifest declaring nothing.
 pub fn declared(kind: Manifest, text: &str) -> Option<Vec<Declared>> {
     match kind {
         Manifest::Cargo => cargo::declared(text),
         Manifest::Npm => npm::declared(text),
         Manifest::Go => go::declared(text),
+        Manifest::Pub => None,
     }
 }
 
@@ -90,6 +91,13 @@ pub fn edges(root: &Path, files: &[String], read_as_source: impl Fn(&str) -> boo
             continue;
         }
         found.manifests.push(file.clone());
+        if kind == Manifest::Pub {
+            found.problems.push(format!(
+                "{file}: Pub dependency-declaration edges with packages: true are not yet supported; \
+                 Dart source dependency checks and manifests: true remain available"
+            ));
+            continue;
+        }
         let Some(text) = text_of(file) else {
             found.problems.push(
                 Unjudged::new(format!(
@@ -200,7 +208,7 @@ impl Names {
             let name = match kind {
                 Manifest::Npm => npm::name(&text),
                 Manifest::Go => go::name(&text),
-                Manifest::Cargo => None,
+                Manifest::Cargo | Manifest::Pub => None,
             };
             let Some(name) = name else {
                 continue;
@@ -278,7 +286,7 @@ pub fn resolve(
             Resolved::External(match kind {
                 // Rust spells a crate with `_` in an import.
                 Manifest::Cargo => package.replace('-', "_"),
-                Manifest::Npm | Manifest::Go => package,
+                Manifest::Npm | Manifest::Go | Manifest::Pub => package,
             })
         },
         Resolved::Internal,
@@ -335,6 +343,21 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn pub_manifests_disclose_unsupported_package_edges() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("pubspec.yaml"),
+            "name: app\ndependencies:\n  http: ^1.0.0\n",
+        )
+        .unwrap();
+        let found = edges(directory.path(), &["pubspec.yaml".into()], |_| true);
+        assert!(found.deps.is_empty());
+        assert_eq!(found.manifests, ["pubspec.yaml"]);
+        assert_eq!(found.problems.len(), 1);
+        assert!(found.problems[0].contains("not yet supported"));
     }
 
     #[test]

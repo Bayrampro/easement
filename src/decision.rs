@@ -322,9 +322,25 @@ mod tests {
     /// Runs `each` on the config, map and dependencies of every fixture project.
     fn each_fixture(each: impl Fn(&str, &Config, &ComponentMap, &[crate::scan::Dep]) + Sync) {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-        let mut names: Vec<String> = fs::read_dir(&fixtures)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        // Fixture containers need not be projects themselves. Discover the
+        // checked-in configs, including nested language fixture groups.
+        let mut names: Vec<String> = scan::walker(&fixtures)
+            .build()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| {
+                entry.file_type().is_some_and(|kind| kind.is_file())
+                    && entry.file_name() == crate::config::DEFAULT_CONFIG
+            })
+            .map(|entry| {
+                slash(
+                    entry
+                        .path()
+                        .parent()
+                        .unwrap()
+                        .strip_prefix(&fixtures)
+                        .unwrap(),
+                )
+            })
             .collect();
         names.sort();
         // As in `tests/cli.rs`: no scip-ruby is built for Linux on Arm.
@@ -348,12 +364,28 @@ mod tests {
                             .expect("composer runs");
                         assert!(status.success(), "composer install in {name}");
                     }
+                    if tmp.path().join("pubspec.yaml").exists() {
+                        // Both Pub and Flutter fixtures use the prepared SDK's
+                        // cached packages; this never prepares a native build.
+                        let flutter = which::which("flutter").expect("Flutter SDK is needed");
+                        let status = std::process::Command::new(flutter)
+                            .args(["pub", "get", "--offline"])
+                            .current_dir(tmp.path())
+                            .output()
+                            .expect("offline Pub preparation");
+                        assert!(
+                            status.status.success(),
+                            "pub get in {name}: {}",
+                            String::from_utf8_lossy(&status.stderr)
+                        );
+                    }
                     let config =
                         crate::policy::Policy::load(&tmp.path().join("easement.yml"), None)
                             .unwrap()
                             .config;
                     let mut cache = Cache::new(CacheUse::Off, Jobs::default());
-                    let scan = scan::scan(tmp.path(), &config.scan_policy(), &mut cache).unwrap();
+                    let root = dunce::canonicalize(tmp.path()).unwrap();
+                    let scan = scan::scan(&root, &config.scan_policy(), &mut cache).unwrap();
                     let map = ComponentMap::new(&config).unwrap();
                     each(name, &config, &map, &scan.deps);
                 });
