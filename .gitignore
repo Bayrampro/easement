@@ -1,9 +1,8 @@
 /target
 node_modules/
 .lycheecache
-# Agent skills installed by `mise run skills`.
+# Agent skills copied by `mise run skills` and linked by mise; .claude/skills is a link.
 .agents/
-.claude/skills/
-skills-lock.json
+.claude/skills
 # Git worktrees that coding agents work in; the main checkout stays on main.
 .claude/worktrees/

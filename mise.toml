@@ -29,8 +29,15 @@ betterleaks = "1.9.0"
 typos = "1.51.1"
 rumdl = "0.3.0"
 lychee = "0.24.2"
-# Installs the agent skills of `mise run skills`.
-"npm:skills" = "1.7.4"
+
+# Matt Pocock's agent skills: a tagged release of mattpocock/skills, which `mise run skills` copies
+# into the project. The tags API lists the newest first and mise takes the last version as the
+# latest, so the expression reverses them for `mise upgrade`.
+[tools."http:mattpocock-skills"]
+version = "1.3.2"
+url = "https://github.com/mattpocock/skills/archive/refs/tags/v{{version}}.tar.gz"
+version_list_url = "https://api.github.com/repos/mattpocock/skills/tags"
+version_expr = 'reverse(map(filter(fromJSON(body), hasPrefix(#.name, "v")), trimPrefix(#.name, "v")))'
 
 # Where `composer global require` (macOS, Linux) and `dotnet tool install --global` put
 # scip-php and scip-dotnet, which the tests need; the CI workflow shows how to install them.
@@ -41,7 +48,7 @@ _.path = [
   "{{env.HOME}}/.dotnet/tools",
 ]
 
-# Resources shipped by the pinned tools (hk, ...): agent skills are linked into .claude/skills and
+# Resources shipped by the pinned tools (hk, ...): agent skills are linked into .agents/skills and
 # kept in sync with the pinned tool versions.
 [settings.skills]
 auto_sync = true
@@ -53,21 +60,44 @@ depends = ["skills"]
 run = ["pnpm install --frozen-lockfile", "hk install"]
 
 # The skills of the mattpocock-skills plugin (its .claude-plugin/plugin.json), without the
-# in-progress and misc ones. They are copied into .agents/skills and linked for Claude Code;
-# both are gitignored, rerun the task to update them.
+# in-progress and misc ones, copied from the pinned release into .agents/skills, where Codex reads
+# them and mise links the skills of its tools. Claude Code reads .claude/skills, a link to it. Both
+# are gitignored; a copy, not a link, because mise prunes the links into its installs it did not
+# make itself.
 [tasks.skills]
-description = "Install Matt Pocock's agent skills into the project"
+description = "Copy Matt Pocock's agent skills of the pinned release into the project"
 run = """
-skills add mattpocock/skills --agent claude-code codex --yes --skill \
-  ask-matt diagnosing-bugs grill-with-docs triage improve-codebase-architecture \
-  setup-matt-pocock-skills tdd to-spec to-tickets wayfinder implement implement-spec \
-  prototype research domain-modeling codebase-design code-review pr retro wizard \
-  grill-me grilling handoff teach to-questionnaire wait-what writing-for-agents
+#!/usr/bin/env bash
+set -euo pipefail
+src="$(mise where http:mattpocock-skills)/skills"
+mkdir -p .agents/skills .claude
+for skill in \
+  engineering/ask-matt engineering/diagnosing-bugs engineering/grill-with-docs \
+  engineering/triage engineering/improve-codebase-architecture \
+  engineering/setup-matt-pocock-skills engineering/tdd engineering/to-spec engineering/to-tickets \
+  engineering/wayfinder engineering/implement engineering/implement-spec engineering/prototype \
+  engineering/research engineering/domain-modeling engineering/codebase-design \
+  engineering/code-review engineering/pr engineering/retro engineering/wizard \
+  productivity/grill-me productivity/grilling productivity/handoff productivity/teach \
+  productivity/to-questionnaire productivity/wait-what productivity/writing-for-agents; do
+  name="${skill#*/}"
+  rm -rf ".agents/skills/$name"
+  cp -R "$src/$skill" ".agents/skills/$name"
+done
+# Earlier installs made .claude/skills a directory of links; it holds nothing else.
+if [ -d .claude/skills ] && [ ! -L .claude/skills ]; then
+  if [ -n "$(find .claude/skills -mindepth 1 -maxdepth 1 ! -type l)" ]; then
+    echo ".claude/skills holds more than links; move its contents into .agents/skills" >&2
+    exit 1
+  fi
+  rm -r .claude/skills
+fi
+[ -L .claude/skills ] || ln -s ../.agents/skills .claude/skills
 """
 
 [tasks.update]
-description = "Update npm, Cargo and skills dependencies; then run `mise run check` and `cargo test`"
-depends = ["update:npm", "update:cargo", "update:skills"]
+description = "Update npm and Cargo dependencies; then run `mise run check` and `cargo test`"
+depends = ["update:npm", "update:cargo"]
 
 # The SCIP indexers of package.json are pinned to the versions of mise.toml (the tests and CI use
 # them); Renovate moves both together, so ncu leaves them alone.
@@ -79,18 +109,13 @@ run = "pnpm dlx npm-check-updates -u --reject '@sourcegraph/*' && pnpm install"
 description = "Bump Cargo.lock within the semver ranges of Cargo.toml"
 run = "cargo update"
 
-# No --yes: in a terminal skills asks whether to remove the skills their upstream deleted, and it
-# only warns in a run without a TTY. --project picks the project scope so nothing else is asked.
-[tasks."update:skills"]
-description = "Update the installed agent skills"
-run = "skills update --project"
-
 # --no-global: a bare `mise upgrade` also upgrades every tool of ~/.config/mise/config.toml.
 # --bump rewrites the pins of this file, including the two SCIP indexers: copy a moved one into
 # package.json, and a moved hk into hk.pkl, in the same commit (CI installs them from there).
+# Then the agent skills of the new release are copied in.
 [tasks.upgrade]
-description = "Upgrade the mise tools pinned in mise.toml, not the global ones"
-run = "mise upgrade --no-global --bump"
+description = "Upgrade the mise tools pinned in mise.toml, not the global ones, and recopy the agent skills"
+run = ["mise upgrade --no-global --bump", "mise run skills"]
 
 [tasks.check]
 description = "Run every check, the same set CI runs"
