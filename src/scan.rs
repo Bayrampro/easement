@@ -66,6 +66,8 @@ pub struct TypeDef {
 }
 
 pub struct Scan {
+    pub domains: Vec<crate::coverage::Domain>,
+    pub checked_files: Vec<String>,
     pub analysis_partial: Vec<AnalysisGap>,
     /// Every file that is not excluded, source or not, relative to the root with `/` separators.
     pub all_files: Vec<String>,
@@ -91,9 +93,8 @@ pub struct Scan {
     pub parts_doubts: Vec<(String, lang::parts::Doubt)>,
     /// Manifests, or dependencies of one, that `packages` could not judge as declared.
     pub packages_problems: Vec<crate::check::Unjudged>,
-    /// The qualifier and name of the symbols the index knows under a name that
-    /// `forbid_symbol` lists, and whether that list is whole.
-    pub known_symbols: (Vec<(String, String)>, bool),
+    /// Watched symbol names and missing classification, by language domain.
+    pub known_symbols: crate::coverage::Symbols,
     /// Indexers that ran, and indexes taken from the cache.
     pub indexed: (usize, usize),
     /// With `reach: symbols`, the references of the index by the definition that holds
@@ -327,7 +328,7 @@ pub fn scan(root: &Path, policy: &ScanPolicy, cache: &mut Cache) -> Result<Scan>
             .cloned(),
     );
     unread.sort();
-    let known_symbols = (facts.known, facts.known_whole);
+    let known_symbols = facts.known;
     let unnamed_uses = facts
         .unnamed
         .iter()
@@ -353,13 +354,21 @@ pub fn scan(root: &Path, policy: &ScanPolicy, cache: &mut Cache) -> Result<Scan>
             !matches!(&symbol.target, Some(Target::Internal(unit)) if exclude.is_match(unit.path()))
         })
         .collect();
+    let checked_files = all_files
+        .iter()
+        .filter(|f| registry::of(f).is_some() && !target_only.is_match(f.as_str()))
+        .cloned()
+        .collect();
     Ok(Scan {
+        domains: indexed.domains,
+        checked_files,
         analysis_partial: indexed
             .analysis_partial
             .into_iter()
             .chain(facts.analysis_partial)
             .filter(|gap| {
-                !registry::is(Path::new(&gap.file), &registry::DART) || paths.contains(&gap.file)
+                registry::of(&gap.file).is_none()
+                    || (!exclude.is_match(&gap.file) && !target_only.is_match(&gap.file))
             })
             .collect(),
         all_files,

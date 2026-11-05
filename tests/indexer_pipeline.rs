@@ -427,3 +427,381 @@ fn doctor_uses_common_roots_prerequisites_and_strict_version_probes() {
         .code(1)
         .stdout(contains("not found"));
 }
+
+impl Tools {
+    fn go_package(&self) {
+        fs::create_dir_all(self.root.join("backend")).unwrap();
+        fs::write(
+            self.root.join("backend/go.mod"),
+            "module example.com/backend\ngo 1.22\n",
+        )
+        .unwrap();
+        fs::write(
+            self.root.join("backend/backend.go"),
+            "package backend\ntype Thing struct {}\n",
+        )
+        .unwrap();
+        fs::write(self.root.join("backend/other.go"), "package backend\n").unwrap();
+        let mut index = Index::new();
+        index.documents.push(Document {
+            language: "Go".into(),
+            relative_path: "backend.go".into(),
+            occurrences: vec![Occurrence {
+                symbol: "scip-go gomod example.com/backend . `example.com/backend/nested`/Thing#"
+                    .into(),
+                symbol_roles: 1,
+                range: vec![1, 5, 10],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        index.documents.push(Document {
+            language: "Go".into(),
+            relative_path: "other.go".into(),
+            ..Default::default()
+        });
+        fs::write(self.runner.join("go.scip"), index.write_to_bytes().unwrap()).unwrap();
+        executable(
+            &self.bin.join("scip-go"),
+            &self.expand(
+                r#"#!/bin/sh
+set -eu
+while [ "$1" != '--output' ]; do shift; done
+cp @RUNNER@/go.scip "$2"
+"#,
+            ),
+        );
+    }
+
+    fn baseline(&self, entries: Value) {
+        fs::write(
+            self.root.join("easement.baseline.yml"),
+            serde_norway::to_string(&json!({"violations": entries})).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn a_dart_gap_keeps_only_related_baseline_debt_and_allows_independent_stale() {
+    let tools = Tools::new();
+    tools.go_package();
+    fs::write(
+        &tools.policy,
+        "version: 1\ncomponents:\n  app: {in: lib}\n  backend: {in: backend}\n",
+    )
+    .unwrap();
+    fs::write(tools.state.join("error"), "").unwrap();
+    let entries = json!([
+        {"rule": "dependency", "file": "lib/app.dart", "target": "lib/old.dart", "from": "app", "to": "old"},
+        {"rule": "dependency", "file": "backend/backend.go", "target": "backend/old.go", "from": "backend", "to": "old"}
+    ]);
+    tools.baseline(entries);
+    let result = tools
+        .command("check")
+        .args(["--format", "json", "--no-cache"])
+        .assert()
+        .code(1);
+    let report: Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(report["stale"].as_array().unwrap().len(), 1, "{report}");
+    assert_eq!(report["stale"][0]["file"], "backend/backend.go");
+    let selected = tools
+        .command("check")
+        .args(["--scope", "backend", "--format", "json"])
+        .assert()
+        .code(1);
+    let selected: Value = serde_json::from_slice(&selected.get_output().stdout).unwrap();
+    assert!(
+        selected["stats"].get("analysis_partial").is_none(),
+        "{selected}"
+    );
+    assert_eq!(selected["stale"].as_array().unwrap().len(), 1);
+    tools.check(&["--scope", "lib/app.dart"]);
+    for arguments in [
+        vec!["init", "-q"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Coverage Test",
+            "-c",
+            "user.email=coverage@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "test: coverage base",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(&tools.root)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let diff = tools
+        .command("check")
+        .args(["--diff", "HEAD", "--format", "json"])
+        .assert()
+        .code(1);
+    let diff: Value = serde_json::from_slice(&diff.get_output().stdout).unwrap();
+    assert_eq!(diff["stale"], report["stale"]);
+    tools.command("baseline").assert().success();
+    let saved: Value = serde_norway::from_str(
+        &fs::read_to_string(tools.root.join("easement.baseline.yml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved["violations"].as_array().unwrap().len(), 1, "{saved}");
+    assert_eq!(saved["violations"][0]["file"], "lib/app.dart");
+}
+
+#[test]
+fn component_symbol_diagnostics_survive_an_unrelated_language_gap() {
+    let tools = Tools::new();
+    tools.go_package();
+    fs::write(&tools.policy, concat!(
+        "version: 1\ncomponents:\n  app: {in: lib}\n  backend: {in: backend}\n",
+        "forbid_symbol: [example.com/backend.Thing]\nrules:\n  backend: {forbid_symbol: [example.com/backend.Thing]}\n"
+    )).unwrap();
+    fs::write(tools.state.join("error"), "").unwrap();
+    let report = tools.check(&["--no-cache"]);
+    let notes = report["stats"]["symbols_unmatched"].as_array().unwrap();
+    assert_eq!(notes.len(), 1, "{report}");
+    assert!(notes[0].as_str().unwrap().contains("of backend"));
+    assert!(
+        notes[0]
+            .as_str()
+            .unwrap()
+            .contains("example.com/backend/nested.Thing")
+    );
+}
+
+#[test]
+fn package_diagnostics_have_the_same_local_coverage_on_fresh_and_cached_reads() {
+    let tools = Tools::new();
+    tools.go_package();
+    fs::write(
+        &tools.policy,
+        "version: 1\ncomponents:\n  app: {in: lib}\n  backend: {in: backend}\n",
+    )
+    .unwrap();
+    let dart = tools.sdk.join("bin/dart");
+    let script = fs::read_to_string(&dart)
+        .unwrap()
+        .replace("$PWD/lib/app.dart", "/outside/project/generated.dart");
+    executable(&dart, &script);
+    fs::write(tools.state.join("error"), "").unwrap();
+    tools.baseline(json!([
+        {"rule": "external", "file": "lib/app.dart", "target": "package:old", "from": "app", "to": ""},
+        {"rule": "external", "file": "backend/backend.go", "target": "old", "from": "backend", "to": ""}
+    ]));
+    let read = |cached: bool| {
+        let mut command = tools.command("check");
+        command.args(["--format", "json"]);
+        if cached {
+            command.arg("--cache-only");
+        }
+        let output = command.assert().code(1);
+        serde_json::from_slice::<Value>(&output.get_output().stdout).unwrap()
+    };
+    let cold = read(false);
+    let calls = tools.calls();
+    let warm = read(true);
+    assert_eq!(tools.calls(), calls);
+    assert_eq!(cold["stale"], warm["stale"]);
+    assert_eq!(warm["stale"].as_array().unwrap().len(), 1, "{warm}");
+    assert_eq!(warm["stale"][0]["file"], "backend/backend.go");
+    assert_eq!(
+        cold["stats"]["analysis_partial"],
+        warm["stats"]["analysis_partial"]
+    );
+}
+
+#[test]
+fn independent_files_in_one_dart_package_can_retire_their_own_debt() {
+    let tools = Tools::new();
+    fs::write(tools.root.join("lib/clean.dart"), "class Clean {}\n").unwrap();
+    let path = tools.runner.join("dart.scip");
+    let mut index = Index::parse_from_bytes(&fs::read(&path).unwrap()).unwrap();
+    index.documents.push(Document {
+        language: "Dart".into(),
+        relative_path: "lib/clean.dart".into(),
+        ..Default::default()
+    });
+    fs::write(path, index.write_to_bytes().unwrap()).unwrap();
+    fs::write(tools.state.join("error"), "").unwrap();
+    tools.baseline(json!([
+        {"rule": "external", "file": "lib/app.dart", "target": "package:old", "from": "app", "to": ""},
+        {"rule": "external", "file": "lib/clean.dart", "target": "package:old", "from": "app", "to": ""}
+    ]));
+    let result = tools
+        .command("check")
+        .args(["--format", "json", "--no-cache"])
+        .assert()
+        .code(1);
+    let report: Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(report["stale"].as_array().unwrap().len(), 1, "{report}");
+    assert_eq!(report["stale"][0]["file"], "lib/clean.dart");
+}
+
+#[test]
+fn suggestions_and_graph_answers_do_not_certify_absence_through_a_gap() {
+    let tools = Tools::new();
+    tools.go_package();
+    fs::write(
+        &tools.policy,
+        concat!(
+            "version: 1\ncomponents:\n  app: {in: lib}\n  backend: {in: backend/backend.go}\n",
+            "  other: {in: backend/other.go}\n",
+            "rules:\n  app:\n    may_depend_on: [backend]\n  backend:\n    may_depend_on: [other]\n"
+        ),
+    )
+    .unwrap();
+    fs::write(tools.state.join("error"), "").unwrap();
+    tools
+        .command("suggest")
+        .arg("--patch")
+        .assert()
+        .success()
+        .stdout(contains("-    may_depend_on: [other]"))
+        .stdout(predicates::prelude::PredicateBooleanExt::not(contains(
+            "-    may_depend_on: [backend]",
+        )));
+    tools
+        .command("why")
+        .args(["app", "backend"])
+        .assert()
+        .success()
+        .stdout(contains("no dependency path was established"))
+        .stdout(contains("partial"));
+    tools
+        .command("impact")
+        .arg("lib/app.dart")
+        .assert()
+        .success()
+        .stdout(contains("No dependents were established"))
+        .stdout(contains("Partial:"));
+}
+
+#[test]
+fn missing_generated_diagnostics_stay_local_and_target_only_errors_are_not_source_gaps() {
+    let tools = Tools::new();
+    let dart = tools.sdk.join("bin/dart");
+    let original = fs::read_to_string(&dart).unwrap();
+    executable(
+        &dart,
+        &original.replace("$PWD/lib/app.dart", "$PWD/lib/missing.g.dart"),
+    );
+    fs::write(tools.state.join("error"), "").unwrap();
+    tools.baseline(json!([
+        {"rule": "external", "file": "lib/missing.g.dart", "target": "package:old", "from": "app", "to": ""},
+        {"rule": "external", "file": "lib/app.dart", "target": "package:old", "from": "app", "to": ""}
+    ]));
+    let result = tools
+        .command("check")
+        .args(["--format", "json", "--no-cache"])
+        .assert()
+        .code(1);
+    let report: Value = serde_json::from_slice(&result.get_output().stdout).unwrap();
+    assert_eq!(
+        report["stats"]["analysis_partial"][0]["file"],
+        "lib/missing.g.dart"
+    );
+    assert_eq!(report["stale"].as_array().unwrap().len(), 1, "{report}");
+    assert_eq!(report["stale"][0]["file"], "lib/app.dart");
+    executable(&dart, &original);
+    fs::remove_file(tools.root.join("easement.baseline.yml")).unwrap();
+    fs::write(
+        &tools.policy,
+        "version: 1\ncomponents:\n  app: {in: lib}\ntarget_only: [lib/app.dart]\n",
+    )
+    .unwrap();
+    let report = tools.check(&["--no-cache"]);
+    assert!(
+        report["stats"].get("analysis_partial").is_none(),
+        "{report}"
+    );
+}
+
+#[test]
+fn incomplete_middle_files_protect_reach_debt_in_both_reach_modes_and_narrow_scopes() {
+    let tools = Tools::new();
+    for (file, source) in [
+        ("app.dart", "import 'middle.dart';\nclass Visible {}\n"),
+        ("middle.dart", "class Middle {}\n"),
+        ("end.dart", "class End {}\n"),
+    ] {
+        fs::write(tools.root.join("lib").join(file), source).unwrap();
+    }
+    let mut index = Index::new();
+    for file in ["app.dart", "middle.dart", "end.dart"] {
+        let mut occurrences = vec![Occurrence {
+            symbol: format!("scip-dart pub app null lib/`{file}`/"),
+            symbol_roles: 1,
+            range: vec![0, 0, 0],
+            ..Default::default()
+        }];
+        if file == "app.dart" {
+            occurrences.push(Occurrence {
+                symbol: "scip-dart pub app null lib/`middle.dart`/".into(),
+                range: vec![0, 7, 20],
+                ..Default::default()
+            });
+        }
+        index.documents.push(Document {
+            language: "Dart".into(),
+            relative_path: format!("lib/{file}"),
+            occurrences,
+            ..Default::default()
+        });
+    }
+    fs::write(
+        tools.runner.join("dart.scip"),
+        index.write_to_bytes().unwrap(),
+    )
+    .unwrap();
+    let dart = tools.sdk.join("bin/dart");
+    executable(
+        &dart,
+        &fs::read_to_string(&dart)
+            .unwrap()
+            .replace("$PWD/lib/app.dart", "$PWD/lib/middle.dart"),
+    );
+    for mode in ["files", "symbols"] {
+        fs::write(
+            &tools.policy,
+            format!(
+                concat!(
+                    "version: 1\nreach: {}\ncomponents:\n  app: {{in: lib/app.dart}}\n",
+                    "  middle: {{in: lib/middle.dart}}\n  end: {{in: lib/end.dart}}\n",
+                    "rules:\n  app: {{may_depend_on: [middle], must_not_reach: [end]}}\n"
+                ),
+                mode
+            ),
+        )
+        .unwrap();
+        tools.baseline(
+            json!([{ "rule": "reach", "file": "", "target": "", "from": "app", "to": "end" }]),
+        );
+        fs::write(tools.state.join("error"), "").unwrap();
+        let report = tools.check(&[]);
+        let gaps = report["stats"]["analysis_partial"].as_array().unwrap();
+        assert_eq!(gaps.len(), 1, "{report}");
+        assert_eq!(gaps[0]["file"], "lib/middle.dart");
+        let scoped = tools.check(&["--cache-only", "--scope", "lib/app.dart"]);
+        assert!(scoped["stale"].as_array().unwrap().is_empty(), "{scoped}");
+        assert!(
+            scoped["stats"].get("analysis_partial").is_none(),
+            "{scoped}"
+        );
+        fs::remove_file(tools.state.join("error")).unwrap();
+        let complete = tools
+            .command("check")
+            .args(["--no-cache", "--format", "json"])
+            .assert()
+            .code(1);
+        let complete: Value = serde_json::from_slice(&complete.get_output().stdout).unwrap();
+        assert_eq!(complete["stale"].as_array().unwrap().len(), 1, "{complete}");
+    }
+}

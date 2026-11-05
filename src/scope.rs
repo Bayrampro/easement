@@ -38,6 +38,25 @@ impl Scope {
         })
     }
 
+    pub fn is_whole(&self) -> bool {
+        self.components.is_empty() && self.paths.is_none()
+    }
+
+    pub fn contains_owner(&self, file: &str, owner: Option<&str>) -> bool {
+        (self.components.is_empty() || owner.is_some_and(|name| self.components.contains(name)))
+            && self.paths.as_ref().is_none_or(|paths| paths.is_match(file))
+    }
+
+    /// Missing facts may belong to any configured part of a source file.
+    pub fn contains_coverage(&self, map: &ComponentMap, file: &str) -> bool {
+        (self.components.is_empty()
+            || map
+                .possible_components_of_file(file)
+                .iter()
+                .any(|component| self.components.contains(*component)))
+            && self.paths.as_ref().is_none_or(|paths| paths.is_match(file))
+    }
+
     /// Whether `file` is reported on: it matches every restriction that was given.
     pub fn contains(&self, map: &ComponentMap, file: &str) -> bool {
         (self.components.is_empty()

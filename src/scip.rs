@@ -698,9 +698,7 @@ pub struct Facts {
     pub unnamed: BTreeSet<String>,
     /// With `watched`, the qualifier and name of every symbol the index defines or
     /// references whose name is one of `watched`: what a `forbid_symbol` name can mean.
-    pub known: Vec<(String, String)>,
-    /// Whether `known` is whole: false when the index left some definitions unnamed.
-    pub known_whole: bool,
+    pub known: crate::coverage::Symbols,
 }
 
 /// One `Dep` per file and module it refers to, at the first line that does:
@@ -782,21 +780,48 @@ pub fn facts_watching(
     let mut unnamed = BTreeSet::new();
     // What the index defines is read as if a file of no project referenced it, so that
     // a definition no one uses still tells what a name can mean.
-    let definitions = (symbols && !watched.is_empty()).then(|| Document {
-        path: String::new(),
-        references: defined
-            .keys()
-            .chain(hidden.keys())
-            .enumerate()
-            .map(|(line, symbol)| Reference {
-                line: line + 1,
-                symbol: (*symbol).to_string(),
-                spelled: None,
-            })
-            .collect(),
-        ..Document::default()
-    });
-    for document in documents.iter().chain(definitions.as_ref()) {
+    let mut definition_domains: BTreeMap<&str, Vec<Reference>> = BTreeMap::new();
+    if symbols && !watched.is_empty() {
+        for document in documents.iter().chain(excluded) {
+            let domain = registry::of(&document.path).map_or("", |language| language.name);
+            let references = definition_domains.entry(domain).or_default();
+            for symbol in &document.definitions {
+                references.push(Reference {
+                    line: references.len() + 1,
+                    symbol: symbol.clone(),
+                    spelled: None,
+                });
+            }
+        }
+    }
+    let definitions: Vec<_> = definition_domains
+        .into_iter()
+        .map(|(domain, references)| {
+            (
+                domain,
+                Document {
+                    references,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+    let mut known = crate::coverage::Symbols::default();
+    for (domain, document) in documents
+        .iter()
+        .map(|document| {
+            (
+                registry::of(&document.path).map_or("", |l| l.name),
+                document,
+            )
+        })
+        .chain(
+            definitions
+                .iter()
+                .map(|(domain, document)| (*domain, document)),
+        )
+    {
+        let first_use = uses.len();
         // Rust writes `crate::domain::order::Order` as a reference to every module on
         // the path, and Ruby `Shop::Domain::Order` as one to every module and the class;
         // only the deepest one is what the line depends on.
@@ -924,6 +949,18 @@ pub fn facts_watching(
                 }
             }
         }
+        for used in &uses[first_use..] {
+            for (qualifier, name) in std::iter::once((used.specifier.clone(), used.name.clone()))
+                .chain(used.method.clone())
+            {
+                if watched.contains(&name) {
+                    known.insert(domain, qualifier, name);
+                }
+            }
+        }
+        if unnamed.remove("") {
+            known.incomplete.insert(domain.into());
+        }
         for ((internal, module, part), line) in first {
             let (specifier, target) = match internal {
                 Some(path) => (path.to_string(), Target::Internal(Unit::from(path))),
@@ -941,34 +978,14 @@ pub fn facts_watching(
             });
         }
     }
-    let known_whole = !unnamed.remove("");
     deps.retain(|dep| !dep.file.as_os_str().is_empty());
-    let mut known = Vec::new();
-    uses.retain(|used| {
-        if !used.file.as_os_str().is_empty() {
-            return true;
-        }
-        known.push(used.clone());
-        false
-    });
-    let known = known
-        .iter()
-        .chain(&uses)
-        .flat_map(|used| {
-            let method = used.method.clone();
-            std::iter::once((used.specifier.clone(), used.name.clone())).chain(method)
-        })
-        .filter(|(_, name)| watched.contains(name))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    uses.retain(|used| !used.file.as_os_str().is_empty());
     Facts {
         analysis_partial: Vec::new(),
         deps,
         symbols: uses,
         unnamed,
         known,
-        known_whole,
     }
 }
 

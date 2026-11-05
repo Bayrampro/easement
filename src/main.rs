@@ -2,6 +2,7 @@ mod baseline;
 mod check;
 mod components;
 mod config;
+mod coverage;
 mod decision;
 mod diagram;
 mod diff;
@@ -330,24 +331,22 @@ impl Project {
             &in_scope,
             &scan.deps,
         ));
+        let coverage = coverage::Coverage::new(coverage::Input {
+            files: &scan.checked_files,
+            uncovered: &scan.uncovered,
+            gaps: &scan.analysis_partial,
+            domains: &scan.domains,
+            unnamed: &scan.unnamed_uses,
+        });
         stats.analysis_partial = scan
             .analysis_partial
             .iter()
-            .filter(|gap| scope.contains(&map, &gap.file))
+            .filter(|gap| coverage.gap_in_scope(gap, scope, &map))
             .cloned()
             .collect();
-        // Only a whole index can tell a name that matches nothing: files it did not
-        // cover, names it left unnamed and languages without an index may hold it.
-        let indexed_whole = scan.analysis_partial.is_empty()
-            && scan.uncovered.is_empty()
-            && scan.unnamed_uses.is_empty()
-            && scan.known_symbols.1
-            && scan
-                .paths
-                .iter()
-                .all(|f| indexer::INDEXERS.iter().any(|l| l.covers(f)));
-        stats.symbols_unmatched =
-            check::symbols_unmatched(self.config(), &scan.known_symbols.0, indexed_whole);
+        stats.symbols_unmatched = check::symbols_unmatched(self.config(), |component| {
+            coverage.symbols_for(component, &map, &scan.known_symbols)
+        });
         stats.files = scan
             .paths
             .iter()
@@ -364,13 +363,8 @@ impl Project {
         let accepted = map.accepted_gaps(scan.uncovered.iter().filter(|f| scope.contains(&map, f)));
         Ok(Analysis {
             accepted,
-            uncertain: scan
-                .uncovered
-                .iter()
-                .cloned()
-                .chain(scan.analysis_partial.into_iter().map(|gap| gap.file))
-                .collect(),
-            unindexed: scan.uncovered,
+            unindexed: coverage.uncovered(),
+            coverage,
             violations,
             all_files: scan.all_files,
             edges,
@@ -415,8 +409,8 @@ struct Analysis {
     unindexed: Vec<String>,
     /// The files of `unindexed` in the scope that `uncovered_ok` accepts, by entry.
     accepted: Vec<components::AcceptedGap>,
-    /// Missing extraction facts, including gaps inside indexed files.
-    uncertain: Vec<String>,
+    /// Completeness of file, graph and symbol absence claims.
+    coverage: coverage::Coverage,
     /// Every file that is not excluded, source or not.
     all_files: Vec<String>,
     edges: Vec<check::Edge>,
@@ -466,6 +460,8 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<Outcome> {
         map,
         edges,
         accepted,
+        deps,
+        coverage,
         ..
     } = project.analyze(cache, &scope)?;
     let current = violations.iter().map(check::Violation::key).collect();
@@ -504,12 +500,9 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<Outcome> {
         .partition(|v| project.config().warns(v.rule));
     let mut verdict = Verdict::judge(judged, warnings, &current, baseline.as_ref());
     verdict.owners = project.config().owners();
-    verdict.stale.retain(|k| scope.contains(&map, &k.file));
-    // Missing extraction facts can hide graph-level findings, so absence does
-    // not prove that previously baselined debt has been paid.
-    if !stats.analysis_partial.is_empty() {
-        verdict.stale.clear();
-    }
+    verdict.stale.retain(|key| {
+        coverage.key_in_scope(key, &map, &deps, &scope) && coverage.can_retire(key, &map, &deps)
+    });
     verdict.sort();
     let changes = changes.as_ref();
     let narrowed = report::narrowed(changes, &options.components, &options.paths);
@@ -624,13 +617,14 @@ fn run(cli: Cli) -> Result<Outcome> {
                 None => (violations, Vec::new()),
             };
             let mut baseline = Baseline::from_violations(&violations);
-            // A file no indexer read may still hold its debt: keep its entries.
+            // Missing facts can hide file or graph debt; keep only affected keys.
             let unread: Vec<_> = old
                 .iter()
                 .flat_map(|old| &old.violations)
                 .filter(|k| {
-                    analysis.uncertain.contains(&k.file)
-                        || !analysis.stats.analysis_partial.is_empty()
+                    !analysis
+                        .coverage
+                        .can_retire(k, &analysis.map, &analysis.deps)
                 })
                 .filter(|k| !baseline.violations.contains(k))
                 .cloned()
@@ -646,17 +640,11 @@ fn run(cli: Cli) -> Result<Outcome> {
                 println!("easement: {note}");
             }
             if !unread.is_empty() {
-                if analysis.stats.analysis_partial.is_empty() {
-                    println!(
-                        "easement: {} entr(ies) kept for files no indexer covered, so their debt is not known to be paid; `easement check` lists those files",
-                        unread.len()
-                    );
-                } else {
-                    println!(
-                        "easement: {} entr(ies) kept because dependency analysis is incomplete; `easement check` lists its limitations",
-                        unread.len()
-                    );
-                }
+                println!(
+                    "easement: {} entr(ies) kept because their files or dependency paths have incomplete analysis; \
+                     independently verified debt can still be removed; `easement check` lists the limitations",
+                    unread.len()
+                );
             }
             for v in &refused {
                 println!("{}:{}: {} [{}]", v.file, v.line, v.message, v.rule.as_str());
@@ -736,6 +724,7 @@ fn run(cli: Cli) -> Result<Outcome> {
                 files: &analysis.all_files,
                 violations: &analysis.violations,
                 uncovered: &analysis.unindexed,
+                incomplete: !analysis.coverage.uncertain().is_empty(),
             };
             print!("{}", impact::why(project.config(), &graph, &from, &to)?);
             for reason in report::analysis_reasons(&analysis.stats) {
@@ -800,7 +789,7 @@ fn run(cli: Cli) -> Result<Outcome> {
                     project.config(),
                     &analysis.map,
                     &analysis.edges,
-                    &analysis.uncertain,
+                    &analysis.coverage.uncertain(),
                 );
                 let (new, skipped) = patch::remove_allowances(text, &gone);
                 for note in skipped
@@ -822,7 +811,7 @@ fn run(cli: Cli) -> Result<Outcome> {
                     &analysis.edges,
                     &analysis.deps,
                     &analysis.files,
-                    &analysis.uncertain,
+                    &analysis.coverage.uncertain(),
                     &diagram::unused_arrows(&project.policy, &analysis.edges)?,
                 )
             );
@@ -836,7 +825,7 @@ fn run(cli: Cli) -> Result<Outcome> {
                 project.config(),
                 &analysis.map,
                 &analysis.edges,
-                &analysis.uncertain,
+                &analysis.coverage.uncertain(),
             );
             Ok(!check || unused.is_empty())
         }

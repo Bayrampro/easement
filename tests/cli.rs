@@ -4034,9 +4034,9 @@ fn the_baseline_keeps_the_debt_of_files_no_indexer_read() {
         tsconfig.replacen('{', "{\n  \"exclude\": [\"src/ui\"],", 1),
     )
     .unwrap();
-    easement(&root, &["baseline"])
-        .success()
-        .stdout(contains("kept for files no indexer covered"));
+    easement(&root, &["baseline"]).success().stdout(contains(
+        "kept because their files or dependency paths have incomplete analysis",
+    ));
     let baseline = fs::read_to_string(root.join("easement.baseline.yml")).unwrap();
     assert!(baseline.contains("src/ui/legacy.js"), "{baseline}");
 }
@@ -4648,7 +4648,9 @@ fn impact_and_why_say_when_an_answer_may_be_short() {
     insta::assert_json_snapshot!("impact_partial_json", report);
     easement(&root, &["why", "tools", "app"])
         .success()
-        .stdout(contains("tools does not depend on app"))
+        .stdout(contains(
+            "no dependency path was established from tools to app",
+        ))
         .stdout(contains("source files were not covered by an indexer"));
 
     // A deleted file: what imported it is gone from the code.

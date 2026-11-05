@@ -158,7 +158,11 @@ pub fn render(impact: &Impact, map: &ComponentMap) -> String {
         out.push_str(&format!("Deleted: {}\n", impact.deleted.join(", ")));
     }
     if impact.dependents.is_empty() {
-        out.push_str("Nothing depends on them.\n");
+        out.push_str(if impact.confidence == Confidence::Partial {
+            "No dependents were established by the available facts.\n"
+        } else {
+            "Nothing depends on them.\n"
+        });
     } else {
         out.push_str(&format!(
             "Depend on them: {} file(s){}\n",
@@ -207,6 +211,7 @@ pub struct Graph<'a> {
     pub files: &'a [String],
     pub violations: &'a [Violation],
     pub uncovered: &'a [String],
+    pub incomplete: bool,
 }
 
 /// Why `from` depends on `to`: what the config says, then each import behind
@@ -269,10 +274,19 @@ pub fn why(config: &Config, graph: &Graph, from: &str, to: &str) -> Result<Strin
         match shortest_chain(&files, starts, is_hop, |f| of(f) == Some(to)) {
             Some((hops, last)) => {
                 let (through, chain) = describe_chain(&hops, last, of);
-                out.push_str(&format!(
-                    "{from} imports nothing of {to} directly; it reaches {to} through {through}:\n  {chain}\n"
-                ));
+                if graph.incomplete {
+                    out.push_str(&format!(
+                        "no direct import was established; {from} reaches {to} through {through}:\n  {chain}\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "{from} imports nothing of {to} directly; it reaches {to} through {through}:\n  {chain}\n"
+                    ));
+                }
             }
+            None if graph.incomplete => out.push_str(&format!(
+                "no dependency path was established from {from} to {to}; incomplete facts may hide one\n"
+            )),
             None => out.push_str(&format!("{from} does not depend on {to}\n")),
         }
     } else {

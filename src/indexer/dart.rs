@@ -314,6 +314,7 @@ impl super::Reader for DartReader {
             &target_only,
         )?);
         Ok(Indexed {
+            domains: Vec::new(),
             documents,
             analysis_partial: gaps,
             uncovered,

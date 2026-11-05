@@ -433,6 +433,28 @@ impl ComponentMap {
         self.matching(rel_path).map(|e| e.component.as_str())
     }
 
+    /// Owners whose code an incomplete file could contain, including named
+    /// parts and test-only code. Coverage must not assume an unseen part absent.
+    pub fn possible_components_of_file(&self, file: &str) -> std::collections::BTreeSet<&str> {
+        let mut owners: std::collections::BTreeSet<&str> =
+            self.component_of(file).into_iter().collect();
+        owners.extend(
+            self.entries
+                .iter()
+                .filter(|entry| {
+                    entry.part.is_some()
+                        && entry.matchers.iter().any(|matcher| matcher.is_match(file))
+                })
+                .map(|entry| entry.component.as_str()),
+        );
+        if self.tests
+            && crate::lang::registry::of(file).is_some_and(|language| language.parts.is_some())
+        {
+            owners.insert(TESTS);
+        }
+        owners
+    }
+
     /// The component of `rel_path` and the `in` pattern that put it there.
     pub fn component_and_pattern(&self, rel_path: &str) -> Option<(&str, &str)> {
         self.matching(rel_path)

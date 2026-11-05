@@ -110,6 +110,7 @@ trait Reader: Send {
             .cloned()
             .collect();
         Ok(Indexed {
+            domains: Vec::new(),
             documents,
             analysis_partial: gaps,
             uncovered,
@@ -622,6 +623,8 @@ pub enum CacheUse {
 
 /// What the indexers found, and the source files they did not cover.
 pub struct Indexed {
+    /// Extraction scopes reconstructed for both fresh and cached indexes.
+    pub domains: Vec<crate::coverage::Domain>,
     pub analysis_partial: Vec<crate::scan::AnalysisGap>,
     pub documents: Documents,
     /// Indexers that ran, and indexes read from the cache instead.
@@ -685,6 +688,7 @@ pub fn run(
             let mut reader = (language.reader)();
             let mut parts = Vec::new();
             let mut gaps = Vec::new();
+            let mut domains = Vec::new();
             let (mut ran, mut cached) = (0, 0);
             for dir in roots {
                 let (read, hit) = index_dir(
@@ -696,6 +700,25 @@ pub fn run(
                     cache,
                     &config.go.tags,
                 )?;
+                let files = keyed
+                    .iter()
+                    .filter(|file| {
+                        language.covers(file)
+                            && (dir.is_empty() || file.starts_with(&format!("{dir}/")))
+                            && (!matches!(language.root_policy, RootPolicy::SourceOwners)
+                                || !roots.iter().any(|nested| {
+                                    nested.len() > dir.len()
+                                        && file.starts_with(&format!("{nested}/"))
+                                }))
+                    })
+                    .cloned()
+                    .collect();
+                domains.push(crate::coverage::Domain {
+                    root: dir.clone(),
+                    language: language.name(),
+                    files,
+                    gaps: read.gaps.clone(),
+                });
                 parts.push(read.documents);
                 gaps.extend(read.gaps);
                 if hit {
@@ -705,6 +728,7 @@ pub fn run(
                 }
             }
             let mut indexed = reader.finish(language, Documents::merged(parts)?, gaps, &context)?;
+            indexed.domains = domains;
             indexed.ran = ran;
             indexed.cached = cached;
             Ok(indexed)
@@ -712,10 +736,12 @@ pub fn run(
     )?;
     let mut parts = Vec::new();
     let mut analysis_partial = Vec::new();
+    let mut domains = Vec::new();
     let mut uncovered = BTreeSet::new();
     let (mut ran, mut cached) = (0, 0);
     for indexed in results {
         parts.push(indexed.documents.0);
+        domains.extend(indexed.domains);
         analysis_partial.extend(indexed.analysis_partial);
         uncovered.extend(indexed.uncovered);
         ran += indexed.ran;
@@ -733,6 +759,7 @@ pub fn run(
             .filter(|file| !covered.contains(file.as_str())),
     );
     Ok(Indexed {
+        domains,
         documents,
         analysis_partial,
         uncovered: uncovered.into_iter().collect(),

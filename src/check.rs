@@ -1206,16 +1206,12 @@ pub fn symbols_unverified(
 /// defined as `I18n::Base.locale`): such a rule cannot fire. A name the index has
 /// never seen stays silent, since banning what the code does not use yet is what
 /// the rule is for. `known` is what the index knows under the names that
-/// `forbid_symbol` lists; `complete` is false when the index is not whole, and then
-/// nothing is said.
+/// `forbid_symbol` lists. `known_for` supplies only complete relevant domains;
+/// an indeterminate query returns `None` and produces no absence claim.
 pub fn symbols_unmatched(
     config: &Config,
-    known: &[(String, String)],
-    complete: bool,
+    known_for: impl Fn(Option<&str>) -> Option<Vec<(String, String)>>,
 ) -> Vec<String> {
-    if !complete {
-        return Vec::new();
-    }
     let mut found = Vec::new();
     let lists = std::iter::once(("the top level", &config.forbid_symbol)).chain(
         config
@@ -1224,6 +1220,12 @@ pub fn symbols_unmatched(
             .map(|(component, rule)| (component.as_str(), &rule.forbid_symbol)),
     );
     for (component, list) in lists {
+        if list.is_empty() {
+            continue;
+        }
+        let Some(known) = known_for((component != "the top level").then_some(component)) else {
+            continue;
+        };
         for listed in list {
             let pattern = listed.name();
             let Some((qualifier, wanted)) = pattern.rsplit_once('.') else {
@@ -1740,7 +1742,7 @@ rules:
     #[test]
     fn a_name_defined_only_deeper_under_its_qualifier_is_flagged_with_the_candidate() {
         let config = forbidding(&["I18n.locale"]);
-        let notes = symbols_unmatched(&config, &known(&[("I18n::Base", "locale")]), true);
+        let notes = symbols_unmatched(&config, |_| Some(known(&[("I18n::Base", "locale")])));
         assert_eq!(
             notes,
             [
@@ -1764,7 +1766,7 @@ rules:
         ] {
             let config = forbidding(&[pattern]);
             assert!(
-                symbols_unmatched(&config, &known, true).is_empty(),
+                symbols_unmatched(&config, |_| Some(known.clone())).is_empty(),
                 "{pattern}"
             );
         }
@@ -1831,8 +1833,7 @@ components:
     #[test]
     fn nothing_is_said_when_the_index_is_not_whole() {
         let config = forbidding(&["I18n.locale"]);
-        let known = known(&[("I18n::Base", "locale")]);
-        assert!(symbols_unmatched(&config, &known, false).is_empty());
+        assert!(symbols_unmatched(&config, |_| None).is_empty());
     }
 
     fn config(no_cycles: &str) -> Config {

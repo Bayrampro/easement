@@ -658,7 +658,7 @@ Run it on `pre-push` rather than `pre-commit`: the check reads the whole project
 - any new violation fails;
 - a baseline entry that no longer occurs also fails, so fixed debt has to be removed from the file with `easement baseline`.
 
-Once the file exists, `easement baseline` only shrinks it: it drops the entries that no longer occur and lists the new violations instead of writing them, exiting 1 while there are any. Rerunning it cannot turn a failing gate green. `easement baseline --accept-new` writes the new violations too, for when a human decides to take on the debt. Three ordinary changes need it: a rule made stricter, a rule taken out of `warn`, and a file with baselined debt moved, since the entries are keyed by file. Entries of files no indexer covered are kept, because their debt was not read, not paid.
+Once the file exists, `easement baseline` only shrinks it: it drops the entries that no longer occur and lists the new violations instead of writing them, exiting 1 while there are any. Rerunning it cannot turn a failing gate green. `easement baseline --accept-new` writes the new violations too, for when a human decides to take on the debt. Three ordinary changes need it: a rule made stricter, a rule taken out of `warn`, and a file with baselined debt moved, since the entries are keyed by file. Entries whose files or dependency paths have incomplete extraction are kept: absence is not evidence of paid debt there. Independently verified entries can still become stale and be removed, even when another language has analysis gaps.
 
 Entries are keyed by rule, file, target and components, not by line, so unrelated edits do not invalidate them. A cycle and a coupling limit are keyed by their components and a missing requirement by its directory, so a new file that carries the same debt does not make it new. Every use is a violation of its own, at its own line, so a file that uses a forbidden name three times is reported three times; one baseline entry legalizes all the uses of its key, and a use added next to a legalized one is legalized with it.
 
@@ -844,8 +844,14 @@ errors. Analyzer errors, unresolved indexed references and unmatched source
 directives lower confidence. Warnings and lints alone are not architecture
 violations. These limitations appear in text, `confidence_reasons`, and JSON
 `stats.analysis_partial`, including source locations where available.
-Incomplete extraction preserves baseline debt and prevents suggestions from
-removing allowances whose use could be hidden by missing dependencies.
+Incomplete extraction preserves baseline debt for the affected files and graph
+checks. A gap in Flutter code does not disable stale-debt detection for an
+independently indexed Go or TypeScript component. Package-level diagnostics
+affect the source files of that indexer run. Cycles, metrics and reach checks
+retain debt when the missing facts could hide it; verified debt elsewhere can
+still be removed. Suggestions keep allowances involving affected components.
+Component-level symbol diagnostics require complete data for the relevant
+language domains; global or ambiguous symbol queries remain conservative.
 
 For example, enforce a domain boundary and forbid Flutter in domain code:
 
