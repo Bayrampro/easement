@@ -804,7 +804,7 @@ Most architecture checkers are tied to one language. `easement` is not a replace
 
 | Tool | Languages | Level of analysis | Rules are written as |
 | --- | --- | --- | --- |
-| `easement` | Go, TypeScript/JavaScript, Python, Java, Rust, C#, Ruby, Kotlin, PHP, Swift | imports between files and packages | one YAML file |
+| `easement` | Go, TypeScript/JavaScript, Python, Java, Rust, C#, Ruby, Kotlin, PHP, Swift | imports between files and packages, symbols used, type names, declared packages | one YAML file |
 | [ArchUnit](https://www.archunit.org/) | Java (and other JVM languages through bytecode) | classes, methods, annotations, inheritance | JUnit tests in code |
 | [dependency-cruiser](https://github.com/sverweij/dependency-cruiser) | JavaScript, TypeScript | imports between modules | JS or JSON config |
 | [import-linter](https://github.com/seddonym/import-linter) | Python | imports between modules | INI or TOML contracts |
@@ -821,7 +821,7 @@ Where `easement` differs:
 
 Where the others are stronger:
 
-- **Depth.** `easement` sees imports and the symbols used through them (Go, TypeScript, Python, Rust and Ruby), but it has no rules about classes, methods, annotations, naming or call chains (ArchUnit, arch-go).
+- **Depth.** `easement` judges imports, the symbols used through them (Go, TypeScript, Python, Rust and Ruby), which component a type name belongs to ([`defines`](#names-of-types)) and indirect reach through the methods a call references ([`reach: symbols`](#reaching-through-others)). It has no rules about inheritance, signatures, annotations or other class and member properties (ArchUnit), nor about package contents or function limits (arch-go).
 - **Kotlin and Swift.** They are read with tree-sitter, not a compiler, so what a build system would resolve there is approximated.
 
 Using both is reasonable: keep a language-specific tool for the deep rules of one codebase and let `easement` hold the boundaries between components and languages.
