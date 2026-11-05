@@ -298,9 +298,11 @@ impl Project {
         if self.config.tests.is_some() {
             stats.parts_partial = parts_reasons(&scan.parts_doubts);
         }
-        stats
-            .parts_partial
-            .extend(parts_unmatched(&self.config, &scan.deps));
+        stats.parts_partial.extend(
+            parts_unmatched(&self.config, &scan.deps)
+                .into_iter()
+                .map(check::Unjudged::new),
+        );
         stats.symbols_partial = check::symbols_partial(&self.config, &map, &scan.unnamed_uses);
         // Only a whole index can tell a name that matches nothing: files it did not
         // cover, names it left unnamed and languages without an index may hold it.
@@ -834,7 +836,7 @@ fn parts_unmatched(config: &config::Config, deps: &[scan::Dep]) -> Vec<String> {
 }
 
 /// One line for each kind of doubt about test code, with the files it holds.
-fn parts_reasons(doubts: &[(String, lang::parts::Doubt)]) -> Vec<String> {
+fn parts_reasons(doubts: &[(String, lang::parts::Doubt)]) -> Vec<check::Unjudged> {
     let mut by_kind: std::collections::BTreeMap<lang::parts::Doubt, Vec<&str>> =
         std::collections::BTreeMap::new();
     for (file, doubt) in doubts {
@@ -855,7 +857,7 @@ fn parts_reasons(doubts: &[(String, lang::parts::Doubt)]) -> Vec<String> {
             if files.len() > PARTS_SHOWN {
                 named.push_str(&format!(" and {} more", files.len() - PARTS_SHOWN));
             }
-            doubt.reason(&named)
+            check::Unjudged::new(doubt.reason(&named)).in_files(files)
         })
         .collect()
 }

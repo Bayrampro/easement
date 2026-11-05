@@ -207,6 +207,48 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
+/// Code a rule could not read or judge: why, in one sentence, and the files or
+/// the extensions of the files it holds for, where they are known.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Unjudged {
+    pub reason: String,
+    pub files: Vec<String>,
+    pub extensions: Vec<String>,
+}
+
+impl Unjudged {
+    pub fn new(reason: String) -> Self {
+        Self {
+            reason,
+            ..Self::default()
+        }
+    }
+
+    /// The files it holds for, sorted, each once.
+    pub fn in_files<S: Into<String>>(mut self, files: impl IntoIterator<Item = S>) -> Self {
+        self.files = files.into_iter().map(Into::into).collect();
+        self.files.sort();
+        self.files.dedup();
+        self
+    }
+
+    /// The extensions of the files it holds for, sorted, each once.
+    pub fn in_extensions<S: Into<String>>(
+        mut self,
+        extensions: impl IntoIterator<Item = S>,
+    ) -> Self {
+        self.extensions = extensions.into_iter().map(Into::into).collect();
+        self.extensions.sort();
+        self.extensions.dedup();
+        self
+    }
+}
+
+/// The reasons alone: what `stats` has always said of code a rule could not judge.
+fn reasons<S: serde::Serializer>(unjudged: &[Unjudged], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(unjudged.iter().map(|u| &u.reason))
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct Stats {
     pub files: usize,
@@ -229,24 +271,24 @@ pub struct Stats {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub naming_unseen: Vec<String>,
     /// Why `manifests` left some imports unchecked.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub manifests_partial: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", serialize_with = "reasons")]
+    pub manifests_partial: Vec<Unjudged>,
     /// Test code that `tests: auto` could not take out of the file it sits in.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub parts_partial: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", serialize_with = "reasons")]
+    pub parts_partial: Vec<Unjudged>,
     /// Manifests, or dependencies of one, that `packages` could not judge as declared.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub packages_partial: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", serialize_with = "reasons")]
+    pub packages_partial: Vec<Unjudged>,
     /// Why `forbid_symbol` left some uses of names unchecked.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub symbols_partial: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", serialize_with = "reasons")]
+    pub symbols_partial: Vec<Unjudged>,
     /// `forbid_symbol` names that match no symbol of the index, though one of the
     /// same name sits deeper under the qualifier: the rule can never fire.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub symbols_unmatched: Vec<String>,
     /// Why `unused` took some files as used without judging them.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub unused_partial: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", serialize_with = "reasons")]
+    pub unused_partial: Vec<Unjudged>,
     /// Source files of an indexed language that its indexer did not cover.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub uncovered: Vec<String>,
@@ -1062,7 +1104,7 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
 /// `package.json` with no `name` inside it (`{"type": "module"}`) hides it.
 /// Only files that a `forbid_symbol` list covers count: all of them for the top-level
 /// list, else those of a component with its own.
-pub fn symbols_partial(config: &Config, map: &ComponentMap, unnamed: &[String]) -> Vec<String> {
+pub fn symbols_partial(config: &Config, map: &ComponentMap, unnamed: &[String]) -> Vec<Unjudged> {
     const SHOWN: usize = 3;
     let unnamed: Vec<&str> = unnamed
         .iter()
@@ -1082,9 +1124,9 @@ pub fn symbols_partial(config: &Config, map: &ComponentMap, unnamed: &[String]) 
     if unnamed.len() > SHOWN {
         files.push_str(&format!(" and {} more files", unnamed.len() - SHOWN));
     }
-    vec![format!(
+    vec![Unjudged::new(format!(
         "`forbid_symbol` cannot tell the npm package of the names used in {files}: a `package.json` without `name` inside the package hides it from the indexer, so those uses were not checked; scip-typescript 0.6.1 or newer names such a package: update the indexer and run again"
-    )]
+    )).in_files(unnamed)]
 }
 
 /// The `forbid_symbol` names that no symbol of the index matches, though a symbol
@@ -1595,9 +1637,11 @@ rules:
         let notes = symbols_partial(&config, &map, &["web/a.ts".to_string()]);
         assert_eq!(notes.len(), 1);
         assert!(
-            notes[0].contains("scip-typescript 0.6.1 or newer") && notes[0].contains("web/a.ts"),
+            notes[0].reason.contains("scip-typescript 0.6.1 or newer")
+                && notes[0].reason.contains("web/a.ts"),
             "{notes:?}"
         );
+        assert_eq!(notes[0].files, ["web/a.ts"]);
     }
 
     #[test]

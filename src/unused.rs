@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::Result;
 use regex::Regex;
 
-use crate::check::{RuleId, Violation, file_graph, reach};
+use crate::check::{RuleId, Unjudged, Violation, file_graph, reach};
 use crate::components::ComponentMap;
 use crate::config::{Config, TESTS};
 use crate::lang::registry::{self, JAVA, KOTLIN, LANGUAGES, TYPESCRIPT};
@@ -35,7 +35,7 @@ pub struct Input<'a> {
 pub struct Unused {
     pub violations: Vec<Violation>,
     /// Why some files were taken as used without being judged.
-    pub reasons: Vec<String>,
+    pub reasons: Vec<Unjudged>,
 }
 
 /// The language of a file the rule judges: each is checked against its indexer
@@ -131,16 +131,22 @@ pub fn unused(input: &Input) -> Result<Unused> {
             evidence: vec![(file.clone(), 1)],
         })
         .collect();
-    let mut reasons: Vec<String> = skipped
+    let mut reasons: Vec<Unjudged> = skipped
         .into_iter()
-        .map(|(f, why)| format!("`unused` did not judge the {f} files: {why}"))
+        .map(|(f, why)| {
+            Unjudged::new(format!("`unused` did not judge the {f} files: {why}"))
+                .in_files(input.paths.iter().filter(|p| family(p) == Some(f)).cloned())
+        })
         .collect();
     if !unjudged.is_empty() {
         let exts: Vec<&str> = unjudged.into_iter().collect();
-        reasons.push(format!(
-            "`unused` cannot judge .{} files, whose import graph misses uses, so it took them as used",
-            exts.join(", .")
-        ));
+        reasons.push(
+            Unjudged::new(format!(
+                "`unused` cannot judge .{} files, whose import graph misses uses, so it took them as used",
+                exts.join(", .")
+            ))
+            .in_extensions(exts),
+        );
     }
     Ok(Unused {
         violations,

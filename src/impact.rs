@@ -3,7 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Result, bail};
 use serde::Serialize;
 
-use crate::check::{NO_COMPONENT, Violation, describe_chain, file_graph, reach, shortest_chain};
+use crate::check::{
+    NO_COMPONENT, Unjudged, Violation, describe_chain, file_graph, reach, shortest_chain,
+};
 use crate::components::ComponentMap;
 use crate::config::Config;
 use crate::decision::{self, Refusal};
@@ -100,23 +102,22 @@ pub fn impact(
         .collect();
     let mut evidence_gaps: Vec<_> = uncovered_reason(uncovered)
         .map(|reason| {
-            EvidenceGap::of_files(
+            EvidenceGap::of(
                 GapKind::Uncovered,
-                uncovered,
-                reason,
+                &Unjudged::new(reason).in_files(uncovered.iter().cloned()),
                 report::CLOSE_UNCOVERED,
             )
         })
         .into_iter()
         .collect();
     if !deleted.is_empty() {
-        evidence_gaps.push(EvidenceGap::of_files(
+        evidence_gaps.push(EvidenceGap::of(
             GapKind::Deleted,
-            &deleted,
-            format!(
+            &Unjudged::new(format!(
                 "{} deleted file(s): what imported them is not in the code any more; `easement check` and the build show the broken imports",
                 deleted.len()
-            ),
+            ))
+            .in_files(deleted.iter().cloned()),
             "run `easement check` and the build to find the imports of the deleted files",
         ));
     }

@@ -7,7 +7,7 @@ use std::path::Path;
 
 use regex::Regex;
 
-use crate::check::{RuleId, Violation};
+use crate::check::{RuleId, Unjudged, Violation};
 use crate::components::ComponentMap;
 use crate::config::Config;
 use crate::lang::Target;
@@ -174,7 +174,7 @@ fn names_in_source(kind: Manifest, source: &str, package: &str) -> bool {
 
 pub struct Undeclared {
     pub violations: Vec<Violation>,
-    pub reasons: Vec<String>,
+    pub reasons: Vec<Unjudged>,
 }
 
 /// With `manifests`, every import of an external module that the nearest
@@ -200,6 +200,8 @@ pub fn undeclared(
     let mut violations = Vec::new();
     let mut unjudged = BTreeSet::new();
     let mut orphans = BTreeSet::new();
+    // The files no manifest is above.
+    let mut unowned = BTreeSet::new();
     for dep in deps {
         let Target::External(module) = &dep.target else {
             continue;
@@ -220,6 +222,7 @@ pub fn undeclared(
             package_manifest(&file, kind, root, &known, &mut manifests, &mut unreadable)
         else {
             orphans.insert(kind.file_name());
+            unowned.insert(file.clone());
             continue;
         };
         let Some(Some(names)) = manifests.get(&manifest) else {
@@ -253,24 +256,33 @@ pub fn undeclared(
     let mut reasons = Vec::new();
     if !unjudged.is_empty() {
         let exts: Vec<String> = unjudged.into_iter().collect();
-        reasons.push(format!(
-            "`manifests` cannot tell the package of a module in .{} files, so their imports were not checked",
-            exts.join(", .")
-        ));
+        reasons.push(
+            Unjudged::new(format!(
+                "`manifests` cannot tell the package of a module in .{} files, so their imports were not checked",
+                exts.join(", .")
+            ))
+            .in_extensions(exts),
+        );
     }
     if !unreadable.is_empty() {
         let list: Vec<String> = unreadable.into_iter().collect();
-        reasons.push(format!(
-            "{} could not be read, so the imports of the files under it were not checked",
-            list.join(", ")
-        ));
+        reasons.push(
+            Unjudged::new(format!(
+                "{} could not be read, so the imports of the files under it were not checked",
+                list.join(", ")
+            ))
+            .in_files(list),
+        );
     }
     if !orphans.is_empty() {
         let names: Vec<&str> = orphans.into_iter().collect();
-        reasons.push(format!(
-            "some files have no {} above them, so their imports were not checked",
-            names.join(" or ")
-        ));
+        reasons.push(
+            Unjudged::new(format!(
+                "some files have no {} above them, so their imports were not checked",
+                names.join(" or ")
+            ))
+            .in_files(unowned),
+        );
     }
     Undeclared {
         violations,

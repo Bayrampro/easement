@@ -89,7 +89,7 @@ pub struct Scan {
     /// Files whose test code a finder of parts could not tell from the file's.
     pub parts_doubts: Vec<(String, lang::parts::Doubt)>,
     /// Manifests, or dependencies of one, that `packages` could not judge as declared.
-    pub packages_problems: Vec<String>,
+    pub packages_problems: Vec<crate::check::Unjudged>,
     /// The qualifier and name of the symbols the index knows under a name that
     /// `forbid_symbol` lists, and whether that list is whole.
     pub known_symbols: (Vec<(String, String)>, bool),

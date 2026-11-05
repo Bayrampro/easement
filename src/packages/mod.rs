@@ -8,6 +8,7 @@ mod npm;
 
 use std::path::{Path, PathBuf};
 
+use crate::check::Unjudged;
 use crate::lang::parts::Part;
 use crate::lang::registry::{self, Manifest};
 use crate::lang::{Target, Unit};
@@ -90,16 +91,22 @@ pub fn edges(root: &Path, files: &[String], read_as_source: impl Fn(&str) -> boo
         }
         found.manifests.push(file.clone());
         let Some(text) = text_of(file) else {
-            found.problems.push(format!(
-                "{file}: cannot be read, so what it declares is not checked"
-            ));
+            found.problems.push(
+                Unjudged::new(format!(
+                    "{file}: cannot be read, so what it declares is not checked"
+                ))
+                .in_files([file.clone()]),
+            );
             continue;
         };
         let Some(list) = declared(kind, &text) else {
-            found.problems.push(format!(
-                "{file}: is not valid {}, so what it declares is not checked",
-                kind.file_name()
-            ));
+            found.problems.push(
+                Unjudged::new(format!(
+                    "{file}: is not valid {}, so what it declares is not checked",
+                    kind.file_name()
+                ))
+                .in_files([file.clone()]),
+            );
             continue;
         };
         for declared in list {
@@ -150,7 +157,7 @@ pub struct Edges {
     pub manifests: Vec<String>,
     pub deps: Vec<Dep>,
     /// Why a manifest, or a dependency of one, was not judged as it declares.
-    pub problems: Vec<String>,
+    pub problems: Vec<Unjudged>,
 }
 
 /// What a declared dependency is, once resolved against the project.
@@ -168,7 +175,7 @@ pub enum Resolved {
 pub struct Names {
     by_name: std::collections::BTreeMap<(Manifest, String), String>,
     /// Names two manifests of a kind declare.
-    pub duplicates: Vec<String>,
+    pub duplicates: Vec<Unjudged>,
 }
 
 impl Names {
@@ -199,10 +206,13 @@ impl Names {
                 continue;
             };
             match names.by_name.get(&(kind, name.clone())) {
-                Some(first) => names.duplicates.push(format!(
-                    "two `{}` go by `{name}`, {first} and {file}: a dependency on it is taken for the first",
-                    kind.file_name()
-                )),
+                Some(first) => names.duplicates.push(
+                    Unjudged::new(format!(
+                        "two `{}` go by `{name}`, {first} and {file}: a dependency on it is taken for the first",
+                        kind.file_name()
+                    ))
+                    .in_files([first.clone(), file.clone()]),
+                ),
                 None => {
                     names.by_name.insert((kind, name), file.clone());
                 }
@@ -224,7 +234,7 @@ pub fn resolve(
     files: &[String],
     read: &dyn Fn(&str) -> Option<String>,
     names: &Names,
-) -> (Resolved, Option<String>) {
+) -> (Resolved, Option<Unjudged>) {
     let Some(kind) = registry::manifest_of(manifest) else {
         return (Resolved::External(declared.package.clone()), None);
     };
@@ -250,10 +260,13 @@ pub fn resolve(
             }
             Ok(None) => None,
             Err(workspace) => {
-                problem = Some(format!(
-                    "{manifest}: `{}` is `workspace = true`, but {workspace} cannot be read, so it is taken for an external crate",
-                    declared.name
-                ));
+                problem = Some(
+                    Unjudged::new(format!(
+                        "{manifest}: `{}` is `workspace = true`, but {workspace} cannot be read, so it is taken for an external crate",
+                        declared.name
+                    ))
+                    .in_files([manifest.to_string()]),
+                );
                 None
             }
         },
@@ -540,7 +553,8 @@ mod tests {
             &Names::default(),
         );
         assert_eq!(got, Resolved::External("api".into()));
-        assert!(problem.unwrap().contains("Cargo.toml"));
+        let problem = problem.unwrap();
+        assert!(problem.reason.contains("Cargo.toml"), "{problem:?}");
     }
 
     #[test]
@@ -864,8 +878,10 @@ mod tests {
         };
         let names = Names::of(&files, &read);
         assert_eq!(names.duplicates.len(), 1);
-        assert!(
-            names.duplicates[0].contains("dup") && names.duplicates[0].contains("a/package.json")
+        assert!(names.duplicates[0].reason.contains("dup"));
+        assert_eq!(
+            names.duplicates[0].files,
+            ["a/package.json", "b/package.json"]
         );
     }
 

@@ -1473,6 +1473,13 @@ fn a_module_that_test_code_declares_whose_file_is_missing_is_flagged_as_not_seen
         1,
         "{reason}"
     );
+    let gap = &report["evidence_gaps"][0];
+    assert_eq!(gap["kind"], "parts", "{gap}");
+    assert_eq!(
+        gap["files"],
+        serde_json::json!(["src/store/extra/tests.rs"])
+    );
+    assert_eq!(gap["count"], 1);
 }
 
 /// Cargo's integration tests sit in `tests/` beside the manifest; a module named
@@ -1589,6 +1596,10 @@ fn a_manifest_packages_cannot_read_is_said_not_passed_as_clean() {
             .contains("crates/web/Cargo.toml")
     );
     assert_eq!(report["confidence"], "partial");
+    let gap = &report["evidence_gaps"][0];
+    assert_eq!(gap["kind"], "packages", "{gap}");
+    assert_eq!(gap["files"], serde_json::json!(["crates/web/Cargo.toml"]));
+    assert_eq!(gap["message"], partial[0]);
 }
 
 #[test]
@@ -2337,6 +2348,25 @@ uncovered_ok:
             "because": "race-only helpers",
             "files": ["app/race.go"],
         }])
+    );
+}
+
+/// What the text report says of evidence gaps and accepted gaps is read by
+/// agents as much as the JSON, so it is pinned too.
+#[test]
+fn the_text_of_evidence_and_accepted_gaps_is_pinned() {
+    let (_tmp, root) = fixture("uncovered");
+    let config = fs::read_to_string(root.join("easement.yml")).unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        format!("{config}uncovered_ok:\n  - {{ name: tools/gen.go, because: generated }}\n"),
+    )
+    .unwrap();
+    // A cache of its own, so the report never says it came from the cache.
+    let cache = TempDir::new().unwrap();
+    insta::assert_snapshot!(
+        "check_gaps_text",
+        stdout_of(easement_cached(&root, &["check"], cache.path()).success())
     );
 }
 

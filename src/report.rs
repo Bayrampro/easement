@@ -4,7 +4,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 use crate::baseline::Verdict;
-use crate::check::{Key, RuleId, Stats, Violation};
+use crate::check::{Key, RuleId, Stats, Unjudged, Violation};
 use crate::components::ComponentMap;
 use crate::config::Config;
 use crate::diff::Changes;
@@ -191,32 +191,15 @@ pub fn accepted_gaps<'a>(
 }
 
 impl EvidenceGap {
-    /// A gap known only by what its message says.
-    fn by_message(kind: GapKind, message: &str, close: &str) -> Self {
+    /// The gap of what a rule could not judge, with how to close it.
+    pub fn of(kind: GapKind, unjudged: &Unjudged, close: &str) -> Self {
         EvidenceGap {
             kind,
-            files: Vec::new(),
-            extensions: Vec::new(),
-            count: None,
-            message: message.to_string(),
+            files: unjudged.files.clone(),
+            extensions: unjudged.extensions.clone(),
+            count: (!unjudged.files.is_empty()).then_some(unjudged.files.len()),
+            message: unjudged.reason.clone(),
             close: close.to_string(),
-        }
-    }
-
-    /// A gap in the files named.
-    pub fn of_files(kind: GapKind, files: &[String], message: String, close: &str) -> Self {
-        EvidenceGap {
-            files: files.to_vec(),
-            count: Some(files.len()),
-            ..Self::by_message(kind, &message, close)
-        }
-    }
-
-    /// A gap in every file of the extensions named.
-    fn of_extensions(kind: GapKind, extensions: &[String], message: String, close: &str) -> Self {
-        EvidenceGap {
-            extensions: extensions.to_vec(),
-            ..Self::by_message(kind, &message, close)
         }
     }
 }
@@ -227,70 +210,66 @@ pub const CLOSE_UNCOVERED: &str =
 /// Code a check could not read or judge, in the order the reasons were always given.
 pub fn evidence_gaps(stats: &Stats) -> Vec<EvidenceGap> {
     let mut gaps = Vec::new();
-    let mut prose = |kind, reasons: &[String], close: &str| {
-        gaps.extend(
-            reasons
-                .iter()
-                .map(|r| EvidenceGap::by_message(kind, r, close)),
-        );
+    let mut add = |kind, unjudged: &[Unjudged], close: &str| {
+        gaps.extend(unjudged.iter().map(|u| EvidenceGap::of(kind, u, close)));
     };
-    prose(
+    add(
         GapKind::Unused,
         &stats.unused_partial,
         "the files it took as used may be dead: review them by hand, or have an indexer read them",
     );
-    prose(
+    add(
         GapKind::Manifests,
         &stats.manifests_partial,
         "fix or add the manifest the message names, or review those imports by hand",
     );
-    prose(
+    add(
         GapKind::Parts,
         &stats.parts_partial,
         "fix what the message names, or review that code by hand",
     );
-    prose(
+    add(
         GapKind::Packages,
         &stats.packages_partial,
         "fix the manifest the message names, or review those dependencies by hand",
     );
-    prose(
+    add(
         GapKind::Symbols,
         &stats.symbols_partial,
         "do what the message says, or review those uses by hand",
     );
     if !stats.naming_unseen.is_empty() {
-        gaps.push(EvidenceGap::of_extensions(
+        add(
             GapKind::NamingUnseen,
-            &stats.naming_unseen,
-            format!(
+            &[Unjudged::new(format!(
                 "`defines` cannot see the types of .{} files, which are read without an index, so their names were not checked",
                 stats.naming_unseen.join(", .")
-            ),
+            ))
+            .in_extensions(stats.naming_unseen.iter().cloned())],
             "no indexer reads these files, so review the names of their types by hand",
-        ));
+        );
     }
     if !stats.std_unknown.is_empty() {
-        gaps.push(EvidenceGap::of_extensions(
+        add(
             GapKind::StdUnknown,
-            &stats.std_unknown,
-            format!(
+            &[Unjudged::new(format!(
                 "`$std` cannot tell the standard library of .{} files, so their standard imports count as other modules; name those modules instead",
                 stats.std_unknown.join(", .")
-            ),
+            ))
+            .in_extensions(stats.std_unknown.iter().cloned())],
             "name the standard modules the rule means instead of `$std`",
-        ));
+        );
     }
     if !stats.uncovered.is_empty() {
-        gaps.push(EvidenceGap::of_files(
+        add(
             GapKind::Uncovered,
-            &stats.uncovered,
-            format!(
+            &[Unjudged::new(format!(
                 "{} source files were not covered by an indexer, so imports in or of them were not checked",
                 stats.uncovered.len()
-            ),
+            ))
+            .in_files(stats.uncovered.iter().cloned())],
             CLOSE_UNCOVERED,
-        ));
+        );
     }
     gaps
 }

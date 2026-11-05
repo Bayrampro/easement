@@ -1,0 +1,14 @@
+---
+source: tests/cli.rs
+expression: "stdout_of(easement_cached(&root, &[\"check\"], cache.path()).success())"
+---
+Evidence gaps (a pass says nothing about this code):
+  1 source files were not covered by an indexer, so imports in or of them were not checked
+    to close: add them to a project the indexer reads, `exclude` them, or accept them in `uncovered_ok`
+    tools/other.go
+
+Accepted gaps (`uncovered_ok`: no indexer read them, so their imports were not checked):
+  tools/gen.go because: generated
+    tools/gen.go
+
+easement passed: 0 violation(s), 0 stale, 0 legalized; 1 files, 0 internal deps, 1 files not covered by an indexer
