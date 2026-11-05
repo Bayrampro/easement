@@ -658,7 +658,7 @@ pub struct Facts {
 /// `excluded` are documents of files that `exclude` hides: never read as
 /// sources, they only resolve the names that no document of `documents` defines.
 pub fn facts(documents: &[Document], excluded: &[Document], symbols: bool) -> Facts {
-    facts_watching(documents, excluded, symbols, &HashSet::new())
+    facts_watching(documents, excluded, symbols, &BTreeSet::new())
 }
 
 /// [`facts`] that also collects `Facts::known` for the names in `watched`.
@@ -666,7 +666,7 @@ pub fn facts_watching(
     documents: &[Document],
     excluded: &[Document],
     symbols: bool,
-    watched: &HashSet<String>,
+    watched: &BTreeSet<String>,
 ) -> Facts {
     let mut defined: HashMap<&str, &str> = HashMap::new();
     // Symbols that more than one file defines: a Ruby module reopened in each file under it.

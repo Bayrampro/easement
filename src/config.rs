@@ -8,7 +8,7 @@ use crate::stdlib::STD;
 use anyhow::{Context, Result, anyhow, bail};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::Deserialize;
-use serde_norway::{Mapping, Value};
+use serde_norway::Value;
 
 pub const DEFAULT_CONFIG: &str = "easement.yml";
 pub const DEFAULT_BASELINE: &str = "easement.baseline.yml";
@@ -190,6 +190,22 @@ pub struct GoSettings {
     /// not built, so they count as not covered.
     #[serde(default)]
     pub tags: Vec<String>,
+}
+
+/// The scan-relevant part of the policy ([`Config::scan_policy`]): what the
+/// scan of the project reads from it, and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanPolicy {
+    pub exclude: Vec<String>,
+    pub target_only: Vec<String>,
+    pub go_tags: Vec<String>,
+    pub reach: Reach,
+    pub packages: bool,
+    pub tests: bool,
+    /// Whether any rule needs the uses of names, not only the imports.
+    pub uses_symbols: bool,
+    /// The names `forbid_symbol` lists, without the qualifier.
+    pub watched_symbols: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -492,8 +508,9 @@ pub struct Rule {
 }
 
 impl Config {
-    pub fn load(path: &Path) -> Result<Self> {
-        let value = load_value(path, &mut Vec::new())?;
+    /// The config of a value merged from the configuration at `path` and the
+    /// files it extends (`policy::Policy::load`); `path` names it in errors.
+    pub fn from_merged(value: Value, path: &Path) -> Result<Self> {
         // The merged value has no line numbers, so the error names the path to the field.
         let config: Config = serde_path_to_error::deserialize(value)
             .with_context(|| format!("invalid config {}", path.display()))?;
@@ -514,15 +531,30 @@ impl Config {
         ))
     }
 
+    /// The scan-relevant part of the policy: everything the scan reads. Two
+    /// policies with an equal part can be judged on one graph.
+    pub fn scan_policy(&self) -> ScanPolicy {
+        ScanPolicy {
+            exclude: self.exclude.clone(),
+            target_only: self.target_only.clone(),
+            go_tags: self.go.tags.clone(),
+            reach: self.reach,
+            packages: self.packages,
+            tests: self.tests.is_some(),
+            uses_symbols: self.uses_symbols(),
+            watched_symbols: self.forbidden_symbol_names(),
+        }
+    }
+
     /// Whether any rule needs the uses of names, not only the imports.
-    pub fn uses_symbols(&self) -> bool {
+    fn uses_symbols(&self) -> bool {
         self.components.values().any(|c| c.public_symbols.is_some())
             || !self.forbid_symbol.is_empty()
             || self.rules.values().any(|r| !r.forbid_symbol.is_empty())
     }
 
     /// The names that `forbid_symbol` lists, without the qualifier: `locale` of `I18n.locale`.
-    pub fn forbidden_symbol_names(&self) -> std::collections::HashSet<String> {
+    fn forbidden_symbol_names(&self) -> BTreeSet<String> {
         self.forbid_symbol
             .iter()
             .chain(
@@ -925,128 +957,9 @@ pub fn closest<'a>(name: &str, known: impl IntoIterator<Item = &'a str>) -> Opti
         .map(|(_, k)| k)
 }
 
-/// Reads a config file and merges the files it `extends` underneath it.
-///
-/// `extends` is a path or a list of paths, relative to the file that names them.
-/// Patterns in every file stay relative to the root of the config being loaded.
-/// Keys that start with `x-` are dropped, so they can hold anchors for `<<`.
-/// `components` and `rules` merge by name, the later definition replacing the
-/// earlier one; `common` and `exclude` are concatenated; any other key is
-/// replaced by the extending file.
-fn load_value(path: &Path, stack: &mut Vec<PathBuf>) -> Result<Value> {
-    let canonical = dunce::canonicalize(path)
-        .with_context(|| format!("cannot read config {}", path.display()))?;
-    if stack.contains(&canonical) {
-        bail!("config {} extends itself", path.display());
-    }
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read config {}", path.display()))?;
-    let mut value = serde_norway::from_str::<Value>(&text)
-        .with_context(|| format!("invalid config {}", path.display()))?;
-    // `<<: *anchor` shares a part of a rule between components.
-    value
-        .apply_merge()
-        .with_context(|| format!("invalid config {}", path.display()))?;
-    let Value::Mapping(mut own) = value else {
-        bail!("config {} is not a mapping", path.display());
-    };
-    // `x-` keys are only places to define anchors.
-    own.retain(|key, _| !key.as_str().is_some_and(|k| k.starts_with("x-")));
-    let bases = match own.remove("extends") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::String(one)) => vec![one],
-        Some(other) => serde_norway::from_value::<Vec<String>>(other)
-            .with_context(|| format!("`extends` in {} must be a path or a list", path.display()))?,
-    };
-    stack.push(canonical);
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let mut merged = Mapping::new();
-    for base in bases {
-        let Value::Mapping(base) = load_value(&dir.join(base), stack)? else {
-            unreachable!("load_value returns mappings");
-        };
-        merge(&mut merged, base);
-    }
-    stack.pop();
-    merge(&mut merged, own);
-    Ok(Value::Mapping(merged))
-}
-
-fn merge(into: &mut Mapping, from: Mapping) {
-    for (key, value) in from {
-        let name = key.as_str().unwrap_or_default();
-        match (into.get_mut(&key), value) {
-            (Some(Value::Mapping(old)), Value::Mapping(new))
-                if name == "components" || name == "rules" =>
-            {
-                for (k, v) in new {
-                    old.insert(k, v);
-                }
-            }
-            (Some(Value::Sequence(old)), Value::Sequence(new))
-                if matches!(name, "common" | "exclude" | "target_only") =>
-            {
-                for v in new {
-                    if !old.contains(&v) {
-                        old.push(v);
-                    }
-                }
-            }
-            (_, value) => {
-                into.insert(key, value);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn extends_merges_by_name_and_detects_loops() {
-        let dir = tempfile::tempdir().unwrap();
-        let write = |name: &str, text: &str| std::fs::write(dir.path().join(name), text).unwrap();
-        write(
-            "base.yml",
-            "version: 1
-components:
-  a: { in: a }
-  b: { in: b }
-common: [b]
-exclude: [gen]
-target_only: ['**/*.gen.ts']
-rules:
-  a: { may_depend_on: [b], because: base }
-",
-        );
-        write(
-            "easement.yml",
-            "extends: base.yml
-components:
-  c: { in: c }
-  b: { in: other/b }
-common: [c]
-exclude: [vendor]
-target_only: ['**/*.pb.go']
-rules:
-  a: { because: own }
-",
-        );
-        let c = Config::load(&dir.path().join("easement.yml")).unwrap();
-        assert_eq!(c.components.len(), 3);
-        assert_eq!(c.components["b"].patterns.as_vec(), ["other/b"]);
-        assert_eq!(c.common, ["b", "c"]);
-        assert_eq!(c.exclude, ["gen", "vendor"]);
-        assert_eq!(c.target_only, ["**/*.gen.ts", "**/*.pb.go"]);
-        // The rule of the extending file replaces the base one as a whole.
-        assert_eq!(c.reason("a"), Some("own"));
-        assert!(c.rules["a"].may_depend_on.is_empty());
-
-        write("loop.yml", "extends: loop.yml\nversion: 1\n");
-        let err = Config::load(&dir.path().join("loop.yml")).unwrap_err();
-        assert!(err.to_string().contains("extends itself"));
-    }
 
     #[test]
     fn a_top_level_forbid_symbol_counts_as_a_use_of_names_and_must_name_a_package() {
@@ -1061,9 +974,9 @@ forbid_symbol: [\"d.T\"]
 ",
         )
         .unwrap();
-        let c = Config::load(&path).unwrap();
-        assert!(c.uses_symbols());
-        assert!(c.forbidden_symbol_names().contains("T"));
+        let scan = load(&path).unwrap().scan_policy();
+        assert!(scan.uses_symbols);
+        assert!(scan.watched_symbols.contains("T"));
         std::fs::write(
             &path,
             "version: 1
@@ -1073,7 +986,7 @@ forbid_symbol: [T]
 ",
         )
         .unwrap();
-        let error = format!("{:#}", Config::load(&path).unwrap_err());
+        let error = format!("{:#}", load(&path).unwrap_err());
         assert!(error.contains("must look like `package.Name`"), "{error}");
     }
 
@@ -1097,7 +1010,7 @@ rules:
 ",
         )
         .unwrap();
-        let c = Config::load(&path).unwrap();
+        let c = load(&path).unwrap();
         assert_eq!(c.rules["a"].forbid_symbol.len(), 1);
         assert_eq!(c.rules["b"].forbid_symbol[0].name(), "d.T");
         assert_eq!(c.rules["a"].may_depend_on.len(), 1);
@@ -1105,7 +1018,7 @@ rules:
 
         // Only keys that start with `x-` are free; a typo is still an error.
         std::fs::write(&path, "version: 1\ncomponents:\n  a: { in: a }\nban: {}\n").unwrap();
-        assert!(Config::load(&path).is_err());
+        assert!(load(&path).is_err());
     }
 
     #[test]
@@ -1117,7 +1030,7 @@ rules:
             "version: 1\ncomponents:\n  a: { in: a }\n  b: { in: b, publik: [x] }\n",
         )
         .unwrap();
-        let err = format!("{:#}", Config::load(&path).unwrap_err());
+        let err = format!("{:#}", load(&path).unwrap_err());
         assert!(
             err.contains("components.b.publik: unknown field `publik`"),
             "{err}"
@@ -1150,6 +1063,10 @@ rules:
                 format!("version: 1\ncomponents:\n  a: {{ in: a }}\ngo: {{ tags: [{bad}] }}\n");
             assert!(parse(&yaml).is_err(), "{bad}");
         }
+    }
+
+    fn load(path: &Path) -> Result<Config> {
+        Ok(crate::policy::Policy::load(path, None)?.config)
     }
 
     fn parse(yaml: &str) -> Result<Config> {

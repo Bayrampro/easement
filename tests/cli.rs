@@ -1318,11 +1318,6 @@ fn extends_shares_a_config_between_packages() {
 
 #[test]
 fn watch_checks_again_after_a_change() {
-    use std::io::{BufRead, BufReader};
-    use std::process::{Command, Stdio};
-    use std::sync::mpsc;
-    use std::time::Duration;
-
     let (_tmp, root) = project(&[
         (
             "easement.yml",
@@ -1331,8 +1326,43 @@ fn watch_checks_again_after_a_change() {
         ("src/a/x.ts", "export {};\n"),
         ("src/b/y.ts", "export {};\n"),
     ]);
+    watch_until(&root, "a -> b is not allowed", || {
+        fs::write(root.join("src/a/x.ts"), "import '../b/y';\n").unwrap();
+    });
+}
+
+#[test]
+fn watch_checks_again_after_a_change_to_an_extended_policy_outside_the_root() {
+    let (tmp, _) = project(&[
+        (
+            "shared/base.yml",
+            "version: 1\ncomponents:\n  a: { in: src/a }\n  b: { in: src/b }\nrules:\n  a: { may_depend_on: [b] }\n",
+        ),
+        ("app/easement.yml", "extends: ../shared/base.yml\n"),
+        ("app/tsconfig.json", TSCONFIG),
+        ("app/src/a/x.ts", "import '../b/y';\n"),
+        ("app/src/b/y.ts", "export {};\n"),
+    ]);
+    let base = tmp.path().join("shared/base.yml");
+    watch_until(&tmp.path().join("app"), "a -> b is not allowed", || {
+        fs::write(
+            &base,
+            "version: 1\ncomponents:\n  a: { in: src/a }\n  b: { in: src/b }\nrules:\n  a: { because: a stands alone }\n",
+        )
+        .unwrap();
+    });
+}
+
+/// Runs `check --watch` in `root`, makes `change` once the first check passes,
+/// and waits for a check that prints `after`.
+fn watch_until(root: &Path, after: &str, change: impl FnOnce()) {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
     let mut child = Command::new(assert_cmd::cargo::cargo_bin("easement"))
-        .current_dir(&root)
+        .current_dir(root)
         .args(["check", "--watch"])
         .stdout(Stdio::piped())
         .spawn()
@@ -1357,9 +1387,9 @@ fn watch_checks_again_after_a_change() {
     };
     let passed = wait_for("easement passed");
     if passed {
-        fs::write(root.join("src/a/x.ts"), "import '../b/y';\n").unwrap();
+        change();
     }
-    let failed = passed && wait_for("a -> b is not allowed");
+    let failed = passed && wait_for(after);
     child.kill().unwrap();
     child.wait().unwrap();
     assert!(passed, "the first check did not pass");

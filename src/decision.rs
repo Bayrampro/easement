@@ -348,9 +348,12 @@ mod tests {
                             .expect("composer runs");
                         assert!(status.success(), "composer install in {name}");
                     }
-                    let config = Config::load(&tmp.path().join("easement.yml")).unwrap();
+                    let config =
+                        crate::policy::Policy::load(&tmp.path().join("easement.yml"), None)
+                            .unwrap()
+                            .config;
                     let mut cache = Cache::new(CacheUse::Off, Jobs::default());
-                    let scan = scan::scan(tmp.path(), &config, &mut cache).unwrap();
+                    let scan = scan::scan(tmp.path(), &config.scan_policy(), &mut cache).unwrap();
                     let map = ComponentMap::new(&config).unwrap();
                     each(name, &config, &map, &scan.deps);
                 });

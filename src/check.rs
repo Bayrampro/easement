@@ -11,6 +11,7 @@ use crate::config::{Config, Listed};
 use crate::decision::{self, Clause, Decision, Refusal};
 use crate::flow::{self, Flow};
 use crate::lang::{Target, registry};
+use crate::policy::Policy;
 use crate::relpath;
 use crate::scan::{Dep, slash};
 use crate::scope::Scope;
@@ -1336,24 +1337,26 @@ pub fn orphans(config: &Config, map: &ComponentMap, files: &[String]) -> Vec<Vio
 }
 
 /// One violation per `in` pattern that matches no file in `files`, at its
-/// line in the config text, or line 1 when it comes from `extends`. The
+/// line in the configuration the policy was loaded from, or line 1 when a
+/// file it `extends` defines the component. The
 /// `tests` component of `tests: auto` and components marked `optional` may
 /// match nothing.
 pub fn unmatched(
-    config: &Config,
+    policy: &Policy,
     map: &ComponentMap,
     files: &[String],
     deps: &[Dep],
     config_file: &str,
-    config_text: &str,
 ) -> Vec<Violation> {
+    let config = &policy.config;
+    let config_text = policy.config_input().content.as_str();
     map.unmatched_patterns(files)
         .into_iter()
         .filter(|(component, _)| !config.components[*component].optional)
         .map(|(component, pattern)| Violation {
             rule: RuleId::Unmatched,
             file: config_file.to_string(),
-            line: config_line(config_text, component, pattern),
+            line: own_line(policy, component, pattern),
             message: format!(
                 "component `{component}` matches no file (in: {pattern}); fix the pattern, or set `optional: true` if the component may be empty (files that `exclude` or .gitignore hide do not count)"
             ),
@@ -1383,19 +1386,15 @@ pub fn unmatched(
                     evidence: Vec::new(),
                 }),
         )
-        .chain(unmatched_parts(config, deps, config_file, config_text))
+        .chain(unmatched_parts(policy, deps, config_file))
         .collect()
 }
 
 /// A `part` that names no part of the files read, unless its component is
 /// `optional`: it owns nothing, so no rule on it judges anything. A typo, or
 /// `packages` left off.
-fn unmatched_parts(
-    config: &Config,
-    deps: &[Dep],
-    config_file: &str,
-    config_text: &str,
-) -> Vec<Violation> {
+fn unmatched_parts(policy: &Policy, deps: &[Dep], config_file: &str) -> Vec<Violation> {
+    let config = &policy.config;
     let found: BTreeSet<&str> = deps
         .iter()
         .flat_map(|dep| {
@@ -1427,7 +1426,7 @@ fn unmatched_parts(
             Some(Violation {
                 rule: RuleId::Unmatched,
                 file: config_file.to_string(),
-                line: config_line(config_text, name, part),
+                line: own_line(policy, name, part),
                 message: format!(
                     "component `{name}`: `part: {part}` matches no part of the files read (found: {list}), so it owns nothing and no rule on it judges anything; {guess}parts come from the manifests `packages` reads (`feature/<name>`, `dev-dependencies`, `build-dependencies`) and from `#[cfg(test)]` code of Rust (`cfg(test)`); fix the part, or set `optional: true` if it may own nothing"
                 ),
@@ -1440,6 +1439,19 @@ fn unmatched_parts(
             })
         })
         .collect()
+}
+
+/// The line, counted from 1, where `component` lists `pattern` in the
+/// configuration the policy was loaded from; 1 when a file it extends
+/// defines the component.
+fn own_line(policy: &Policy, component: &str, pattern: &str) -> usize {
+    if !policy
+        .defined_by("components", component)
+        .is_some_and(|by| by.kind == crate::policy::InputKind::Config)
+    {
+        return 1;
+    }
+    config_line(&policy.config_input().content, component, pattern)
 }
 
 /// The line, counted from 1, of `pattern` under `entry:`, else 1.

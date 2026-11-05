@@ -7,7 +7,7 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 
 use crate::check::SymbolRef;
-use crate::config::Config;
+use crate::config::ScanPolicy;
 use crate::indexer;
 use crate::lang::{self, Import, Target, Unit};
 use crate::scip;
@@ -111,8 +111,8 @@ pub fn walker(root: &Path) -> WalkBuilder {
 }
 
 /// The project's files (`/`-separated, relative to `root`) without the excluded ones.
-pub fn project_files(root: &Path, config: &Config) -> Result<Vec<String>> {
-    let exclude = glob_set(&config.exclude, "exclude")?;
+pub fn project_files(root: &Path, policy: &ScanPolicy) -> Result<Vec<String>> {
+    let exclude = glob_set(&policy.exclude, "exclude")?;
     let mut files = Vec::new();
     for entry in walker(root).build() {
         let entry = entry?;
@@ -128,9 +128,10 @@ pub fn project_files(root: &Path, config: &Config) -> Result<Vec<String>> {
     Ok(files)
 }
 
-pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
-    let exclude = glob_set(&config.exclude, "exclude")?;
-    let target_only = glob_set(&config.target_only, "target_only")?;
+/// Reads the project as `policy`, the scan-relevant part of the policy, asks.
+pub fn scan(root: &Path, policy: &ScanPolicy, cache: &mut Cache) -> Result<Scan> {
+    let exclude = glob_set(&policy.exclude, "exclude")?;
+    let target_only = glob_set(&policy.target_only, "target_only")?;
     let adapters = lang::adapters(root)?;
     let mut paths = Vec::new();
     let mut all_files = Vec::new();
@@ -207,7 +208,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         &hidden,
         cache.index_cache,
         cache.jobs,
-        &config.go.tags,
+        &policy.go_tags,
     )?;
     let project: HashSet<&str> = all_files.iter().map(String::as_str).collect();
     // Excluded files are never read as sources, but what they define stays
@@ -285,12 +286,12 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         })
         .collect();
     let flow =
-        (config.reach == crate::config::Reach::Symbols).then(|| crate::flow::build(&documents));
+        (policy.reach == crate::config::Reach::Symbols).then(|| crate::flow::build(&documents));
     let facts = scip::facts_watching(
         &documents,
         &hidden,
-        config.uses_symbols(),
-        &config.forbidden_symbol_names(),
+        policy.uses_symbols,
+        &policy.watched_symbols,
     );
     let is_source = |file: &Path| {
         let file = slash(file);
@@ -300,7 +301,7 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         facts.deps.into_iter().partition(|dep| is_source(&dep.file));
     deps.extend(sources);
     let mut packages_problems = Vec::new();
-    if config.packages {
+    if policy.packages {
         let edges = crate::packages::edges(root, &all_files, |file| !target_only.is_match(file));
         paths.extend(edges.manifests);
         deps.extend(edges.deps);

@@ -160,7 +160,7 @@ pub fn run(root: &Path, force: bool, jobs: crate::indexer::Jobs) -> Result<Strin
     let config: Config = serde_norway::from_str(&draft)?;
     let scanned = scan::scan(
         root,
-        &config,
+        &config.scan_policy(),
         &mut scan::Cache::new(Default::default(), jobs),
     )?;
     let map = ComponentMap::new(&config)?;

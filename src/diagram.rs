@@ -3,12 +3,12 @@
 //! its arrows.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
 use crate::check::{Edge, RuleId, Violation};
 use crate::config::Config;
+use crate::policy::Policy;
 
 /// The arrows of the Mermaid graphs in `text` (a Markdown file with
 /// ```` ```mermaid ```` blocks, or a bare `.mmd` file), between the nodes
@@ -292,16 +292,16 @@ fn node(text: &str) -> Node {
 }
 
 /// With `diagram`, every dependency between components that the diagram
-/// has no arrow for, reported once per pair at its first import.
-pub fn check(config: &Config, root: &Path, edges: &[Edge]) -> Result<Vec<Violation>> {
-    let Some(path) = &config.diagram else {
+/// has no arrow for, reported once per pair at its first import. The diagram
+/// is the one the policy was loaded with.
+pub fn check(policy: &Policy, edges: &[Edge]) -> Result<Vec<Violation>> {
+    let config = &policy.config;
+    let (Some(path), Some(diagram)) = (&config.diagram, policy.diagram()?) else {
         return Ok(Vec::new());
     };
-    let text = std::fs::read_to_string(root.join(path))
-        .with_context(|| format!("cannot read the diagram {}", path.display()))?;
+    let text = &diagram.content;
     let components: BTreeSet<&str> = config.components.keys().map(String::as_str).collect();
-    let drawn =
-        arrows(&text, &components).with_context(|| format!("diagram {}", path.display()))?;
+    let drawn = arrows(text, &components).with_context(|| format!("diagram {}", path.display()))?;
     let mut missing: BTreeMap<(&str, &str), Vec<&Edge>> = BTreeMap::new();
     for edge in edges.iter().filter(|e| drawn_needed(config, e)) {
         if !drawn.contains(&(edge.from.clone(), edge.to.clone())) {
@@ -346,22 +346,21 @@ fn drawn_needed(config: &Config, edge: &Edge) -> bool {
 
 /// The arrows of the diagram that no import stands for: pictures of
 /// dependencies the code does not have.
-pub fn unused_arrows(
-    config: &Config,
-    root: &Path,
-    edges: &[Edge],
-) -> Result<Vec<(String, String)>> {
-    let Some(path) = &config.diagram else {
+pub fn unused_arrows(policy: &Policy, edges: &[Edge]) -> Result<Vec<(String, String)>> {
+    let Some(diagram) = policy.diagram()? else {
         return Ok(Vec::new());
     };
-    let text = std::fs::read_to_string(root.join(path))
-        .with_context(|| format!("cannot read the diagram {}", path.display()))?;
-    let components: BTreeSet<&str> = config.components.keys().map(String::as_str).collect();
+    let components: BTreeSet<&str> = policy
+        .config
+        .components
+        .keys()
+        .map(String::as_str)
+        .collect();
     let real: BTreeSet<(&str, &str)> = edges
         .iter()
         .map(|e| (e.from.as_str(), e.to.as_str()))
         .collect();
-    Ok(arrows(&text, &components)?
+    Ok(arrows(&diagram.content, &components)?
         .into_iter()
         .filter(|(a, b)| !real.contains(&(a.as_str(), b.as_str())))
         .collect())

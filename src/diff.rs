@@ -121,7 +121,9 @@ fn added_range(header: &str) -> Option<(usize, usize)> {
     (count > 0).then(|| (start, start + count - 1))
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<String> {
+/// The output of `git` run in `dir` with `args`; an error with what Git said
+/// when it fails.
+pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .current_dir(dir)
         .args(args)
