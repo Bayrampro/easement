@@ -1,0 +1,12 @@
+---
+source: tests/cli.rs
+expression: "stdout_of(easement(&root, &[\"check\", \"--require-evidence\"]).code(4))"
+---
+Evidence required (`--require-evidence`), but the check could not read or judge this code:
+  `forbid_symbol` cannot judge the names used in 3 kotlin files: easement does not read uses of names from kotlin, so those uses were not checked
+    to close: do what the message says, or review those uses by hand
+    src/main/kotlin/com/acme/shop/domain/Order.kt
+    src/main/kotlin/com/acme/shop/infra/OrderRepository.kt
+    src/main/kotlin/com/acme/shop/web/OrderController.kt
+
+easement failed: 0 violation(s), 0 stale, 0 legalized; 3 files, 3 internal deps

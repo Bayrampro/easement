@@ -1113,7 +1113,11 @@ pub fn symbols_partial(config: &Config, map: &ComponentMap, unnamed: &[String]) 
     if unnamed.is_empty() {
         return Vec::new();
     }
-    let files = some_files(&unnamed);
+    const SHOWN: usize = 3;
+    let mut files = unnamed[..unnamed.len().min(SHOWN)].join(", ");
+    if unnamed.len() > SHOWN {
+        files.push_str(&format!(" and {} more files", unnamed.len() - SHOWN));
+    }
     vec![Unjudged::new(format!(
         "`forbid_symbol` cannot tell the npm package of the names used in {files}: a `package.json` without `name` inside the package hides it from the indexer, so those uses were not checked; scip-typescript 0.6.1 or newer names such a package: update the indexer and run again"
     )).in_files(unnamed)]
@@ -1127,16 +1131,6 @@ fn forbids_symbols(config: &Config, map: &ComponentMap, file: &str) -> bool {
             .component_of(file)
             .and_then(|component| config.rules.get(component))
             .is_some_and(|rule| !rule.forbid_symbol.is_empty())
-}
-
-/// The first few of `files`, and how many more there are.
-fn some_files(files: &[&str]) -> String {
-    const SHOWN: usize = 3;
-    let mut shown = files[..files.len().min(SHOWN)].join(", ");
-    if files.len() > SHOWN {
-        shown.push_str(&format!(" and {} more files", files.len() - SHOWN));
-    }
-    shown
 }
 
 /// The files among `files` that a symbol rule applies to although the registry
@@ -1196,8 +1190,8 @@ pub fn symbols_unverified(
             files.sort_unstable();
             files.dedup();
             Unjudged::new(format!(
-                "`{rule}` cannot judge {language} files, whose uses of names easement does not read, so the names used in {} were not checked; review them by hand",
-                some_files(&files)
+                "`{rule}` cannot judge the names used in {} {language} files: easement does not read uses of names from {language}, so those uses were not checked",
+                files.len()
             ))
             .in_files(files)
         })

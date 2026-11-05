@@ -1900,9 +1900,10 @@ fn a_symbol_rule_over_kotlin_is_an_evidence_gap() {
         message.contains("`forbid_symbol`") && message.contains("kotlin"),
         "{message}"
     );
-    easement(&root, &["check", "--require-evidence"])
-        .code(4)
-        .stdout(contains("`forbid_symbol` cannot judge kotlin files"));
+    insta::assert_snapshot!(
+        "symbols_gap_text",
+        stdout_of(easement(&root, &["check", "--require-evidence"]).code(4))
+    );
 }
 
 #[test]

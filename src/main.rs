@@ -305,7 +305,13 @@ impl Project {
         if self.config.tests.is_some() {
             stats.parts_partial = parts_reasons(&scan.parts_doubts);
         }
-        stats.symbols_partial = check::symbols_partial(&self.config, &map, &scan.unnamed_uses);
+        let unnamed_in_scope: Vec<String> = scan
+            .unnamed_uses
+            .iter()
+            .filter(|f| scope.contains(&map, f))
+            .cloned()
+            .collect();
+        stats.symbols_partial = check::symbols_partial(&self.config, &map, &unnamed_in_scope);
         let in_scope: Vec<&str> = scan
             .paths
             .iter()
