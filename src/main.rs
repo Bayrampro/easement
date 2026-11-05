@@ -40,6 +40,7 @@ use clap_complete::Shell;
 
 use baseline::{Baseline, Verdict};
 use components::ComponentMap;
+use config::Config;
 use policy::Policy;
 
 /// Architecture quality gate: fails when code dependencies cross component
@@ -220,10 +221,14 @@ impl Project {
         })
     }
 
+    /// The config of the policy the project was opened with.
+    fn config(&self) -> &Config {
+        &self.policy.config
+    }
+
     fn baseline_path(&self) -> PathBuf {
         let rel = self
-            .policy
-            .config
+            .config()
             .baseline
             .clone()
             .unwrap_or_else(|| config::DEFAULT_BASELINE.into());
@@ -231,19 +236,14 @@ impl Project {
     }
 
     fn analyze(&self, cache: &mut scan::Cache, scope: &scope::Scope) -> Result<Analysis> {
-        let scan = scan::scan(&self.root, &self.policy.config.scan_policy(), cache)?;
-        let map = ComponentMap::new(&self.policy.config)?;
+        let scan = scan::scan(&self.root, &self.config().scan_policy(), cache)?;
+        let map = ComponentMap::new(self.config())?;
         let (mut violations, edges, mut stats) =
-            check::evaluate(&self.policy.config, &map, scope, &scan.deps);
-        violations.extend(check::symbols(&self.policy.config, &map, &scan.symbols));
-        violations.extend(check::naming(&self.policy.config, &map, &scan.types)?);
-        let undeclared = manifests::undeclared(
-            &self.policy.config,
-            &map,
-            &self.root,
-            &scan.deps,
-            &scan.all_files,
-        );
+            check::evaluate(self.config(), &map, scope, &scan.deps);
+        violations.extend(check::symbols(self.config(), &map, &scan.symbols));
+        violations.extend(check::naming(self.config(), &map, &scan.types)?);
+        let undeclared =
+            manifests::undeclared(self.config(), &map, &self.root, &scan.deps, &scan.all_files);
         violations.extend(undeclared.violations);
         let (mut violations, suppressed) = suppress::apply(violations, &scan.suppressions);
         violations.extend(check::unmatched(
@@ -253,32 +253,28 @@ impl Project {
             &scan.deps,
             &scan::slash(self.config_path.strip_prefix(&self.root)?),
         ));
-        violations.extend(check::cycles(&self.policy.config, &edges));
+        violations.extend(check::cycles(self.config(), &edges));
         violations.extend(diagram::check(&self.policy, &edges)?);
         violations.extend(check::reaches(
-            &self.policy.config,
+            self.config(),
             &map,
             &scan.deps,
             &scan.all_files,
             scan.flow.as_ref(),
         ));
-        violations.extend(check::metrics(&self.policy.config, &edges));
-        violations.extend(check::orphans(&self.policy.config, &map, &scan.paths));
-        violations.extend(check::forbidden_files(
-            &self.policy.config,
-            &map,
-            &scan.all_files,
-        ));
+        violations.extend(check::metrics(self.config(), &edges));
+        violations.extend(check::orphans(self.config(), &map, &scan.paths));
+        violations.extend(check::forbidden_files(self.config(), &map, &scan.all_files));
         violations.extend(check::required(
             &self.root,
-            &self.policy.config,
+            self.config(),
             &map,
             &scan.deps,
             &scan.paths,
             &scan.all_files,
         ));
         let unused = unused::unused(&unused::Input {
-            config: &self.policy.config,
+            config: self.config(),
             map: &map,
             root: &self.root,
             deps: &scan.deps,
@@ -290,8 +286,7 @@ impl Project {
         })?;
         violations.extend(unused.violations);
         if self
-            .policy
-            .config
+            .config()
             .components
             .values()
             .any(|c| !c.defines.is_empty())
@@ -310,10 +305,10 @@ impl Project {
         }
         stats.unused_partial = unused.reasons;
         stats.manifests_partial = undeclared.reasons;
-        if self.policy.config.packages {
+        if self.config().packages {
             stats.packages_partial = scan.packages_problems.clone();
         }
-        if self.policy.config.tests.is_some() {
+        if self.config().tests.is_some() {
             stats.parts_partial = parts_reasons(&scan.parts_doubts);
         }
         let unnamed_in_scope: Vec<String> = scan
@@ -322,8 +317,7 @@ impl Project {
             .filter(|f| scope.contains(&map, f))
             .cloned()
             .collect();
-        stats.symbols_partial =
-            check::symbols_partial(&self.policy.config, &map, &unnamed_in_scope);
+        stats.symbols_partial = check::symbols_partial(self.config(), &map, &unnamed_in_scope);
         let in_scope: Vec<&str> = scan
             .paths
             .iter()
@@ -331,7 +325,7 @@ impl Project {
             .map(String::as_str)
             .collect();
         stats.symbols_partial.extend(check::symbols_unverified(
-            &self.policy.config,
+            self.config(),
             &map,
             &in_scope,
             &scan.deps,
@@ -346,7 +340,7 @@ impl Project {
                 .iter()
                 .all(|f| indexer::INDEXERS.iter().any(|l| l.covers(f)));
         stats.symbols_unmatched =
-            check::symbols_unmatched(&self.policy.config, &scan.known_symbols.0, indexed_whole);
+            check::symbols_unmatched(self.config(), &scan.known_symbols.0, indexed_whole);
         stats.files = scan
             .paths
             .iter()
@@ -450,7 +444,7 @@ impl From<bool> for Outcome {
 
 fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<Outcome> {
     let project = Project::open(&options.config)?;
-    let scope = scope::Scope::new(&project.policy.config, &options.components, &options.paths)?;
+    let scope = scope::Scope::new(project.config(), &options.components, &options.paths)?;
     let Analysis {
         violations,
         mut stats,
@@ -492,9 +486,9 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<Outcome> {
     };
     let (warnings, judged): (Vec<_>, Vec<_>) = check::dedupe(judged)
         .into_iter()
-        .partition(|v| project.policy.config.warns(v.rule));
+        .partition(|v| project.config().warns(v.rule));
     let mut verdict = Verdict::judge(judged, warnings, &current, baseline.as_ref());
-    verdict.owners = project.policy.config.owners();
+    verdict.owners = project.config().owners();
     verdict.stale.retain(|k| scope.contains(&map, &k.file));
     verdict.sort();
     let changes = changes.as_ref();
@@ -598,7 +592,7 @@ fn run(cli: Cli) -> Result<Outcome> {
             // Warnings never fail the check, so there is nothing to legalize.
             let violations: Vec<_> = violations
                 .into_iter()
-                .filter(|v| !project.policy.config.warns(v.rule))
+                .filter(|v| !project.config().warns(v.rule))
                 .collect();
             let path = project.baseline_path();
             let old = Baseline::load(&path)?;
@@ -706,7 +700,7 @@ fn run(cli: Cli) -> Result<Outcome> {
                 violations: &analysis.violations,
                 uncovered: &analysis.unindexed,
             };
-            print!("{}", impact::why(&project.policy.config, &graph, &from, &to)?);
+            print!("{}", impact::why(project.config(), &graph, &from, &to)?);
             if let Some(note) = report::cache_note(&analysis.stats) {
                 println!("Cached: {note}");
             }
@@ -719,9 +713,9 @@ fn run(cli: Cli) -> Result<Outcome> {
         }
         Command::Explain { path, config } => {
             let project = Project::open(&config)?;
-            let map = ComponentMap::new(&project.policy.config)?;
+            let map = ComponentMap::new(project.config())?;
             let rel = explain::root_relative(&project.root, &path);
-            print!("{}", explain::explain(&project.policy.config, &map, &rel)?);
+            print!("{}", explain::explain(project.config(), &map, &rel)?);
             Ok(true)
         }
         Command::Graph {
@@ -731,7 +725,7 @@ fn run(cli: Cli) -> Result<Outcome> {
         } => {
             let project = Project::open(&config)?;
             if let Some(name) = &focus {
-                project.policy.config.require_component(name)?;
+                project.config().require_component(name)?;
             }
             let analysis = project.analyze(&mut fresh(), &scope::Scope::default())?;
             // On stderr: stdout is the diagram itself.
@@ -745,7 +739,7 @@ fn run(cli: Cli) -> Result<Outcome> {
                 "{}",
                 graph::render(
                     format,
-                    &project.policy.config,
+                    project.config(),
                     &analysis.edges,
                     &analysis.violations,
                     focus.as_deref(),
@@ -763,7 +757,7 @@ fn run(cli: Cli) -> Result<Outcome> {
             if patch {
                 let text = &project.policy.config_input().content;
                 let gone = suggest::removable(
-                    &project.policy.config,
+                    project.config(),
                     &analysis.map,
                     &analysis.edges,
                     &analysis.unindexed,
@@ -782,7 +776,7 @@ fn run(cli: Cli) -> Result<Outcome> {
             print!(
                 "{}",
                 suggest::suggest(
-                    &project.policy.config,
+                    project.config(),
                     &analysis.map,
                     &analysis.edges,
                     &analysis.deps,
@@ -795,7 +789,7 @@ fn run(cli: Cli) -> Result<Outcome> {
                 println!("easement: {note}");
             }
             let unused = suggest::removable(
-                &project.policy.config,
+                project.config(),
                 &analysis.map,
                 &analysis.edges,
                 &analysis.unindexed,
@@ -804,7 +798,7 @@ fn run(cli: Cli) -> Result<Outcome> {
         }
         Command::Doctor { config, format } => {
             let project = Project::open(&config)?;
-            let files = scan::project_files(&project.root, &project.policy.config.scan_policy())?;
+            let files = scan::project_files(&project.root, &project.config().scan_policy())?;
             let diagnoses = indexer::diagnose(&project.root, &files);
             print!(
                 "{}",

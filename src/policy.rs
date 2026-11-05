@@ -55,17 +55,19 @@ impl Policy {
     /// Loads the policy from the configuration at `path`, as it is in the
     /// working tree or, with `revision`, as it was at that Git revision.
     pub fn load(path: &Path, revision: Option<&str>) -> Result<Self> {
-        let reader = Reader::new(path, revision)?;
-        let mut inputs = Vec::new();
-        let mut origins = Origins::new();
-        let value = load_value(
-            path,
-            InputKind::Config,
-            &reader,
-            &mut Vec::new(),
-            &mut inputs,
-            &mut origins,
-        )?;
+        let mut loader = Loader {
+            reader: Reader::new(path, revision)?,
+            stack: Vec::new(),
+            inputs: Vec::new(),
+            origins: Origins::new(),
+        };
+        let value = loader.load(path, InputKind::Config)?;
+        let Loader {
+            reader,
+            mut inputs,
+            mut origins,
+            ..
+        } = loader;
         let config = Config::from_merged(Value::Mapping(value), path)?;
         if config.tests.is_some()
             && let Some(&at) = origins.get(&(String::new(), "tests".to_string()))
@@ -185,88 +187,86 @@ impl Reader {
     }
 }
 
-/// Reads a config file and merges the files it `extends` underneath it,
-/// recording each file read in `inputs` and the input that last defined each
-/// entry in `origins`.
-///
-/// `extends` is a path or a list of paths, relative to the file that names them.
-/// Patterns in every file stay relative to the root of the config being loaded.
-/// Keys that start with `x-` are dropped, so they can hold anchors for `<<`.
-/// `components` and `rules` merge by name, the later definition replacing the
-/// earlier one; `common`, `exclude` and `target_only` are concatenated; any other key is
-/// replaced by the extending file.
-fn load_value(
-    path: &Path,
-    kind: InputKind,
-    reader: &Reader,
-    stack: &mut Vec<PathBuf>,
-    inputs: &mut Vec<PolicyInput>,
-    origins: &mut Origins,
-) -> Result<Mapping> {
-    let identity = reader.identify(path)?;
-    if stack.contains(&identity) {
-        bail!("config {} extends itself", path.display());
-    }
-    let (text, past_unknown) = reader
-        .read(&identity)
-        .with_context(|| format!("cannot read config {}", path.display()))?;
-    let mut value = serde_norway::from_str::<Value>(&text)
-        .with_context(|| format!("invalid config {}", path.display()))?;
-    // `<<: *anchor` shares a part of a rule between components.
-    value
-        .apply_merge()
-        .with_context(|| format!("invalid config {}", path.display()))?;
-    let Value::Mapping(mut own) = value else {
-        bail!("config {} is not a mapping", path.display());
-    };
-    let at = inputs.len();
-    inputs.push(PolicyInput {
-        kind,
-        path: identity.clone(),
-        content: text,
-        past_unknown,
-    });
-    // `x-` keys are only places to define anchors.
-    own.retain(|key, _| !key.as_str().is_some_and(|k| k.starts_with("x-")));
-    let bases = match own.remove("extends") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::String(one)) => vec![one],
-        Some(other) => serde_norway::from_value::<Vec<String>>(other)
-            .with_context(|| format!("`extends` in {} must be a path or a list", path.display()))?,
-    };
-    // At a revision `..` is resolved by name, so it starts from the real
-    // directory, as the working tree resolves it after the links.
-    let dir = match reader.revision {
-        None => path.parent(),
-        Some(_) => identity.parent(),
-    }
-    .unwrap_or(Path::new("."))
-    .to_path_buf();
-    stack.push(identity);
-    let mut merged = Mapping::new();
-    for base in bases {
-        let base = load_value(
-            &dir.join(base),
-            InputKind::Extended,
-            reader,
-            stack,
-            inputs,
-            origins,
-        )?;
-        merge(&mut merged, base);
-    }
-    stack.pop();
-    for (key, value) in &own {
-        let key = key.as_str().unwrap_or_default();
-        origins.insert((String::new(), key.to_string()), at);
-        if let ("components" | "rules", Value::Mapping(entries)) = (key, value) {
-            for name in entries.keys().filter_map(Value::as_str) {
-                origins.insert((key.to_string(), name.to_string()), at);
+/// Reads the configurations of a policy, keeping each file it reads and the
+/// input that last defined each entry.
+struct Loader {
+    reader: Reader,
+    /// The files being read, the outermost first: one read again extends itself.
+    stack: Vec<PathBuf>,
+    inputs: Vec<PolicyInput>,
+    origins: Origins,
+}
+
+impl Loader {
+    /// Reads a config file and merges the files it `extends` underneath it.
+    ///
+    /// `extends` is a path or a list of paths, relative to the file that names them.
+    /// Patterns in every file stay relative to the root of the config being loaded.
+    /// Keys that start with `x-` are dropped, so they can hold anchors for `<<`.
+    /// `components` and `rules` merge by name, the later definition replacing the
+    /// earlier one; `common`, `exclude` and `target_only` are concatenated; any other
+    /// key is replaced by the extending file.
+    fn load(&mut self, path: &Path, kind: InputKind) -> Result<Mapping> {
+        let identity = self.reader.identify(path)?;
+        if self.stack.contains(&identity) {
+            bail!("config {} extends itself", path.display());
+        }
+        let (text, past_unknown) = self
+            .reader
+            .read(&identity)
+            .with_context(|| format!("cannot read config {}", path.display()))?;
+        let mut value = serde_norway::from_str::<Value>(&text)
+            .with_context(|| format!("invalid config {}", path.display()))?;
+        // `<<: *anchor` shares a part of a rule between components.
+        value
+            .apply_merge()
+            .with_context(|| format!("invalid config {}", path.display()))?;
+        let Value::Mapping(mut own) = value else {
+            bail!("config {} is not a mapping", path.display());
+        };
+        let at = self.inputs.len();
+        self.inputs.push(PolicyInput {
+            kind,
+            path: identity.clone(),
+            content: text,
+            past_unknown,
+        });
+        // `x-` keys are only places to define anchors.
+        own.retain(|key, _| !key.as_str().is_some_and(|k| k.starts_with("x-")));
+        let bases = match own.remove("extends") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::String(one)) => vec![one],
+            Some(other) => serde_norway::from_value::<Vec<String>>(other).with_context(|| {
+                format!("`extends` in {} must be a path or a list", path.display())
+            })?,
+        };
+        // At a revision `..` is resolved by name, so it starts from the real
+        // directory, as the working tree resolves it after the links.
+        let dir = match self.reader.revision {
+            None => path.parent(),
+            Some(_) => identity.parent(),
+        }
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+        self.stack.push(identity);
+        let mut merged = Mapping::new();
+        for base in bases {
+            let base = self.load(&dir.join(base), InputKind::Extended)?;
+            merge(&mut merged, base);
+        }
+        self.stack.pop();
+        for (key, value) in &own {
+            let key = key.as_str().unwrap_or_default();
+            self.origins.insert((String::new(), key.to_string()), at);
+            if let ("components" | "rules", Value::Mapping(entries)) = (key, value) {
+                for name in entries.keys().filter_map(Value::as_str) {
+                    self.origins.insert((key.to_string(), name.to_string()), at);
+                }
             }
         }
+        merge(&mut merged, own);
+        Ok(merged)
     }
-    merge(&mut merged, own);
-    Ok(merged)
 }
 
 fn merge(into: &mut Mapping, from: Mapping) {
