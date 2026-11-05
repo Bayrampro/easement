@@ -415,6 +415,15 @@ impl ComponentMap {
             .collect()
     }
 
+    /// The named placeholders of every `in` pattern of `component`.
+    pub fn placeholders(&self, component: &str) -> std::collections::BTreeSet<&str> {
+        self.entries
+            .iter()
+            .filter(|e| e.component == component)
+            .flat_map(|e| e.captures.iter().map(|(_, name)| name.as_str()))
+            .collect()
+    }
+
     /// For a path in an isolated component: the instance it belongs to, such
     /// as `src/pages/contacts` for `src/pages/*`. A file `contacts.tsx` and a
     /// directory `contacts/` are the same instance.

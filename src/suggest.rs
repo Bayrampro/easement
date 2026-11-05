@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::check::Edge;
 use crate::components::ComponentMap;
 use crate::config::Config;
+use crate::decision::{self, Refusal};
 use crate::lang::Target;
 use crate::scan::Dep;
 
@@ -42,16 +43,14 @@ pub fn suggest(
     let mut missing: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     let mut forbidden: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for ((from, to), count) in &used {
-        if !config.allows(from, to) {
-            let list = if config.forbids(from, to) || config.layer_block(from, to).is_some() {
-                &mut forbidden
-            } else {
-                &mut missing
-            };
-            list.entry(from)
-                .or_default()
-                .push(format!("{to} ({count} import(s))"));
-        }
+        let list = match decision::pair(config, map, from, to).grant {
+            Ok(_) => continue,
+            Err(Refusal::NotGranted { layers: None }) => &mut missing,
+            Err(_) => &mut forbidden,
+        };
+        list.entry(from)
+            .or_default()
+            .push(format!("{to} ({count} import(s))"));
     }
     let lines = |list: BTreeMap<&str, Vec<String>>| {
         list.into_iter()

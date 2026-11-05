@@ -6,6 +6,7 @@ use serde::Serialize;
 use crate::check::{NO_COMPONENT, Violation, describe_chain, file_graph, reach, shortest_chain};
 use crate::components::ComponentMap;
 use crate::config::Config;
+use crate::decision::{self, Refusal};
 use crate::report::Confidence;
 use crate::scan::Dep;
 
@@ -173,37 +174,32 @@ pub fn why(config: &Config, graph: &Graph, from: &str, to: &str) -> Result<Strin
     for name in [from, to] {
         config.require_component(name)?;
     }
-    let rule = config.rules.get(from);
-    let verdict = if config.forbids(from, to) {
-        let reach = rule.is_some_and(|r| r.must_not_reach.iter().any(|c| c.name() == to));
-        let key = if reach {
-            "must_not_reach"
-        } else {
-            "must_not_depend_on"
-        };
-        format!("is forbidden ({key})")
-    } else if let Some(source) = config.allow_source(from, to) {
-        format!("is allowed ({source})")
-    } else {
-        match config.layer_block(from, to) {
-            Some(why) => format!("is not allowed: {why}"),
-            None => "is not allowed".to_string(),
+    let verdict = decision::pair(config, graph.map, from, to);
+    let said = match &verdict.grant {
+        Ok(grant) => format!("is allowed ({})", grant.as_str()),
+        Err(Refusal::Prohibited { reach: true }) => "is forbidden (must_not_reach)".to_string(),
+        Err(Refusal::Prohibited { reach: false }) => {
+            "is forbidden (must_not_depend_on)".to_string()
         }
+        Err(Refusal::NotGranted { layers: Some(why) }) => format!("is not allowed: {why}"),
+        Err(Refusal::NotGranted { layers: None }) => "is not allowed".to_string(),
     };
-    let because = config
-        .forbid_reason(from, to)
-        .or_else(|| config.allow_reason(from, to))
+    let because = verdict
+        .because
         .map(|b| format!(": {b}"))
         .unwrap_or_default();
-    let mut out = format!("{from} -> {to} {verdict}{because}\n");
-    if from != to
-        && let Some(importers) = &config.components[to].allow_importers
-        && !importers.iter().any(|c| c == from)
-    {
+    let mut out = format!("{from} -> {to} {said}{because}\n");
+    if let Some(importers) = verdict.importers {
         out.push_str(&format!(
             "  but {to} may be imported only from {}\n",
             importers.join(", ")
         ));
+    }
+    // What a grant leaves to the path of each import.
+    if !verdict.rejected() {
+        for condition in verdict.conditions(to) {
+            out.push_str(&format!("  but {condition}\n"));
+        }
     }
     for name in [from, to] {
         if let Some(owner) = &config.components[name].owner {

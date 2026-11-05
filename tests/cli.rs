@@ -3649,6 +3649,36 @@ fn why_reports_what_check_would_say_about_each_import() {
 }
 
 #[test]
+fn why_names_the_surface_an_allowed_dependency_must_go_through() {
+    let (_tmp, root) = project(&[
+        (
+            "easement.yml",
+            "version: 1\ncomponents:\n  web: { in: src/web }\n  billing: { in: src/billing, public: src/billing/api }\nrules:\n  web: { may_depend_on: [billing] }\n",
+        ),
+        (
+            "src/web/Page.kt",
+            "package web\nimport billing.internal.Ledger\nclass Page\n",
+        ),
+        (
+            "src/billing/api/Billing.kt",
+            "package billing.api\nclass Billing\n",
+        ),
+        (
+            "src/billing/internal/Ledger.kt",
+            "package billing.internal\nclass Ledger\n",
+        ),
+    ]);
+    easement(&root, &["why", "web", "billing"])
+        .success()
+        .stdout(contains(
+            "web -> billing is allowed (may_depend_on)\n  but only through the public surface of billing: src/billing/api\n",
+        ))
+        .stdout(contains(
+            "src/web/Page.kt:2 imports src/billing/internal/Ledger.kt [violates: privacy]",
+        ));
+}
+
+#[test]
 fn std_stands_for_the_standard_library_of_the_language() {
     let (_tmp, root) = project(&[
         (

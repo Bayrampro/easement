@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::check::RuleId;
+use crate::decision::Grant;
 use crate::lang::registry;
 use crate::stdlib::STD;
 use anyhow::{Context, Result, anyhow, bail};
@@ -811,6 +812,14 @@ impl Config {
         })
     }
 
+    /// Whether `must_not_reach` of `from` names `to`: not even a chain of
+    /// imports through other components may reach it.
+    pub fn forbids_reach(&self, from: &str, to: &str) -> bool {
+        self.rules
+            .get(from)
+            .is_some_and(|r| r.must_not_reach.iter().any(|c| c.name() == to))
+    }
+
     /// The reason given with `to` in the `must_not_depend_on` or
     /// `must_not_reach` of `from`, if any.
     pub fn forbid_reason(&self, from: &str, to: &str) -> Option<&str> {
@@ -832,40 +841,27 @@ impl Config {
             .because()
     }
 
-    pub fn allows(&self, from: &str, to: &str) -> bool {
-        from == to
-            || self.tests.is_some() && from == TESTS && !self.rules.contains_key(TESTS)
-            || !self.forbids(from, to)
-                && (self.common.iter().any(|c| c == to)
-                    || self.above(from, to)
-                    || self
-                        .rules
-                        .get(from)
-                        .is_some_and(|r| r.may_depend_on.iter().any(|c| c.name() == to)))
-    }
-
     /// What lets `from` depend on `to`, when something does and nothing
-    /// forbids it: `same component`, `tests: auto`, `may_depend_on`,
-    /// `common` or `layers`.
-    pub fn allow_source(&self, from: &str, to: &str) -> Option<&'static str> {
+    /// forbids it.
+    pub fn grant(&self, from: &str, to: &str) -> Option<Grant> {
         if from == to {
-            return Some("same component");
+            return Some(Grant::SameComponent);
         }
         if self.forbids(from, to) {
             return None;
         }
         if self.tests.is_some() && from == TESTS && !self.rules.contains_key(TESTS) {
-            Some("tests: auto")
+            Some(Grant::Tests)
         } else if self
             .rules
             .get(from)
             .is_some_and(|r| r.may_depend_on.iter().any(|c| c.name() == to))
         {
-            Some("may_depend_on")
+            Some(Grant::MayDependOn)
         } else if self.common.iter().any(|c| c == to) {
-            Some("common")
+            Some(Grant::Common)
         } else if self.above(from, to) {
-            Some("layers")
+            Some(Grant::Layers)
         } else {
             None
         }
@@ -1176,11 +1172,11 @@ rules:
 ",
         )
         .unwrap();
-        assert!(c.allows("a", "a"));
-        assert!(c.allows("a", "b"));
-        assert!(c.allows("c", "m"));
-        assert!(!c.allows("a", "c"));
-        assert!(!c.allows("b", "a"));
+        assert!(c.grant("a", "a").is_some());
+        assert!(c.grant("a", "b").is_some());
+        assert!(c.grant("c", "m").is_some());
+        assert!(!c.grant("a", "c").is_some());
+        assert!(!c.grant("b", "a").is_some());
     }
 
     #[test]
@@ -1201,15 +1197,15 @@ layers:
 ",
         )
         .unwrap();
-        assert!(c.allows("web", "api"));
-        assert!(!c.allows("api", "jobs"));
-        assert!(!c.allows("jobs", "api"));
-        assert!(c.allows("api", "service"));
-        assert!(c.allows("service", "repo"));
+        assert!(c.grant("web", "api").is_some());
+        assert!(!c.grant("api", "jobs").is_some());
+        assert!(!c.grant("jobs", "api").is_some());
+        assert!(c.grant("api", "service").is_some());
+        assert!(c.grant("service", "repo").is_some());
         // Nothing above `service` reaches past it.
-        assert!(!c.allows("api", "repo"));
-        assert!(!c.allows("web", "repo"));
-        assert!(!c.allows("repo", "web"));
+        assert!(!c.grant("api", "repo").is_some());
+        assert!(!c.grant("web", "repo").is_some());
+        assert!(!c.grant("repo", "web").is_some());
         assert_eq!(
             c.layer_block("api", "repo").as_deref(),
             Some("the closed layer service is between them")
@@ -1244,13 +1240,13 @@ rules:
 ",
         )
         .unwrap();
-        assert!(c.allows("top", "mid"));
-        assert!(c.allows("mid", "low"));
-        assert!(!c.allows("mid", "top"));
-        assert!(!c.allows("low", "mid"));
-        assert!(!c.allows("top", "low"));
-        assert!(!c.allows("top", "m"));
-        assert!(c.allows("mid", "m"));
+        assert!(c.grant("top", "mid").is_some());
+        assert!(c.grant("mid", "low").is_some());
+        assert!(!c.grant("mid", "top").is_some());
+        assert!(!c.grant("low", "mid").is_some());
+        assert!(!c.grant("top", "low").is_some());
+        assert!(!c.grant("top", "m").is_some());
+        assert!(c.grant("mid", "m").is_some());
     }
 
     #[test]
@@ -1407,8 +1403,8 @@ tests: auto
         )
         .unwrap();
         assert!(open.components.contains_key("tests"));
-        assert!(open.allows("tests", "a"));
-        assert!(!open.allows("a", "tests"));
+        assert!(open.grant("tests", "a").is_some());
+        assert!(!open.grant("a", "tests").is_some());
         let ruled = parse(
             "version: 1
 components:
@@ -1420,8 +1416,8 @@ rules:
 ",
         )
         .unwrap();
-        assert!(ruled.allows("tests", "helper"));
-        assert!(!ruled.allows("tests", "a"));
+        assert!(ruled.grant("tests", "helper").is_some());
+        assert!(!ruled.grant("tests", "a").is_some());
         let err = parse(
             "version: 1
 components:
@@ -1445,7 +1441,7 @@ rules:
 ",
         )
         .unwrap();
-        assert!(c.allows("a", "b"));
+        assert!(c.grant("a", "b").is_some());
         assert_eq!(c.allow_reason("a", "b"), Some("why b"));
     }
 

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::ComponentMap;
 use crate::config::{Config, Listed};
+use crate::decision::{self, Clause, Decision, Refusal};
 use crate::flow::{self, Flow};
 use crate::lang::{Target, registry};
 use crate::relpath;
@@ -301,196 +302,93 @@ pub fn evaluate(
         let file = slash(&dep.file);
         // Violations and edges come from the whole project; the counters follow the scope.
         let counted = scope.contains(map, &file);
-        let target = match &dep.target {
-            Target::Internal(unit) => unit.key(),
-            Target::External(module) => {
-                stats.external_deps += usize::from(counted);
-                if let Some(from) = map.component_of_unit(&dep.from)
-                    && counted
-                    && map.uses_std(from)
-                    && !crate::stdlib::knows(&file)
-                {
-                    let ext = relpath::extension(&file).to_string();
-                    if !stats.std_unknown.contains(&ext) {
-                        stats.std_unknown.push(ext);
-                    }
-                }
-                if let Some(from) = map.component_of_unit(&dep.from)
-                    && let Some(problem) = map.external_problem(from, &file, module)
-                {
-                    found.push(Violation {
-                        rule: RuleId::External,
-                        evidence: vec![(file.clone(), dep.line)],
-                        file,
-                        line: dep.line,
-                        message: format!("{from} -> external {module} {}", problem.what),
-                        because: problem
-                            .because
-                            .or_else(|| config.reason(from))
-                            .map(str::to_string),
-                        from: from.to_string(),
-                        to: String::new(),
-                        target: module.clone(),
-                        specifier: dep.specifier.clone(),
-                    });
-                }
-                continue;
-            }
-        };
-        stats.internal_deps += usize::from(counted);
-        let Some(from) = map.component_of_unit(&dep.from) else {
-            if counted {
+        let external = matches!(dep.target, Target::External(_));
+        if external {
+            stats.external_deps += usize::from(counted);
+        } else {
+            stats.internal_deps += usize::from(counted);
+        }
+        let Some(decision) = decision::decide(config, map, dep) else {
+            if counted && !external {
                 unmapped.insert(file);
             }
             continue;
         };
-        if map.is_excluded(&target) {
-            found.push(Violation {
-                rule: RuleId::Excluded,
-                evidence: vec![(file.clone(), dep.line)],
-                file,
+        if external && counted && map.uses_std(decision.from) && !crate::stdlib::knows(&file) {
+            let ext = relpath::extension(&file).to_string();
+            if !stats.std_unknown.contains(&ext) {
+                stats.std_unknown.push(ext);
+            }
+        }
+        if let Some(to) = decision.to.filter(|to| *to != decision.from) {
+            edges.push(Edge {
+                from: decision.from.to_string(),
+                to: to.to_string(),
+                file: file.clone(),
                 line: dep.line,
-                message: format!(
-                    "{from} imports {target}, which `exclude` hides, so no rule checks it; list it in `target_only` if it is generated, in a component or `unowned` if it is part of the project, else do not import it"
-                ),
-                because: None,
-                from: from.to_string(),
-                to: String::new(),
-                target,
-                specifier: dep.specifier.clone(),
             });
-            continue;
         }
-        let Target::Internal(to_unit) = &dep.target else {
-            continue;
-        };
-        let Some(to) = map.component_of_unit(to_unit) else {
-            continue;
-        };
-        if from == to {
-            if let (Some(here), Some(there)) = (map.instance_of(&file), map.instance_of(&target))
-                && here != there
-            {
-                found.push(Violation {
-                    rule: RuleId::Isolation,
-                    evidence: vec![(file.clone(), dep.line)],
-                    file,
-                    line: dep.line,
-                    message: format!(
-                        "{here} -> {there}: instances of {from} must not import each other (imports {})",
-                        dep.specifier
-                    ),
-                    because: config.components[from]
-                        .because
-                        .clone()
-                        .or_else(|| config.reason(from).map(str::to_string)),
-                    from: from.to_string(),
-                    to: to.to_string(),
-                    target,
-                    specifier: dep.specifier.clone(),
-                });
-            } else if let Some(v) = slice_violation(config, map, from, to, &file, &target, dep) {
-                found.push(v);
-            }
-            continue;
-        }
-        edges.push(Edge {
-            from: from.to_string(),
-            to: to.to_string(),
-            file: file.clone(),
-            line: dep.line,
-        });
-        let importers = config.components[to].allow_importers.as_deref();
-        let (rule, message, because) = if !config.allows(from, to) {
-            let how = if config.forbids(from, to) {
-                "is forbidden"
-            } else {
-                "is not allowed"
-            };
-            let layer = config
-                .layer_block(from, to)
-                .filter(|_| !config.forbids(from, to))
-                .map(|why| format!(": {why}"))
-                .unwrap_or_default();
-            (
-                RuleId::Dependency,
-                format!("{from} -> {to} {how}{layer} (imports {})", dep.specifier),
-                config
-                    .forbid_reason(from, to)
-                    .or_else(|| config.reason(from)),
-            )
-        } else if importers.is_some_and(|list| !list.iter().any(|c| c == from)) {
-            (
-                RuleId::Dependency,
-                format!(
-                    "{from} -> {to}: {to} may be imported only from {} (imports {})",
-                    importers.unwrap_or_default().join(", "),
-                    dep.specifier
-                ),
-                config.components[to].because.as_deref(),
-            )
-        } else if !map.is_public(to, &target) {
-            (
-                RuleId::Privacy,
-                format!(
-                    "{from} -> {to}: {target} is not in the public API of {to} (imports {})",
-                    dep.specifier
-                ),
-                config.components[to].because.as_deref(),
-            )
-        } else {
-            if let Some(v) = slice_violation(config, map, from, to, &file, &target, dep) {
-                found.push(v);
-            }
-            continue;
-        };
-        found.push(Violation {
-            rule,
-            evidence: vec![(file.clone(), dep.line)],
-            file,
-            line: dep.line,
-            message,
-            because: because.map(str::to_string),
-            from: from.to_string(),
-            to: to.to_string(),
-            target,
-            specifier: dep.specifier.clone(),
-        });
+        found.extend(violation(&decision, dep));
     }
     stats.unmapped_files = unmapped.len();
     (found, edges, stats)
 }
 
-/// An import between two slices: both ends name the same placeholder in
-/// their `in` patterns (`src/features/<feature>/ui`) and fill it differently.
-fn slice_violation(
-    config: &Config,
-    map: &ComponentMap,
-    from: &str,
-    to: &str,
-    file: &str,
-    target: &str,
-    dep: &Dep,
-) -> Option<Violation> {
-    let theirs = map.captures_of(target);
-    let (name, here, there) = map.captures_of(file).into_iter().find_map(|(name, here)| {
-        let (_, there) = theirs.iter().find(|(n, _)| *n == name)?;
-        (here != *there).then(|| (name, here, there.clone()))
-    })?;
+/// The violation a rejected dependency decision raises at the import behind it.
+fn violation(decision: &Decision, dep: &Dep) -> Option<Violation> {
+    let Decision {
+        from,
+        to,
+        target,
+        grant: Err(clause),
+        because,
+    } = decision
+    else {
+        return None;
+    };
+    let file = slash(&dep.file);
+    let to = to.unwrap_or_default();
+    let spec = &dep.specifier;
+    let message = match clause {
+        Clause::External(what) => format!("{from} -> external {target} {what}"),
+        Clause::ExcludedTarget => format!(
+            "{from} imports {target}, which `exclude` hides, so no rule checks it; list it in `target_only` if it is generated, in a component or `unowned` if it is part of the project, else do not import it"
+        ),
+        Clause::OtherInstance { here, there } => format!(
+            "{here} -> {there}: instances of {from} must not import each other (imports {spec})"
+        ),
+        Clause::SliceMismatch { name, here, there } => {
+            format!("{from} -> {to}: <{name}> differs ({here} imports {there}: {target})")
+        }
+        Clause::Refused(Refusal::Prohibited { .. }) => {
+            format!("{from} -> {to} is forbidden (imports {spec})")
+        }
+        Clause::Refused(Refusal::NotGranted { layers }) => {
+            let layers = layers
+                .as_ref()
+                .map(|why| format!(": {why}"))
+                .unwrap_or_default();
+            format!("{from} -> {to} is not allowed{layers} (imports {spec})")
+        }
+        Clause::ImporterNotListed(importers) => format!(
+            "{from} -> {to}: {to} may be imported only from {} (imports {spec})",
+            importers.join(", ")
+        ),
+        Clause::OutsideSurface => {
+            format!("{from} -> {to}: {target} is not in the public API of {to} (imports {spec})")
+        }
+    };
     Some(Violation {
-        rule: RuleId::Isolation,
-        evidence: vec![(file.to_string(), dep.line)],
-        file: file.to_string(),
+        rule: clause.rule(),
+        evidence: vec![(file.clone(), dep.line)],
+        file,
         line: dep.line,
-        message: format!("{from} -> {to}: <{name}> differs ({here} imports {there}: {target})"),
-        because: config.components[to]
-            .because
-            .clone()
-            .or_else(|| config.reason(from).map(str::to_string)),
+        message,
+        because: because.map(str::to_string),
         from: from.to_string(),
         to: to.to_string(),
-        target: target.to_string(),
-        specifier: dep.specifier.clone(),
+        target: target.clone(),
+        specifier: spec.clone(),
     })
 }
 

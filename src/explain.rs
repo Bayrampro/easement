@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 
 use crate::components::ComponentMap;
 use crate::config::Config;
+use crate::decision::{self, Refusal};
 
 /// A path as the config sees it: relative to the project root, `/`-separated.
 /// A path that exists relative to the working directory is taken from there,
@@ -55,21 +56,30 @@ pub fn explain(config: &Config, map: &ComponentMap, rel: &str) -> Result<String>
     let mut forbidden = Vec::new();
     let mut other = Vec::new();
     for to in config.components.keys().filter(|c| c.as_str() != name) {
-        if config.forbids(name, to) {
-            let reach = rule.is_some_and(|r| r.must_not_reach.iter().any(|c| c.name() == to));
-            forbidden.push(if reach {
+        let verdict = decision::pair(config, map, name, to);
+        match (&verdict.grant, verdict.importers) {
+            (Err(Refusal::Prohibited { reach }), _) => forbidden.push(if *reach {
                 format!("{to} (not even through others)")
             } else {
                 to.clone()
-            });
-        } else if let Some(why) = config.allow_source(name, to) {
-            let because = config
-                .allow_reason(name, to)
-                .map(|b| format!(": {b}"))
-                .unwrap_or_default();
-            allowed.push(format!("{to} ({why}{because})"));
-        } else {
-            other.push(to.as_str());
+            }),
+            (Ok(grant), None) => {
+                let because = verdict
+                    .because
+                    .map(|b| format!(": {b}"))
+                    .unwrap_or_default();
+                let conditions: String = verdict
+                    .conditions(to)
+                    .iter()
+                    .map(|c| format!("; {c}"))
+                    .collect();
+                allowed.push(format!("{to} ({}{because}{conditions})", grant.as_str()));
+            }
+            (Ok(_), Some(importers)) => other.push(format!(
+                "{to} (may be imported only from {})",
+                importers.join(", ")
+            )),
+            (Err(Refusal::NotGranted { .. }), _) => other.push(to.clone()),
         }
     }
     let list = |items: &[String]| {
@@ -200,5 +210,32 @@ rules:
         assert!(page.contains("instance: src/pages/home"));
         assert!(data.contains("not allowed: core, pages, web"));
         assert!(explain(&config, &map, "stray.ts").is_err());
+    }
+
+    #[test]
+    fn an_allowed_component_names_its_surface_and_importers_it_does_not_list() {
+        let config: Config = serde_norway::from_str(
+            "version: 1
+components:
+  web: { in: src/web }
+  billing: { in: src/billing, public: src/billing/api }
+  data: { in: src/data, allow_importers: [billing] }
+rules:
+  web: { may_depend_on: [billing, data] }
+",
+        )
+        .unwrap();
+        let map = ComponentMap::new(&config).unwrap();
+        let out = explain(&config, &map, "src/web/page.ts").unwrap();
+        assert!(
+            out.contains(
+                "may depend on: billing (may_depend_on; only through the public surface of billing: src/billing/api)\n"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("not allowed: data (may be imported only from billing)\n"),
+            "{out}"
+        );
     }
 }

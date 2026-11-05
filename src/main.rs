@@ -2,6 +2,7 @@ mod baseline;
 mod check;
 mod components;
 mod config;
+mod decision;
 mod diagram;
 mod diff;
 mod doctor;

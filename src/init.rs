@@ -241,7 +241,7 @@ mod tests {
         let text = render(&found, &deps);
         assert!(text.contains("  \"no\": { in: src/no }"));
         let config: Config = serde_norway::from_str(&text).unwrap();
-        assert!(config.allows("web", "no"));
-        assert!(!config.allows("no", "web"));
+        assert!(config.grant("web", "no").is_some());
+        assert!(!config.grant("no", "web").is_some());
     }
 }
