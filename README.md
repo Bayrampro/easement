@@ -779,11 +779,11 @@ go:
 
 For TypeScript a file is covered when a `tsconfig.json` includes it, so generated code outside `include` is listed as not covered: add it to `include`. A `tsconfig.json` in a subdirectory is indexed as a project of its own, and an import from there into a file of another project is not seen, so prefer one `tsconfig.json` that includes what should be checked together.
 
-Those files are named in the text report (the first twenty; all of them in `--format json`, `stats.uncovered`).
+Those files are named in the text report under `Evidence gaps` (the first twenty; all of them in `--format json`, `evidence_gaps` and `stats.uncovered`).
 
-The JSON report says `"confidence": "partial"` with the reasons in `confidence_reasons`. A green verdict then covers only the code an indexer read, and whoever acts on it has to treat the rest as unchecked. The field is also `partial` for a run that judges a part by design (`--diff`, `--component`, `--scope`) and names the part: `passed` then says nothing about the rest of the project.
+A report of `check` or `impact` says what its verdict leaves out in three lists. `narrowed` holds the parts a run judges by request, each with its `kind` (`diff`, `component`, `scope`) and what it is `limited_to`: `passed` then says nothing about the rest of the project. `evidence_gaps` holds code or facts the check could not read or judge, each with its `kind` (`uncovered`, `naming_unseen`, `std_unknown`, `manifests`, `parts`, `packages`, `symbols`, `unused`, and `deleted` for `impact`), its `files` and `count` or `extensions` where they are known, a `message` and how to `close` it: a green verdict covers only the code an indexer read, and whoever acts on it has to treat the rest as unchecked. `accepted_gaps` holds the files `uncovered_ok` accepts, by entry, with its `because`. The JSON report also says `"confidence": "partial"`, with the reasons in `confidence_reasons`, when a run is narrowed or has an evidence gap. Cache provenance (`cached`) is reported apart: a cache hit is not a gap.
 
-Files that are meant to stay outside an indexer (build helpers, generated code) are accepted with `uncovered_ok`, each with the reason, and then no longer count against the verdict of `check`. No indexer read their imports all the same, so `suggest`, `impact`, `why` and `baseline` stay as careful about them as about any uncovered file:
+Files that are meant to stay outside an indexer (build helpers, generated code) are accepted with `uncovered_ok`, each with the reason. They then no longer count against the verdict of `check`, and `check` lists them under `accepted_gaps` instead of `evidence_gaps`. No indexer read their imports all the same, so `suggest`, `impact`, `why` and `baseline` stay as careful about them as about any uncovered file: `impact` lists them under `accepted_gaps` with the reason, and also under its `uncovered` evidence gap, since dependents through them may be missing:
 
 ```yaml
 uncovered_ok:

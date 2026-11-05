@@ -248,9 +248,9 @@ pub enum Accepted {
 pub struct AcceptedGlobs {
     /// A glob or a list of globs.
     name: OneOrMany,
-    /// Why the files may stay uncovered. Read by people, not by the check.
-    #[serde(default, rename = "because")]
-    _because: Option<String>,
+    /// Why the files may stay uncovered, reported with the files it accepts.
+    #[serde(default)]
+    because: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -268,6 +268,13 @@ impl Accepted {
                 OneOrMany::One(name) => vec![name],
                 OneOrMany::Many(names) => names.iter().map(String::as_str).collect(),
             },
+        }
+    }
+
+    pub fn because(&self) -> Option<&str> {
+        match self {
+            Accepted::Plain(_) => None,
+            Accepted::Reasoned(AcceptedGlobs { because, .. }) => because.as_deref(),
         }
     }
 }

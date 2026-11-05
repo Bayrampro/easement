@@ -1,12 +1,14 @@
 ---
 source: tests/cli.rs
-assertion_line: 111
 expression: report
 ---
 {
+  "accepted_gaps": [],
   "confidence": "full",
   "confidence_reasons": [],
+  "evidence_gaps": [],
   "legalized": 0,
+  "narrowed": [],
   "passed": false,
   "stale": [],
   "stats": {

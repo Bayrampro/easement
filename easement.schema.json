@@ -218,7 +218,7 @@
       "type": "object",
       "properties": {
         "because": {
-          "description": "Why the files may stay uncovered. Read by people, not by the check.",
+          "description": "Why the files may stay uncovered, reported with the files it accepts.",
           "type": [
             "string",
             "null"

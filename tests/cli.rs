@@ -306,6 +306,27 @@ fn git(root: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?}");
 }
 
+/// A diff run narrows the verdict by request; it reads no less of the project,
+/// so it has no evidence gap.
+#[test]
+fn a_diff_run_is_narrowed_without_evidence_gaps() {
+    let (_tmp, root) = fixture("go");
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-q", "-m", "base"]);
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--diff", "main", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(
+        report["narrowed"],
+        serde_json::json!([{ "kind": "diff", "limited_to": "main" }])
+    );
+    assert_eq!(report["evidence_gaps"], serde_json::json!([]));
+    assert_eq!(report["accepted_gaps"], serde_json::json!([]));
+    assert_eq!(report["confidence"], "partial");
+}
+
 #[test]
 fn diff_mode_judges_only_changed_lines() {
     let (_tmp, root) = fixture("ts");
@@ -2191,9 +2212,13 @@ fn uncovered_files_are_listed_and_the_verdict_says_it_is_partial() {
     let (_tmp, root) = fixture("uncovered");
     easement(&root, &["check"])
         .success()
-        .stdout(contains("Not covered by an indexer"))
-        .stdout(contains("  tools/gen.go"))
-        .stdout(contains("  tools/other.go"))
+        .stdout(contains("Evidence gaps"))
+        .stdout(contains(
+            "to close: add them to a project the indexer reads",
+        ))
+        .stdout(contains("    tools/gen.go"))
+        .stdout(contains("    tools/other.go"))
+        .stdout(contains("Accepted gaps").not())
         .stdout(contains("2 files not covered by an indexer"));
     let report: serde_json::Value = serde_json::from_str(&stdout_of(
         easement(&root, &["check", "--format", "json"]).success(),
@@ -2204,6 +2229,21 @@ fn uncovered_files_are_listed_and_the_verdict_says_it_is_partial() {
     assert_eq!(
         report["confidence_reasons"][0],
         "2 source files were not covered by an indexer, so imports in or of them were not checked"
+    );
+    assert_eq!(report["narrowed"], serde_json::json!([]));
+    assert_eq!(report["accepted_gaps"], serde_json::json!([]));
+    let gaps = report["evidence_gaps"].as_array().unwrap();
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert_eq!(gaps[0]["kind"], "uncovered");
+    assert_eq!(gaps[0]["count"], 2);
+    assert_eq!(
+        gaps[0]["files"],
+        serde_json::json!(["tools/gen.go", "tools/other.go"])
+    );
+    assert_eq!(gaps[0]["message"], report["confidence_reasons"][0]);
+    assert!(
+        gaps[0]["close"].as_str().unwrap().contains("uncovered_ok"),
+        "{gaps:?}"
     );
 }
 
@@ -2218,22 +2258,37 @@ fn uncovered_ok_accepts_known_gaps() {
         ),
     )
     .unwrap();
+    // Accepted, the files are no evidence gap, but they are still reported.
     easement(&root, &["check"])
         .success()
-        .stdout(contains("Not covered").not())
-        .stdout(contains("not covered by an indexer").not());
+        .stdout(contains("Evidence gaps").not())
+        .stdout(contains("not covered by an indexer").not())
+        .stdout(contains("Accepted gaps"))
+        .stdout(contains(
+            "tools/** because: build helpers with no go.mod on purpose",
+        ))
+        .stdout(contains("    tools/gen.go"));
     let report: serde_json::Value = serde_json::from_str(&stdout_of(
         easement(&root, &["check", "--format", "json"]).success(),
     ))
     .unwrap();
     assert_eq!(report["confidence"], "full");
     assert!(report["confidence_reasons"].as_array().unwrap().is_empty());
+    assert_eq!(report["evidence_gaps"], serde_json::json!([]));
+    assert_eq!(
+        report["accepted_gaps"],
+        serde_json::json!([{
+            "uncovered_ok": ["tools/**"],
+            "because": "build helpers with no go.mod on purpose",
+            "files": ["tools/gen.go", "tools/other.go"],
+        }])
+    );
 }
 
 /// An accepted file is still unread: `suggest`, `impact` and `baseline` cannot
 /// see its imports, so they stay as careful as without `uncovered_ok`.
 #[test]
-fn uncovered_ok_hides_a_file_from_the_report_not_from_suggest_and_impact() {
+fn an_accepted_file_passes_check_but_stays_unread_for_suggest_and_impact() {
     let (_tmp, root) = project(&[
         ("go.mod", "module example.com/m\n\ngo 1.22\n"),
         (
@@ -2271,6 +2326,18 @@ uncovered_ok:
     ))
     .unwrap();
     assert_eq!(impact["confidence"], "partial", "{impact}");
+    assert_eq!(
+        impact["evidence_gaps"][0]["files"],
+        serde_json::json!(["app/race.go"])
+    );
+    assert_eq!(
+        impact["accepted_gaps"],
+        serde_json::json!([{
+            "uncovered_ok": ["app/race.go"],
+            "because": "race-only helpers",
+            "files": ["app/race.go"],
+        }])
+    );
 }
 
 #[test]
@@ -2293,10 +2360,18 @@ fn uncovered_ok_takes_a_list_of_globs_under_one_reason() {
         format!("{config}uncovered_ok:\n  - {{ name: ['tools/gen.go'] }}\n"),
     )
     .unwrap();
-    easement(&root, &["check"])
-        .success()
-        .stdout(contains("  tools/other.go"))
-        .stdout(contains("  tools/gen.go").not());
+    let report: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--format", "json"]).success(),
+    ))
+    .unwrap();
+    assert_eq!(
+        report["evidence_gaps"][0]["files"],
+        serde_json::json!(["tools/other.go"])
+    );
+    assert_eq!(
+        report["accepted_gaps"],
+        serde_json::json!([{ "uncovered_ok": ["tools/gen.go"], "files": ["tools/gen.go"] }])
+    );
 }
 
 #[test]

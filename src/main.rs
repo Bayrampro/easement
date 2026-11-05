@@ -326,7 +326,13 @@ impl Project {
             .filter(|f| scope.contains(&map, f) && !map.is_uncovered_ok(f))
             .cloned()
             .collect();
+        let accepted = report::accepted_gaps(
+            &self.config,
+            &map,
+            scan.uncovered.iter().filter(|f| scope.contains(&map, f)),
+        );
         Ok(Analysis {
+            accepted,
             unindexed: scan.uncovered,
             violations,
             all_files: scan.all_files,
@@ -367,6 +373,8 @@ struct Analysis {
     /// leaves the accepted ones out, but nobody saw their imports, so what
     /// `suggest`, `impact`, `why` and `baseline` say about them stays careful.
     unindexed: Vec<String>,
+    /// The files of `unindexed` in the scope that `uncovered_ok` accepts, by entry.
+    accepted: Vec<report::AcceptedGap>,
     /// Every file that is not excluded, source or not.
     all_files: Vec<String>,
     edges: Vec<check::Edge>,
@@ -395,14 +403,9 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
         mut stats,
         map,
         edges,
+        accepted,
         ..
     } = project.analyze(cache, &scope)?;
-    stats.limited_to = options
-        .components
-        .iter()
-        .map(|c| format!("component {c}"))
-        .chain(options.paths.iter().map(|p| format!("path {p}")))
-        .collect();
     let current = violations.iter().map(check::Violation::key).collect();
     // Cycles and limits come from the whole project, so a violation belongs to
     // the scope when any file behind it does.
@@ -442,11 +445,16 @@ fn check(options: &CheckOptions, cache: &mut scan::Cache) -> Result<bool> {
     verdict.stale.retain(|k| scope.contains(&map, &k.file));
     verdict.sort();
     let changes = changes.as_ref();
+    let narrowed = report::narrowed(changes, &options.components, &options.paths);
+    stats.limited_to = report::limited_to(&narrowed);
+    let coverage = report::Coverage::of_check(&stats, narrowed, accepted);
     match options.format {
-        Format::Text => anstream::print!("{}", report::colored(&verdict, &stats, changes)),
-        Format::Json => println!("{}", report::json(&verdict, &stats, changes)),
+        Format::Text => {
+            anstream::print!("{}", report::colored(&verdict, &stats, &coverage, changes))
+        }
+        Format::Json => println!("{}", report::json(&verdict, &stats, &coverage, changes)),
         Format::Sarif => println!("{}", report::sarif(&verdict)),
-        Format::Github => print!("{}", report::github(&verdict, &stats, changes)),
+        Format::Github => print!("{}", report::github(&verdict, &stats, &coverage, changes)),
         Format::Junit => print!("{}", report::junit(&verdict)),
     }
     Ok(verdict.passed())
@@ -615,6 +623,7 @@ fn run(cli: Cli) -> Result<bool> {
                 changed,
                 deleted,
                 &analysis.unindexed,
+                analysis.accepted.clone(),
             );
             result.cached = report::cache_note(&analysis.stats);
             match format {
@@ -662,8 +671,8 @@ fn run(cli: Cli) -> Result<bool> {
             }
             let analysis = project.analyze(&mut fresh(), &scope::Scope::default())?;
             // On stderr: stdout is the diagram itself.
-            for reason in report::confidence_reasons(&analysis.stats, None) {
-                eprintln!("easement: partial: {reason}");
+            for gap in report::evidence_gaps(&analysis.stats) {
+                eprintln!("easement: partial: {}", gap.message);
             }
             if let Some(note) = report::cache_note(&analysis.stats) {
                 eprintln!("easement: {note}");

@@ -7,7 +7,7 @@ use crate::check::{NO_COMPONENT, Violation, describe_chain, file_graph, reach, s
 use crate::components::ComponentMap;
 use crate::config::Config;
 use crate::decision::{self, Refusal};
-use crate::report::Confidence;
+use crate::report::{self, AcceptedGap, Confidence, Coverage, EvidenceGap, GapKind};
 use crate::scan::Dep;
 
 /// What depends on a set of files, directly or through other files.
@@ -21,6 +21,8 @@ pub struct Impact {
     /// `full`, or `partial` when dependents may be missing.
     pub confidence: Confidence,
     pub confidence_reasons: Vec<String>,
+    #[serde(flatten)]
+    pub coverage: Coverage,
     /// Set when the indexes came from the cache: what their key leaves out and
     /// how to index again.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -64,6 +66,8 @@ fn uncovered_reason(uncovered: &[String]) -> Option<String> {
 }
 
 /// Every file that imports one of `changed`, directly or through other files.
+/// The `uncovered` files are every file no indexer read, the `accepted` ones
+/// too: dependents through them are missing all the same.
 pub fn impact(
     map: &ComponentMap,
     deps: &[Dep],
@@ -71,6 +75,7 @@ pub fn impact(
     changed: BTreeSet<String>,
     deleted: Vec<String>,
     uncovered: &[String],
+    accepted: Vec<AcceptedGap>,
 ) -> Impact {
     let mut importers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (from, out) in file_graph(deps, files) {
@@ -93,19 +98,40 @@ pub fn impact(
             component: map.component_of(file).map(str::to_string),
         })
         .collect();
-    let mut confidence_reasons: Vec<String> = uncovered_reason(uncovered).into_iter().collect();
+    let mut evidence_gaps: Vec<_> = uncovered_reason(uncovered)
+        .map(|reason| {
+            EvidenceGap::of_files(
+                GapKind::Uncovered,
+                uncovered,
+                reason,
+                report::CLOSE_UNCOVERED,
+            )
+        })
+        .into_iter()
+        .collect();
     if !deleted.is_empty() {
-        confidence_reasons.push(format!(
-            "{} deleted file(s): what imported them is not in the code any more; `easement check` and the build show the broken imports",
-            deleted.len()
+        evidence_gaps.push(EvidenceGap::of_files(
+            GapKind::Deleted,
+            &deleted,
+            format!(
+                "{} deleted file(s): what imported them is not in the code any more; `easement check` and the build show the broken imports",
+                deleted.len()
+            ),
+            "run `easement check` and the build to find the imports of the deleted files",
         ));
     }
+    let coverage = Coverage {
+        narrowed: Vec::new(),
+        evidence_gaps,
+        accepted_gaps: accepted,
+    };
     Impact {
         changed: changed.into_iter().collect(),
         deleted,
         dependents,
-        confidence: Confidence::of(&confidence_reasons),
-        confidence_reasons,
+        confidence: coverage.confidence(),
+        confidence_reasons: coverage.reasons(),
+        coverage,
         cached: None,
     }
 }
@@ -149,8 +175,23 @@ pub fn render(impact: &Impact, map: &ComponentMap) -> String {
             out.push_str(&format!("  {component}: {}\n", files.join(", ")));
         }
     }
-    for reason in &impact.confidence_reasons {
-        out.push_str(&format!("Partial: {reason}\n"));
+    for gap in &impact.coverage.evidence_gaps {
+        out.push_str(&format!(
+            "Partial: {}\n  to close: {}\n",
+            gap.message, gap.close
+        ));
+    }
+    for gap in &impact.coverage.accepted_gaps {
+        let because = gap
+            .because
+            .as_ref()
+            .map(|b| format!(" because: {b}"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "Accepted in `uncovered_ok` ({}{because}), still unread: {}\n",
+            gap.uncovered_ok.join(", "),
+            gap.files.join(", ")
+        ));
     }
     if let Some(note) = &impact.cached {
         out.push_str(&format!("Cached: {note}\n"));

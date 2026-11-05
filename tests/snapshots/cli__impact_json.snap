@@ -1,9 +1,9 @@
 ---
 source: tests/cli.rs
-assertion_line: 2329
 expression: report
 ---
 {
+  "accepted_gaps": [],
   "changed": [
     "src/util/Retry.kt"
   ],
@@ -14,5 +14,7 @@ expression: report
       "component": "domain",
       "file": "src/domain/Order.kt"
     }
-  ]
+  ],
+  "evidence_gaps": [],
+  "narrowed": []
 }

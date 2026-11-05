@@ -24,6 +24,8 @@ pub struct ComponentMap {
     excluded: GlobSet,
     /// Source files that may stay uncovered by an indexer.
     uncovered_ok: GlobSet,
+    /// The index of the `uncovered_ok` entry each glob of `uncovered_ok` comes from.
+    uncovered_ok_entries: Vec<usize>,
     /// Component -> matchers of its public paths, for components that declare them.
     public: std::collections::HashMap<String, Vec<[GlobMatcher; 3]>>,
     /// Component -> what it may do with external modules, for components that restrict it.
@@ -224,7 +226,8 @@ impl ComponentMap {
             }
         }
         let mut uncovered_ok = GlobSetBuilder::new();
-        for accepted in &config.uncovered_ok {
+        let mut uncovered_ok_entries = Vec::new();
+        for (entry, accepted) in config.uncovered_ok.iter().enumerate() {
             for pattern in accepted.patterns() {
                 let pattern = pattern.trim_end_matches('/');
                 for glob in [pattern.to_string(), format!("{pattern}/**")] {
@@ -232,6 +235,7 @@ impl ComponentMap {
                         Glob::new(&glob)
                             .with_context(|| format!("bad uncovered_ok pattern `{pattern}`"))?,
                     );
+                    uncovered_ok_entries.push(entry);
                 }
             }
         }
@@ -242,6 +246,7 @@ impl ComponentMap {
             unowned: crate::scan::glob_set(&config.unowned, "unowned")?,
             excluded: crate::scan::glob_set(&config.exclude, "exclude")?,
             uncovered_ok: uncovered_ok.build()?,
+            uncovered_ok_entries,
             public,
             externals,
         })
@@ -276,6 +281,16 @@ impl ComponentMap {
     /// Whether `uncovered_ok` accepts that no indexer covers `rel_path`.
     pub fn is_uncovered_ok(&self, rel_path: &str) -> bool {
         self.uncovered_ok.is_match(rel_path)
+    }
+
+    /// The first `uncovered_ok` entry, by its index in the config, that
+    /// accepts that no indexer covers `rel_path`.
+    pub fn uncovered_ok_entry(&self, rel_path: &str) -> Option<usize> {
+        self.uncovered_ok
+            .matches(rel_path)
+            .into_iter()
+            .map(|glob| self.uncovered_ok_entries[glob])
+            .min()
     }
 
     /// Whether a rule of `component` names `$std`.
