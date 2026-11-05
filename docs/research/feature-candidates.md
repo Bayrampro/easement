@@ -4,6 +4,18 @@ Prepared on 2026-11-04 after the [capability comparison](easement-capability-ass
 
 The selection favors concrete developer/agent questions, a single language-independent rule model, reuse of normalized index facts, and explicit limits on unsupported evidence. Effort labels are relative to this codebase, not calendar estimates: **small** needs existing facts and a bounded command/report change; **medium** changes shared evaluation or a stored contract; **large/spike** needs a new semantic model or evidence from real indexer outputs.
 
+## Review outcome (2026-11-04)
+
+The review against the source found causes that the features would otherwise inherit, so these are fixed first:
+
+- **One dependency decision.** `check`, `explain` and `why` each interpret the policy separately, and `why` ignores the public surface.
+- **Separate narrowing from evidence gaps** ([ADR 0001](../adr/0001-narrowed-verdict-and-evidence-gaps-are-separate.md), proposed). `uncovered_ok` files currently disappear from check output.
+- **Symbol rules report a gap** where a language has no verified symbol uses. A Java probe gave `confidence: full` while judging nothing.
+- **A `part:` that matches nothing** is reported as a policy typo.
+- **The policy knows its inputs** and can be loaded at a revision. This also fixes `--watch` missing `extends` files outside the root.
+
+The included features are #1, #3, #4, #5 and #8 below, plus two that the sibling reports proposed: `--diff` attributing the policy delta, and #2 as a review command built on the same delta. #6, #7 and legal targets are deferred. #9 and #10 stay spikes. Ranking cycle cuts is not included. Terms follow [GLOSSARY.md](../../GLOSSARY.md); in particular, #3 is called *policy examples*, not contract tests.
+
 ## Prioritized list
 
 | Order | Capability | First useful result | Effort / evidence |
@@ -51,7 +63,7 @@ The first five can advance without inventing new language semantics. The baselin
 
 **Bounded first version:** a project supplies positive and negative examples such as `domain/order.go -> infra/db.go must be denied by dependency`, and `domain/order.go -> domain/value.go must be allowed`. Evaluate synthetic path edges through the same production rule engine, without adding imports, invoking indexers or altering the application. Test deny precedence, public paths, incoming permissions and slice captures.
 
-**Acceptance example:** removing a domain/storage prohibition leaves the source check green but makes the negative policy example fail. Reusing ordinary `check` decisions avoids building a second architecture-policy interpreter.
+**Acceptance example:** with `common: [storage]` and `rules.web.must_not_depend_on: [storage]`, an example `web -> storage must be rejected` passes. Deleting the prohibition leaves the source check green, because no web file imports storage. The example fails, because `common` now grants the dependency. (Under default-deny without an overridden grant, removing a prohibition would leave the dependency rejected, and the example would rightly keep passing.) Reusing ordinary `check` decisions avoids building a second architecture-policy interpreter.
 
 **Boundary:** initial examples test declared policy, not compiler resolution. Symbol cases require resolved symbol fixtures; cycles/reach require a graph fixture. Do not advertise arbitrary extractor or runtime tests. A separate test artifact is preferable to choosing new YAML keys before agreeing the issue's model.
 
@@ -135,4 +147,4 @@ Live repository reads found [Dart support #62](https://github.com/mokevnin/easem
 
 Do not prioritize a thin MCP wrapper, a general architecture dashboard, automatic application refactoring, framework-style lint rules or universal HTTP-edge inference ahead of the concrete capabilities above. A transport adds no policy on its own; a runtime service graph needs evidence beyond imports; source-style checks need a demonstrated architecture property and a cross-language shape.
 
-The proposed first tranche is preflight evaluation, policy-change review and contract tests, with structured output and the evidence gate as bounded supporting work. This improves what agents can verify before and during changes while preserving the project's current focus. Under [CONTRIBUTING.md](../../CONTRIBUTING.md), rules, configuration keys and output contracts are settled in issues before implementation; this document is the candidate list for that discussion.
+The proposed first tranche is preflight evaluation, policy-change review and policy examples, with structured output and the evidence gate as bounded supporting work. This improves what agents can verify before and during changes while preserving the project's current focus. Under [CONTRIBUTING.md](../../CONTRIBUTING.md), rules, configuration keys and output contracts are settled in issues before implementation; this document is the candidate list for that discussion.
