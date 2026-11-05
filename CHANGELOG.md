@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.14](https://github.com/mokevnin/easement/compare/v0.4.13...v0.4.14) (2026-11-05)
+
+
+### Features
+
+* name the files or extensions of every evidence gap ([2968225](https://github.com/mokevnin/easement/commit/2968225b54aabcdcbfc59753ed35daee87bbe35f)), closes [#88](https://github.com/mokevnin/easement/issues/88)
+* report narrowing, evidence gaps and accepted gaps separately ([b84d399](https://github.com/mokevnin/easement/commit/b84d3991ea39e82aa3f757c0b9c616680aef032e)), closes [#88](https://github.com/mokevnin/easement/issues/88)
+
+
+### Bug Fixes
+
+* judge every dependency through one dependency decision ([4803b1a](https://github.com/mokevnin/easement/commit/4803b1a86bbd19bb7bf19c92a60381b6c412ecb0)), closes [#87](https://github.com/mokevnin/easement/issues/87)
+* judge every dependency through one dependency decision ([#100](https://github.com/mokevnin/easement/issues/100)) ([4803b1a](https://github.com/mokevnin/easement/commit/4803b1a86bbd19bb7bf19c92a60381b6c412ecb0))
+
 ## [0.4.13](https://github.com/mokevnin/easement/compare/v0.4.12...v0.4.13) (2026-11-04)
 
 
