@@ -237,8 +237,11 @@ impl Project {
     }
 
     fn analyze(&self, cache: &mut scan::Cache, scope: &scope::Scope) -> Result<Analysis> {
-        let scan = scan::scan(&self.root, &self.config().scan_policy(), cache)?;
+        let mut scan = scan::scan(&self.root, &self.config().scan_policy(), cache)?;
         let map = ComponentMap::new(self.config())?;
+        for check in &scan.coverage_checks {
+            scan.analysis_partial.extend(check(self.config(), &map)?);
+        }
         let (mut violations, edges, mut stats) =
             check::evaluate(self.config(), &map, scope, &scan.deps);
         violations.extend(check::symbols(self.config(), &map, &scan.symbols));

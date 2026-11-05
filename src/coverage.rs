@@ -439,7 +439,7 @@ mod tests {
             "version: 1\ncomponents:\n  app: {in: src}\n  provider: {in: provider}\ntests: auto\n",
         )
         .unwrap();
-        let config = Config::load(&path).unwrap();
+        let config = crate::policy::Policy::load(&path, None).unwrap().config;
         let map = ComponentMap::new(&config).unwrap();
         let files = ["src/file.rs".to_string(), "provider/file.rs".to_string()];
         let gaps = [AnalysisGap {

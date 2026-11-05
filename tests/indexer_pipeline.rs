@@ -238,6 +238,14 @@ fn cache_hit_runs_neither_tool_and_recomputes_private_policy_from_raw_scip() {
         "{policy}"
     );
     assert_eq!(tools.calls(), "index\nanalyze\n");
+    tools.policy = tools.root.join("easement.yml");
+    let ordinary = tools.check(&["--cache-only"]);
+    assert_eq!(
+        ordinary["stats"]["analysis_partial"],
+        cold["stats"]["analysis_partial"]
+    );
+    assert_eq!(tools.calls(), "index\nanalyze\n");
+    tools.policy = tools.root.join("private.yml");
     tools.check(&["--no-cache"]);
     assert_eq!(tools.calls(), "index\nanalyze\nindex\nanalyze\n");
 }

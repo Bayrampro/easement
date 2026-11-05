@@ -282,7 +282,6 @@ impl super::Reader for DartReader {
             root,
             files,
             excluded,
-            config,
         } = context;
         let mut inventory = self.inventory;
         let all: BTreeSet<&str> = files.iter().chain(*excluded).map(String::as_str).collect();
@@ -304,16 +303,12 @@ impl super::Reader for DartReader {
             .into_values()
             .filter(|d| all.contains(d.path.as_str()))
             .partition(|d| files.contains(&d.path));
-        let map = crate::components::ComponentMap::new(config)?;
-        let target_only = crate::scan::glob_set(&config.target_only, "target_only")?;
-        gaps.extend(private::coverage(
-            config,
-            &map,
-            &sources,
-            &hidden,
-            &target_only,
-        )?);
+        let coverage: CoverageCheck = Box::new(move |config, map| {
+            let target_only = crate::scan::glob_set(&config.target_only, "target_only")?;
+            private::coverage(config, map, &sources, &hidden, &target_only)
+        });
         Ok(Indexed {
+            coverage_checks: vec![coverage],
             domains: Vec::new(),
             documents,
             analysis_partial: gaps,

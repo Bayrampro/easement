@@ -80,7 +80,6 @@ struct RunContext<'a> {
     root: &'a Path,
     files: &'a [String],
     excluded: &'a [String],
-    config: &'a crate::config::Config,
 }
 
 struct ReadFacts {
@@ -110,6 +109,7 @@ trait Reader: Send {
             .cloned()
             .collect();
         Ok(Indexed {
+            coverage_checks: Vec::new(),
             domains: Vec::new(),
             documents,
             analysis_partial: gaps,
@@ -621,8 +621,20 @@ pub enum CacheUse {
     Only,
 }
 
+/// Coverage checks over extracted evidence, evaluated against the current policy.
+/// The checks retain facts, never policy decisions, including on a cache hit.
+pub type CoverageCheck = Box<
+    dyn Fn(
+            &crate::config::Config,
+            &crate::components::ComponentMap,
+        ) -> Result<Vec<crate::scan::AnalysisGap>>
+        + Send
+        + Sync,
+>;
+
 /// What the indexers found, and the source files they did not cover.
 pub struct Indexed {
+    pub coverage_checks: Vec<CoverageCheck>,
     /// Extraction scopes reconstructed for both fresh and cached indexes.
     pub domains: Vec<crate::coverage::Domain>,
     pub analysis_partial: Vec<crate::scan::AnalysisGap>,
@@ -648,8 +660,8 @@ fn environment(language: &Indexer, go_tags: &[String]) -> Vec<(&'static str, Str
 }
 
 /// Indexes every language that has source files among `files` (project files,
-/// `/`-separated, relative to `root`). Configuration supplies language settings
-/// and the policy context for coverage diagnostics.
+/// `/`-separated, relative to `root`). The scan policy supplies extraction settings;
+/// coverage checks judge the retained evidence against the loaded policy later.
 ///
 /// `excluded` are files that `exclude` hides: they are not indexed for
 /// themselves, but the index resolves imports of them, so they are part of
@@ -660,13 +672,12 @@ pub fn run(
     excluded: &[String],
     cache: CacheUse,
     jobs: Jobs,
-    config: &crate::config::Config,
+    policy: &crate::config::ScanPolicy,
 ) -> Result<Indexed> {
     let context = RunContext {
         root,
         files,
         excluded,
-        config,
     };
     let keyed: Vec<String> = files.iter().chain(excluded).cloned().collect();
     let mut groups = Vec::new();
@@ -698,7 +709,7 @@ pub fn run(
                     dir,
                     &keyed,
                     cache,
-                    &config.go.tags,
+                    &policy.go_tags,
                 )?;
                 let files = keyed
                     .iter()
@@ -736,11 +747,13 @@ pub fn run(
     )?;
     let mut parts = Vec::new();
     let mut analysis_partial = Vec::new();
+    let mut coverage_checks = Vec::new();
     let mut domains = Vec::new();
     let mut uncovered = BTreeSet::new();
     let (mut ran, mut cached) = (0, 0);
     for indexed in results {
         parts.push(indexed.documents.0);
+        coverage_checks.extend(indexed.coverage_checks);
         domains.extend(indexed.domains);
         analysis_partial.extend(indexed.analysis_partial);
         uncovered.extend(indexed.uncovered);
@@ -759,6 +772,7 @@ pub fn run(
             .filter(|file| !covered.contains(file.as_str())),
     );
     Ok(Indexed {
+        coverage_checks,
         domains,
         documents,
         analysis_partial,

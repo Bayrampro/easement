@@ -38,7 +38,9 @@ pub(crate) fn coverage(
     hidden: &[Evidence],
     target_only: &GlobSet,
 ) -> Result<Vec<AnalysisGap>> {
-    if !config.uses_symbols() && !config.components.values().any(|c| !c.defines.is_empty()) {
+    if !config.scan_policy().uses_symbols
+        && !config.components.values().any(|c| !c.defines.is_empty())
+    {
         return Ok(Vec::new());
     }
     let all: Vec<&Evidence> = documents

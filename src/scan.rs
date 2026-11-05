@@ -66,6 +66,7 @@ pub struct TypeDef {
 }
 
 pub struct Scan {
+    pub coverage_checks: Vec<indexer::CoverageCheck>,
     pub domains: Vec<crate::coverage::Domain>,
     pub checked_files: Vec<String>,
     pub analysis_partial: Vec<AnalysisGap>,
@@ -360,6 +361,7 @@ pub fn scan(root: &Path, policy: &ScanPolicy, cache: &mut Cache) -> Result<Scan>
         .cloned()
         .collect();
     Ok(Scan {
+        coverage_checks: indexed.coverage_checks,
         domains: indexed.domains,
         checked_files,
         analysis_partial: indexed
