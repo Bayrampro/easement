@@ -2,6 +2,8 @@
 use super::*;
 use crate::scan::AnalysisGap;
 
+pub(crate) mod private;
+
 const UNMAPPED: &str = concat!(
     "Dart reference cannot be mapped through packageUri; ",
     "its external module was not fully verified"
@@ -29,6 +31,7 @@ pub(crate) struct Inputs<'a> {
 pub(crate) struct Read {
     pub documents: Vec<Document>,
     pub gaps: Vec<AnalysisGap>,
+    pub private: private::Inventory,
 }
 
 /// Repair only the released indexer's version and SDK descriptor spelling.
@@ -186,8 +189,9 @@ fn symbol(symbol: &str, root: &Path, inputs: &Inputs) -> std::result::Result<Str
 }
 
 pub(crate) fn parse(bytes: &[u8], root: &Path, base: &Path, inputs: &Inputs) -> Result<Read> {
+    let index = Index::parse_from_bytes(bytes).context("not a SCIP index")?;
     let mut gaps = Vec::new();
-    let documents = super::parse_with(bytes, root, base, |file, occurrence| {
+    let documents = super::parse_index(&index, root, base, |file, occurrence| {
         match symbol(&occurrence.symbol, root, inputs) {
             Ok(symbol) => Some(symbol),
             Err(reason) => {
@@ -196,7 +200,12 @@ pub(crate) fn parse(bytes: &[u8], root: &Path, base: &Path, inputs: &Inputs) -> 
             }
         }
     })?;
-    Ok(Read { documents, gaps })
+    let private = private::Inventory::read(&index, root, base, &documents);
+    Ok(Read {
+        documents,
+        gaps,
+        private,
+    })
 }
 
 /// Resolve only module identities for known files. A module alias says nothing

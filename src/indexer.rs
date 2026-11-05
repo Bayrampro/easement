@@ -440,9 +440,7 @@ pub struct Indexed {
     pub uncovered: Vec<String>,
 }
 
-/// Indexes every language that has source files among `files` (project files,
-/// `/`-separated, relative to `root`).
-/// What an indexer is run with besides its arguments: the build tags of Go.
+/// Go build tags are passed through the indexer's inherited environment.
 fn environment(language: &Indexer, go_tags: &[String]) -> Vec<(&'static str, String)> {
     if language.name() != "go" || go_tags.is_empty() {
         return Vec::new();
@@ -455,6 +453,10 @@ fn environment(language: &Indexer, go_tags: &[String]) -> Vec<(&'static str, Str
     vec![("GOFLAGS", flags)]
 }
 
+/// Indexes every language that has source files among `files` (project files,
+/// `/`-separated, relative to `root`). Configuration supplies language settings
+/// and the policy context for coverage diagnostics.
+///
 /// `excluded` are files that `exclude` hides: they are not indexed for
 /// themselves, but the index resolves imports of them, so they are part of
 /// the cache key.
@@ -464,9 +466,9 @@ pub fn run(
     excluded: &[String],
     cache: CacheUse,
     jobs: Jobs,
-    go_tags: &[String],
+    config: &crate::config::Config,
 ) -> Result<Indexed> {
-    let mut dart_indexed = dart::run(root, files, excluded, cache)?;
+    let mut dart_indexed = dart::run(root, files, excluded, cache, config)?;
     let (mut ran, mut cached) = (0, 0);
     let keyed: Vec<String> = files.iter().chain(excluded).cloned().collect();
     let mut wanted: Vec<&String> = Vec::new();
@@ -489,7 +491,7 @@ pub fn run(
     let results = in_parallel(&groups, jobs.get(), |(language, roots)| {
         roots
             .iter()
-            .map(|dir| index_dir(language, root, dir, &keyed, cache, go_tags))
+            .map(|dir| index_dir(language, root, dir, &keyed, cache, &config.go.tags))
             .collect::<Result<Vec<_>>>()
     })?;
     let mut parts = Vec::new();

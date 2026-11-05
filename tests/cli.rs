@@ -5062,3 +5062,49 @@ fn dart_normalized_facts_match_fresh_and_cached_reports_including_uncovered_targ
         );
     }
 }
+
+#[test]
+fn dart_private_gaps_match_fresh_and_cached_reports() {
+    let (_tmp, root) = dart_project();
+    fs::write(
+        root.join("lib/domain.dart"),
+        "class Domain {}\nclass _WrongEntity {}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        concat!(
+            "version: 1\ncomponents:\n",
+            "  app: {in: lib/app.dart, defines: ['*Entity']}\n",
+            "  domain: {in: lib/domain.dart}\ncommon: [domain]\n",
+        ),
+    )
+    .unwrap();
+    let cache = TempDir::new().unwrap();
+    let mut cold: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement_cached(&root, &["check", "--format", "json"], cache.path()).success(),
+    ))
+    .unwrap();
+    let mut warm: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement_cached(
+            &root,
+            &["check", "--cache-only", "--format", "json"],
+            cache.path(),
+        )
+        .success(),
+    ))
+    .unwrap();
+    assert_eq!(warm["stats"]["from_cache"], 1);
+    let gaps = cold["stats"]["analysis_partial"].as_array().unwrap();
+    assert_eq!(gaps.len(), 1);
+    assert_eq!(gaps[0]["file"], "lib/domain.dart");
+    assert_eq!(gaps[0]["line"], 2);
+    assert!(gaps[0]["reason"].as_str().unwrap().contains("defines"));
+    for report in [&mut cold, &mut warm] {
+        report.as_object_mut().unwrap().remove("cached");
+        let stats = report["stats"].as_object_mut().unwrap();
+        stats.remove("indexed");
+        stats.remove("from_cache");
+    }
+    assert_eq!(cold, warm);
+}

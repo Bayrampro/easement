@@ -1,9 +1,7 @@
-//! Local SCIP IDs are document-scoped. Keep private-symbol evidence without
-//! inventing cross-file identities, and disclose only gaps relevant to rules.
-use std::collections::{BTreeMap, BTreeSet};
+//! Policy-aware coverage checks over document-local Dart evidence.
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use ::scip::types::{Document as RawDocument, Occurrence, symbol_information::Kind};
 use anyhow::Result;
 use globset::GlobSet;
 
@@ -12,124 +10,11 @@ use crate::components::ComponentMap;
 use crate::config::Config;
 use crate::lang::{Target, registry};
 use crate::scan::{AnalysisGap, TypeDef};
-use crate::scip::{Document, occurrence_text};
+use crate::scip::dart::private::{Evidence, Symbol};
 
-#[derive(Debug, Clone)]
-pub(crate) struct Symbol {
-    name: Option<String>,
-    line: usize,
-    definition: bool,
-    same_file: bool,
-    /// None means the index omitted classification: never assume it is harmless.
-    is_type: Option<bool>,
-    owner: Option<String>,
-    owner_unknown: bool,
-}
-
-fn is_type(kind: Kind) -> Option<bool> {
-    match kind {
-        Kind::UnspecifiedKind => None,
-        Kind::Class
-        | Kind::Enum
-        | Kind::Interface
-        | Kind::Mixin
-        | Kind::TypeAlias
-        | Kind::Extension
-        | Kind::Struct
-        | Kind::Trait
-        | Kind::Type => Some(true),
-        _ => Some(false),
-    }
-}
-
-fn range(range: &[i32]) -> Option<((i32, i32), (i32, i32))> {
-    match range {
-        [line, start, end] => Some(((*line, *start), (*line, *end))),
-        [line, start, end_line, end] => Some(((*line, *start), (*end_line, *end))),
-        _ => None,
-    }
-}
-
-pub(crate) fn occurrences(document: &RawDocument, lines: &[String]) -> Vec<Symbol> {
-    let kinds: BTreeMap<&str, Kind> = document
-        .symbols
-        .iter()
-        .map(|s| (s.symbol.as_str(), s.kind.enum_value_or_default()))
-        .collect();
-    let definitions: BTreeSet<&str> = document
-        .occurrences
-        .iter()
-        .filter(|o| o.symbol_roles & 1 != 0)
-        .map(|o| o.symbol.as_str())
-        .collect();
-    let encoding = document.position_encoding.enum_value_or_default();
-    let text = |o: &Occurrence| occurrence_text(lines, o, encoding).map(str::to_string);
-    document
-        .occurrences
-        .iter()
-        .filter(|o| o.symbol.starts_with("local "))
-        .filter_map(|o| {
-            let name = text(o);
-            if name
-                .as_ref()
-                .is_some_and(|n| !n.starts_with('_') || n == "_")
-            {
-                return None;
-            }
-            let enclosing = |outer: &&Occurrence| {
-                outer.symbol_roles & 1 != 0
-                    && outer.symbol != o.symbol
-                    && range(&o.range).is_some_and(|(position, _)| {
-                        range(&outer.enclosing_range)
-                            .is_some_and(|(start, end)| start <= position && position < end)
-                    })
-            };
-            let mut classification = kinds.get(o.symbol.as_str()).copied().and_then(is_type);
-            if classification.is_none()
-                && document.occurrences.iter().filter(enclosing).any(|outer| {
-                    kinds.get(outer.symbol.as_str()).copied().and_then(is_type) == Some(false)
-                })
-            {
-                // The pinned indexer leaves local-variable kinds unspecified.
-                // A definition inside a known callable/initializer is not a
-                // library-private type merely because its name starts with _.
-                classification = Some(false);
-            }
-            let owner = range(&o.range).and_then(|_| {
-                document
-                    .occurrences
-                    .iter()
-                    .filter(enclosing)
-                    .filter(|outer| {
-                        kinds.get(outer.symbol.as_str()).copied().and_then(is_type) == Some(true)
-                    })
-                    .find_map(text)
-            });
-            let owner_unknown = owner.is_none()
-                && kinds.get(o.symbol.as_str()).is_some_and(|kind| {
-                    matches!(
-                        kind,
-                        Kind::Method | Kind::Field | Kind::Constructor | Kind::Property
-                    )
-                });
-            Some(Symbol {
-                name,
-                line: crate::scip::line_of(o) + 1,
-                definition: o.symbol_roles & 1 != 0,
-                same_file: definitions.contains(o.symbol.as_str()),
-                is_type: classification,
-                owner,
-                owner_unknown,
-            })
-        })
-        .collect()
-}
-
-fn same_library(left: &Document, right: &Document) -> bool {
+fn same_library(left: &Evidence, right: &Evidence) -> bool {
     // Unknown ownership cannot prove that a potential target is unrelated.
-    left.dart_library.is_none()
-        || right.dart_library.is_none()
-        || left.dart_library == right.dart_library
+    left.library.is_none() || right.library.is_none() || left.library == right.library
 }
 
 fn gap(file: &str, symbol: &Symbol, rule: &str) -> AnalysisGap {
@@ -149,14 +34,14 @@ fn gap(file: &str, symbol: &Symbol, rule: &str) -> AnalysisGap {
 pub(crate) fn coverage(
     config: &Config,
     map: &ComponentMap,
-    documents: &[Document],
-    hidden: &[Document],
+    documents: &[Evidence],
+    hidden: &[Evidence],
     target_only: &GlobSet,
 ) -> Result<Vec<AnalysisGap>> {
     if !config.uses_symbols() && !config.components.values().any(|c| !c.defines.is_empty()) {
         return Ok(Vec::new());
     }
-    let all: Vec<&Document> = documents
+    let all: Vec<&Evidence> = documents
         .iter()
         .chain(hidden)
         .filter(|d| registry::is(Path::new(&d.path), &registry::DART))
@@ -166,7 +51,7 @@ pub(crate) fn coverage(
         let Some(from) = map.component_of(&document.path) else {
             continue;
         };
-        for symbol in &document.dart_private {
+        for symbol in &document.symbols {
             if symbol.definition {
                 if symbol.is_type == Some(false) {
                     continue;
@@ -201,11 +86,11 @@ pub(crate) fn coverage(
             if symbol.same_file {
                 continue;
             }
-            let candidates: Vec<(&Document, &Symbol)> = all
+            let candidates: Vec<(&Evidence, &Symbol)> = all
                 .iter()
                 .filter(|d| same_library(document, d))
                 .flat_map(|d| {
-                    d.dart_private
+                    d.symbols
                         .iter()
                         .filter(|s| s.definition)
                         .filter(|s| {
@@ -267,22 +152,26 @@ pub(crate) fn coverage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::scip::types::SymbolInformation;
+    use crate::scip::dart::private::{Inventory, occurrences};
+    use ::scip::types::{
+        Document as RawDocument, Occurrence, SymbolInformation, symbol_information::Kind,
+    };
     use protobuf::EnumOrUnknown;
+    use protobuf::Message;
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     #[test]
     fn real_dart_index_keeps_private_type_evidence_only_where_present() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dart/basic");
-        let documents = crate::scip::parse(
-            include_bytes!("../../../tests/fixtures/dart/basic/evidence.scip"),
-            &root,
-            Path::new(""),
-        )
-        .unwrap();
-        let found: Vec<_> = documents
-            .iter()
-            .flat_map(|d| d.dart_private.iter().map(|s| (d.path.as_str(), s)))
+        let bytes = include_bytes!("../../../tests/fixtures/dart/basic/evidence.scip");
+        let index = ::scip::types::Index::parse_from_bytes(bytes).unwrap();
+        let documents = crate::scip::parse(bytes, &root, Path::new("")).unwrap();
+        let inventory = Inventory::read(&index, &root, Path::new(""), &documents);
+        let found: Vec<_> = inventory
+            .documents
+            .values()
+            .flat_map(|d| d.symbols.iter().map(|s| (d.path.as_str(), s)))
             .collect();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].0, "lib/other.dart");
@@ -316,11 +205,10 @@ mod tests {
                 }],
                 ..Default::default()
             };
-            let document = Document {
+            let document = Evidence {
                 path: "lib/source.dart".into(),
-                dart_private: occurrences(&raw, &lines),
-                dart_library: Some("lib/source.dart".into()),
-                ..Default::default()
+                symbols: occurrences(&raw, &lines),
+                library: Some("lib/source.dart".into()),
             };
             let gaps = coverage(&config, &map, &[document], &[], &GlobSet::empty()).unwrap();
             assert_eq!(gaps.len(), 1, "{gaps:?}");
@@ -332,10 +220,10 @@ mod tests {
     fn unknown_private_targets_stay_partial_only_under_potentially_applicable_rules() {
         let config: Config = serde_norway::from_str("version: 1\ncomponents:\n  target: {in: lib/target.dart, public_symbols: []}\n  source: {in: lib/source.dart}\n").unwrap();
         let map = ComponentMap::new(&config).unwrap();
-        let mut source = Document {
+        let mut source = Evidence {
             path: "lib/source.dart".into(),
-            dart_library: Some("lib/source.dart".into()),
-            dart_private: vec![Symbol {
+            library: Some("lib/source.dart".into()),
+            symbols: vec![Symbol {
                 name: Some("_unknown".into()),
                 line: 3,
                 definition: false,
@@ -344,11 +232,10 @@ mod tests {
                 owner: None,
                 owner_unknown: false,
             }],
-            ..Default::default()
         };
-        let target = Document {
+        let target = Evidence {
             path: "lib/target.dart".into(),
-            dart_library: Some("lib/target.dart".into()),
+            library: Some("lib/target.dart".into()),
             ..Default::default()
         };
         assert!(
@@ -363,7 +250,7 @@ mod tests {
             .is_empty()
         );
         // Ambiguous part ownership cannot prove that the restricted target is unrelated.
-        source.dart_library = None;
+        source.library = None;
         assert_eq!(
             coverage(&config, &map, &[source, target], &[], &GlobSet::empty())
                 .unwrap()
@@ -392,17 +279,15 @@ mod tests {
             ..reference.clone()
         };
         let documents = [
-            Document {
+            Evidence {
                 path: "lib/consumer.dart".into(),
-                dart_library: Some("lib/api.dart".into()),
-                dart_private: vec![reference],
-                ..Default::default()
+                library: Some("lib/api.dart".into()),
+                symbols: vec![reference],
             },
-            Document {
+            Evidence {
                 path: "lib/provider.dart".into(),
-                dart_library: Some("lib/api.dart".into()),
-                dart_private: vec![definition],
-                ..Default::default()
+                library: Some("lib/api.dart".into()),
+                symbols: vec![definition],
             },
         ];
         // Whitelisting _method cannot prove that its missing containing class
@@ -412,6 +297,58 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn merged_private_evidence_rechecks_current_policy_and_target_only() {
+        let strict: Config = serde_norway::from_str(
+            "version: 1\ncomponents:\n  entities: {in: lib/entities, defines: ['*Entity']}\n  other: {in: lib/other}\n",
+        ).unwrap();
+        let map = ComponentMap::new(&strict).unwrap();
+        let mut inventory = Inventory::default();
+        for (at, name) in ["_FirstEntity", "_SecondEntity"].into_iter().enumerate() {
+            let evidence = Evidence {
+                path: "lib/other/wrong.dart".into(),
+                library: Some("lib/other/wrong.dart".into()),
+                symbols: vec![Symbol {
+                    name: Some(name.into()),
+                    line: at + 1,
+                    definition: true,
+                    same_file: true,
+                    is_type: Some(true),
+                    owner: None,
+                    owner_unknown: false,
+                }],
+            };
+            inventory.merge(Inventory {
+                documents: BTreeMap::from([(evidence.path.clone(), evidence)]),
+            });
+        }
+        let documents: Vec<_> = inventory.documents.into_values().collect();
+        let gaps = coverage(&strict, &map, &documents, &[], &GlobSet::empty()).unwrap();
+        assert_eq!(gaps.len(), 2);
+        let relaxed: Config = serde_norway::from_str(
+            "version: 1\ncomponents:\n  entities: {in: lib/entities}\n  other: {in: lib/other}\n",
+        )
+        .unwrap();
+        assert!(
+            coverage(
+                &relaxed,
+                &ComponentMap::new(&relaxed).unwrap(),
+                &documents,
+                &[],
+                &GlobSet::empty()
+            )
+            .unwrap()
+            .is_empty()
+        );
+        let target_only =
+            crate::scan::glob_set(&["lib/other/wrong.dart".into()], "target_only").unwrap();
+        assert!(
+            coverage(&strict, &map, &documents, &[], &target_only)
+                .unwrap()
+                .is_empty()
         );
     }
 }

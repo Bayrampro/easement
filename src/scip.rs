@@ -54,10 +54,6 @@ pub struct Document {
     /// The types this file defines (classes, structs, interfaces, traits),
     /// by name and 1-based line.
     pub types: Vec<(String, usize)>,
-    /// Private Dart occurrences retain evidence, not a globally resolvable identity.
-    pub dart_private: Vec<crate::indexer::dart::private::Symbol>,
-    /// The owning library, only when Dart part ownership was verified.
-    pub dart_library: Option<String>,
     /// The methods and functions this file defines that the index gave a range.
     pub scopes: Vec<Scope>,
     /// The parts of the file that a dependency can belong to instead of the file.
@@ -96,20 +92,20 @@ pub struct Documents(pub Vec<Document>);
 /// Parses an index written by an indexer that ran in `base` (a directory
 /// relative to the project `root`, `""` for the root itself). Documents outside
 /// the project, such as generated files in a build cache, are dropped. The
-/// source is read for Dart private occurrences and references into unnamed packages.
+/// source is read for import literals and references into unnamed packages.
 pub fn parse(bytes: &[u8], root: &Path, base: &Path) -> Result<Vec<Document>> {
-    parse_with(bytes, root, base, |_, occurrence| {
+    let index = Index::parse_from_bytes(bytes).context("not a SCIP index")?;
+    parse_index(&index, root, base, |_, occurrence| {
         Some(dart::syntax_symbol(&occurrence.symbol))
     })
 }
 
-fn parse_with(
-    bytes: &[u8],
+fn parse_index(
+    index: &Index,
     root: &Path,
     base: &Path,
     mut normalize: impl FnMut(&str, &Occurrence) -> Option<String>,
 ) -> Result<Vec<Document>> {
-    let index = Index::parse_from_bytes(bytes).context("not a SCIP index")?;
     let prefix = crate::scan::slash(base);
     let mut documents = Vec::new();
     for document in &index.documents {
@@ -132,22 +128,6 @@ fn parse_with(
             path,
             ..Document::default()
         };
-        if document.language == "Dart"
-            && registry::is(Path::new(&parsed.path), &registry::DART)
-            && document
-                .occurrences
-                .iter()
-                .any(|o| o.symbol.starts_with("scip-dart "))
-        {
-            let lines = source.get_or_insert_with(|| {
-                std::fs::read_to_string(root.join(&parsed.path))
-                    .unwrap_or_default()
-                    .lines()
-                    .map(str::to_string)
-                    .collect()
-            });
-            parsed.dart_private = crate::indexer::dart::private::occurrences(document, lines);
-        }
         for raw in &document.occurrences {
             let mut normalized;
             let occurrence = if document.language == "Dart"
@@ -1000,7 +980,6 @@ impl Documents {
                 Some(seen) => {
                     seen.references.extend(document.references);
                     seen.definitions.extend(document.definitions);
-                    seen.dart_private.extend(document.dart_private);
                 }
                 None => {
                     by_path.insert(document.path.clone(), document);
@@ -1017,55 +996,6 @@ impl Documents {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn private_occurrence_inventory_is_guarded_by_dart_path_language_and_scheme() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join("lib")).unwrap();
-        for (language, path, scheme, expected) in [
-            ("Dart", "lib/file.dart", "scip-dart", 1),
-            ("Rust", "lib/file.dart", "scip-dart", 0),
-            ("Dart", "lib/file.rs", "scip-dart", 0),
-            ("Dart", "lib/file.dart", "scip-python", 0),
-        ] {
-            std::fs::write(root.path().join(path), "class _Hidden {}\n").unwrap();
-            let raw = ::scip::types::Document {
-                language: language.into(),
-                relative_path: path.into(),
-                symbols: vec![::scip::types::SymbolInformation {
-                    symbol: "local 0".into(),
-                    kind: ::scip::types::symbol_information::Kind::Class.into(),
-                    ..Default::default()
-                }],
-                occurrences: vec![
-                    Occurrence {
-                        symbol: format!("{scheme} pub example . lib/`file.dart`/"),
-                        symbol_roles: DEFINITION,
-                        range: vec![0, 0, 0],
-                        ..Default::default()
-                    },
-                    Occurrence {
-                        symbol: "local 0".into(),
-                        symbol_roles: DEFINITION,
-                        range: vec![0, 6, 13],
-                        ..Default::default()
-                    },
-                ],
-                ..Default::default()
-            };
-            let index = Index {
-                documents: vec![raw],
-                ..Default::default()
-            };
-            let documents =
-                parse(&index.write_to_bytes().unwrap(), root.path(), Path::new("")).unwrap();
-            assert_eq!(
-                documents[0].dart_private.len(),
-                expected,
-                "{language} {path} {scheme}"
-            );
-        }
-    }
 
     #[test]
     fn dart_uri_ranges_use_utf16_and_decode_raw_literals() {
@@ -1139,7 +1069,6 @@ mod tests {
                     spelled: None,
                 })
                 .collect(),
-            ..Document::default()
         }
     }
 

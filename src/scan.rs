@@ -218,7 +218,7 @@ pub fn scan(root: &Path, policy: &ScanPolicy, cache: &mut Cache) -> Result<Scan>
         &hidden,
         cache.index_cache,
         cache.jobs,
-        &policy.go_tags,
+        policy,
     )?;
     let project: HashSet<&str> = all_files.iter().map(String::as_str).collect();
     // Excluded files are never read as sources, but what they define stays
@@ -303,13 +303,6 @@ pub fn scan(root: &Path, policy: &ScanPolicy, cache: &mut Cache) -> Result<Scan>
         policy.uses_symbols,
         &policy.watched_symbols,
     );
-    let dart_private = indexer::dart::private::coverage(
-        config,
-        &crate::components::ComponentMap::new(config)?,
-        &documents,
-        &hidden,
-        &target_only,
-    )?;
     let is_source = |file: &Path| {
         let file = slash(file);
         project.contains(file.as_str()) && !target_only.is_match(&file)
@@ -365,7 +358,6 @@ pub fn scan(root: &Path, policy: &ScanPolicy, cache: &mut Cache) -> Result<Scan>
             .analysis_partial
             .into_iter()
             .chain(facts.analysis_partial)
-            .chain(dart_private)
             .filter(|gap| {
                 !registry::is(Path::new(&gap.file), &registry::DART) || paths.contains(&gap.file)
             })

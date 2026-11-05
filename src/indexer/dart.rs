@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 mod cache;
 pub(crate) mod directives;
-pub(crate) mod private;
+mod private;
 use directives::Kind;
 
 use crate::scip::dart::{Inputs, Package};
@@ -296,6 +296,7 @@ pub(super) fn run(
     files: &[String],
     excluded: &[String],
     mode: CacheUse,
+    config: &crate::config::Config,
 ) -> Result<Option<Indexed>> {
     if !files
         .iter()
@@ -307,6 +308,7 @@ pub(super) fn run(
     let binary = which::which("scip_dart").context("scip_dart is missing; run `dart pub global activate scip_dart 1.8.1` or install the pinned launcher from an easement source checkout (see README), then run easement doctor")?;
     let sdk = sdk(root)?;
     let mut parts = Vec::new();
+    let mut inventory = scip::dart::private::Inventory::default();
     let (mut ran, mut cached) = (0, 0);
     let mut gaps = Vec::new();
     let all: BTreeSet<&str> = files.iter().chain(excluded).map(String::as_str).collect();
@@ -395,18 +397,20 @@ pub(super) fn run(
         };
         gaps.extend(entry.gaps);
         gaps.extend(parsed.gaps);
+        inventory.merge(parsed.private);
         parts.push(parsed.documents);
     }
     let mut documents = Documents::merged(parts)?;
     // Module aliases resolve known targets, but do not establish source coverage.
     let indexed: BTreeSet<String> = documents.0.iter().map(|d| d.path.clone()).collect();
     // Only original SCIP documents can supply outgoing directive occurrences.
-    gaps.extend(directive_gaps(root, &mut documents.0)?);
+    gaps.extend(directive_gaps(root, &mut documents.0, &mut inventory)?);
     gaps.extend(scip::dart::complete(root, &mut documents.0, &all, excluded));
     gaps.sort();
     gaps.dedup();
     let uncovered = all
-        .into_iter()
+        .iter()
+        .copied()
         .filter(|f| {
             registry::is(Path::new(f), &registry::DART)
                 && files.iter().any(|s| s == f)
@@ -414,6 +418,21 @@ pub(super) fn run(
         })
         .map(str::to_string)
         .collect();
+    inventory.ensure(&documents.0);
+    let (sources, hidden): (Vec<_>, Vec<_>) = inventory
+        .documents
+        .into_values()
+        .filter(|d| all.contains(d.path.as_str()))
+        .partition(|d| files.contains(&d.path));
+    let map = crate::components::ComponentMap::new(config)?;
+    let target_only = crate::scan::glob_set(&config.target_only, "target_only")?;
+    gaps.extend(private::coverage(
+        config,
+        &map,
+        &sources,
+        &hidden,
+        &target_only,
+    )?);
     Ok(Some(Indexed {
         documents,
         ran,
@@ -481,7 +500,11 @@ fn machine_fields(line: &str) -> Vec<String> {
     fields
 }
 
-fn directive_gaps(root: &Path, documents: &mut [Document]) -> Result<Vec<AnalysisGap>> {
+fn directive_gaps(
+    root: &Path,
+    documents: &mut [Document],
+    inventory: &mut scip::dart::private::Inventory,
+) -> Result<Vec<AnalysisGap>> {
     let defined: BTreeMap<String, String> = documents
         .iter()
         .flat_map(|d| {
@@ -538,7 +561,7 @@ fn directive_gaps(root: &Path, documents: &mut [Document]) -> Result<Vec<Analysi
         inventories.push(directives);
     }
     for (document, directives) in documents.iter_mut().zip(inventories) {
-        document.dart_library = if directives
+        let library = if directives
             .iter()
             .any(|d| matches!(d.kind, Kind::PartOf | Kind::NamedPartOf))
         {
@@ -548,6 +571,9 @@ fn directive_gaps(root: &Path, documents: &mut [Document]) -> Result<Vec<Analysi
         } else {
             Some(document.path.clone())
         };
+        if let Some(evidence) = inventory.documents.get_mut(&document.path) {
+            evidence.library = library;
+        }
         for directive in directives.iter().filter(|d| d.kind == Kind::NamedPartOf) {
             let owners: BTreeSet<&String> =
                 owners.get(&document.path).into_iter().flatten().collect();
