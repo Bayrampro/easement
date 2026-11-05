@@ -752,11 +752,11 @@ mod tests {
             assert!(result.violations.is_empty(), "{kind:?}");
             assert_eq!(result.reasons.len(), 1, "{kind:?}: {:?}", result.reasons);
             assert!(
-                result.reasons[0].contains("could not be read"),
+                result.reasons[0].reason.contains("could not be read"),
                 "{kind:?}: {:?}",
                 result.reasons
             );
-            assert!(result.reasons[0].contains(kind.file_name()));
+            assert!(result.reasons[0].reason.contains(kind.file_name()));
         }
     }
 }

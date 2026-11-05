@@ -92,12 +92,9 @@ impl Coverage {
             .chain(input.unnamed)
             .filter_map(|f| language(f).map(str::to_string))
             .collect();
-        // Import-only adapters cannot establish absence of a symbol definition.
+        // Only languages with verified symbol uses can establish their absence.
         for file in &files {
-            if !crate::indexer::INDEXERS
-                .iter()
-                .any(|indexer| indexer.covers(file))
-            {
+            if !registry::of(file).is_some_and(|language| language.symbols) {
                 symbol_incomplete.insert(language(file).unwrap_or("").into());
             }
         }
@@ -492,5 +489,20 @@ mod tests {
             unnamed: &[],
         });
         assert_eq!(coverage.uncertain(), files[..1]);
+    }
+    #[test]
+    fn symbol_absence_requires_verified_uses_from_the_registry() {
+        let map = ComponentMap::new(&config()).unwrap();
+        let files = ["a/Example.java".into()];
+        let coverage = Coverage::new(Input {
+            files: &files,
+            uncovered: &[],
+            gaps: &[],
+            domains: &[],
+            unnamed: &[],
+        });
+        let mut symbols = Symbols::default();
+        symbols.insert("java", "example.nested".into(), "Thing".into());
+        assert!(coverage.symbols_for(Some("a"), &map, &symbols).is_none());
     }
 }

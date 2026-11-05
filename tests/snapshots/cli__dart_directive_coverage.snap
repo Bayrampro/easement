@@ -1,13 +1,27 @@
 ---
 source: tests/cli.rs
+assertion_line: 1189
 expression: "&value"
 ---
 {
+  "accepted_gaps": [],
   "confidence": "partial",
   "confidence_reasons": [
     "lib/main.dart:5: conditional Dart directive: SCIP does not cover every branch; verify other platform branches separately"
   ],
+  "evidence_gaps": [
+    {
+      "close": "fix the inputs the message names, or review those dependencies by hand; recheck with `--no-cache`",
+      "count": 1,
+      "files": [
+        "lib/main.dart"
+      ],
+      "kind": "uncovered",
+      "message": "lib/main.dart:5: conditional Dart directive: SCIP does not cover every branch; verify other platform branches separately"
+    }
+  ],
   "legalized": 0,
+  "narrowed": [],
   "passed": true,
   "stale": [],
   "stats": {

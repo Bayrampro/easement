@@ -97,7 +97,7 @@ pub struct EvidenceGap {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GapKind {
-    /// Source files of an indexed language that no indexer covered.
+    /// Source files or facts an indexer did not fully cover.
     Uncovered,
     /// Files whose types `defines` cannot see.
     NamingUnseen,
@@ -167,7 +167,7 @@ pub const CLOSE_UNCOVERED: &str =
 
 /// Code a check could not read or judge, in the order the reasons were always given.
 pub fn evidence_gaps(stats: &Stats) -> Vec<EvidenceGap> {
-    let mut gaps = Vec::new();
+    let mut gaps = analysis_gaps(stats);
     let mut add = |kind, unjudged: &[Unjudged], close: &str| {
         gaps.extend(unjudged.iter().map(|u| EvidenceGap::of(kind, u, close)));
     };
@@ -285,6 +285,23 @@ impl Coverage {
         }
         reasons
     }
+}
+
+/// Missing facts inside documents an indexer did read.
+pub fn analysis_gaps(stats: &Stats) -> Vec<EvidenceGap> {
+    stats
+        .analysis_partial
+        .iter()
+        .zip(analysis_reasons(stats))
+        .map(|(gap, reason)| {
+            EvidenceGap::of(
+                GapKind::Uncovered,
+                &Unjudged::new(reason).in_files((!gap.file.is_empty()).then(|| gap.file.clone())),
+                "fix the inputs the message names, or review those dependencies by hand; \
+                 recheck with `--no-cache`",
+            )
+        })
+        .collect()
 }
 
 /// Gaps inside indexed documents, with their source location.
@@ -1139,5 +1156,44 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("::warning"), "{out}");
+    }
+
+    #[test]
+    fn gaps_inside_indexed_documents_count_as_required_evidence() {
+        let stats = Stats {
+            analysis_partial: vec![crate::scan::AnalysisGap {
+                file: "src/generated.rs".into(),
+                line: Some(7),
+                reason: "the indexer omitted a reference".into(),
+            }],
+            ..Stats::default()
+        };
+        let coverage = Coverage::of_check(&stats, vec![], vec![]);
+        assert_eq!(coverage.confidence(), Confidence::Partial);
+        assert_eq!(coverage.evidence_gaps.len(), 1);
+        let gap = &coverage.evidence_gaps[0];
+        assert_eq!(gap.kind, GapKind::Uncovered);
+        assert_eq!(gap.files, ["src/generated.rs"]);
+        assert_eq!(gap.count, Some(1));
+        assert_eq!(
+            gap.message,
+            "src/generated.rs:7: the indexer omitted a reference"
+        );
+        let clean = Verdict {
+            new: vec![],
+            warnings: vec![],
+            owners: BTreeMap::new(),
+            stale: vec![],
+            legalized: 0,
+        };
+        let report = Report {
+            verdict: &clean,
+            stats: &stats,
+            coverage: &coverage,
+            changes: None,
+            require_evidence: true,
+        };
+        assert!(!report.passed());
+        assert!(report.github().contains("::error title=easement partial::"));
     }
 }

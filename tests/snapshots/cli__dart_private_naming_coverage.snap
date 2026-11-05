@@ -1,13 +1,27 @@
 ---
 source: tests/cli.rs
+assertion_line: 1351
 expression: "&value"
 ---
 {
+  "accepted_gaps": [],
   "confidence": "partial",
   "confidence_reasons": [
     "lib/other/wrong.dart:1: Dart private declarations use local SCIP symbols; the configured defines naming claims cannot fully verify _WrongEntity"
   ],
+  "evidence_gaps": [
+    {
+      "close": "fix the inputs the message names, or review those dependencies by hand; recheck with `--no-cache`",
+      "count": 1,
+      "files": [
+        "lib/other/wrong.dart"
+      ],
+      "kind": "uncovered",
+      "message": "lib/other/wrong.dart:1: Dart private declarations use local SCIP symbols; the configured defines naming claims cannot fully verify _WrongEntity"
+    }
+  ],
   "legalized": 0,
+  "narrowed": [],
   "passed": true,
   "stale": [],
   "stats": {

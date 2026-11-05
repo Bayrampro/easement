@@ -239,6 +239,7 @@ pub static DART: Language = Language {
     unused: &[],
     conventional: &[],
     manifest: Some(Manifest::Pub),
+    symbols: true,
     parts: None,
 };
 

@@ -1223,7 +1223,7 @@ fn dart_directives_include_both_part_forms_and_disclose_conditionals() {
     insta::assert_json_snapshot!("dart_directive_coverage", &value);
     easement(&root, &["check"])
         .success()
-        .stdout(contains("Incomplete analysis"))
+        .stdout(contains("Evidence gaps"))
         .stdout(contains("conditional Dart directive"));
     easement(&root, &["suggest", "--patch"])
         .success()
@@ -5160,4 +5160,49 @@ fn dart_private_gaps_match_fresh_and_cached_reports() {
         stats.remove("from_cache");
     }
     assert_eq!(cold, warm);
+}
+
+#[test]
+fn dart_require_evidence_sees_gaps_inside_indexed_files() {
+    let (_tmp, root) = dart_project();
+    fs::write(
+        root.join("easement.yml"),
+        "version: 1\ncomponents:\n  app: {in: lib}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("lib/app.dart"),
+        "import 'generated.g.dart';\nclass App {}\n",
+    )
+    .unwrap();
+    let ordinary: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--format", "json"]).code(0),
+    ))
+    .unwrap();
+    assert_eq!(ordinary["confidence"], "partial");
+    assert!(ordinary["stats"].get("uncovered").is_none());
+    assert!(
+        !ordinary["stats"]["analysis_partial"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let required: serde_json::Value = serde_json::from_str(&stdout_of(
+        easement(&root, &["check", "--require-evidence", "--format", "json"]).code(4),
+    ))
+    .unwrap();
+    assert_eq!(required["passed"], false);
+    assert!(
+        required["evidence_gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gap| {
+                gap["kind"] == "uncovered"
+                    && gap["files"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&serde_json::json!("lib/app.dart"))
+            })
+    );
 }

@@ -92,10 +92,13 @@ pub fn edges(root: &Path, files: &[String], read_as_source: impl Fn(&str) -> boo
         }
         found.manifests.push(file.clone());
         if kind == Manifest::Pub {
-            found.problems.push(format!(
-                "{file}: Pub dependency-declaration edges with packages: true are not yet supported; \
-                 Dart source dependency checks and manifests: true remain available"
-            ));
+            found.problems.push(
+                Unjudged::new(format!(
+                    "{file}: Pub dependency-declaration edges with packages: true are not yet supported; \
+                     Dart source dependency checks and manifests: true remain available"
+                ))
+                .in_files([file.clone()]),
+            );
             continue;
         }
         let Some(text) = text_of(file) else {
@@ -357,7 +360,7 @@ mod tests {
         assert!(found.deps.is_empty());
         assert_eq!(found.manifests, ["pubspec.yaml"]);
         assert_eq!(found.problems.len(), 1);
-        assert!(found.problems[0].contains("not yet supported"));
+        assert!(found.problems[0].reason.contains("not yet supported"));
     }
 
     #[test]

@@ -706,9 +706,11 @@ fn run(cli: Cli) -> Result<Outcome> {
             );
             result.cached = report::cache_note(&analysis.stats);
             result
-                .confidence_reasons
-                .extend(report::analysis_reasons(&analysis.stats));
-            result.confidence = report::Confidence::of(&result.confidence_reasons);
+                .coverage
+                .evidence_gaps
+                .extend(report::analysis_gaps(&analysis.stats));
+            result.confidence_reasons = result.coverage.reasons();
+            result.confidence = result.coverage.confidence();
             match format {
                 OutputFormat::Text => print!("{}", impact::render(&result, &analysis.map)),
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
