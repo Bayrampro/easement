@@ -325,7 +325,8 @@ pub struct Component {
     #[serde(default)]
     pub isolated: bool,
     /// When set, other components may use only these names from this component's packages.
-    /// Needs an adapter that reports symbols (Go).
+    /// Judged for Go, TypeScript, Python, Rust and Ruby; for other languages the report
+    /// has a `symbols` evidence gap.
     #[serde(default)]
     pub public_symbols: Option<Vec<String>>,
     /// When set, only these components (and the component itself) may import it.
@@ -454,8 +455,8 @@ pub struct Rule {
     #[serde(default)]
     pub forbid_external: Vec<Listed>,
     /// Names this component must not use, as `package.Name` or `import/path.Name`
-    /// (`ent.Client`). Needs an adapter that reports symbols (Go). An item may carry its own
-    /// reason.
+    /// (`ent.Client`). Judged for Go, TypeScript, Python, Rust and Ruby; for other languages
+    /// the report has a `symbols` evidence gap. An item may carry its own reason.
     #[serde(default)]
     pub forbid_symbol: Vec<Listed>,
     /// Components that every directory of this component must import at least once. An item

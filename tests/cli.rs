@@ -289,6 +289,40 @@ fn java_resolves_by_package_declaration() {
     assert_eq!(stats["internal_deps"], 3);
 }
 
+#[test]
+fn a_banned_java_member_is_an_evidence_gap_not_a_violation() {
+    // scip-java reports member uses, but none is verified, so the rule does not judge them.
+    let (_tmp, root) = fixture("java");
+    fs::write(
+        root.join("src/main/java/com/acme/shop/infra/OrderRepository.java"),
+        "package com.acme.shop.infra;\n\nimport com.acme.shop.domain.Order;\n\npublic class OrderRepository {\n    public Order find(String id) { return Order.empty(); }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("easement.yml"),
+        "version: 1\ncomponents:\n  domain: { in: src/main/java/com/acme/shop/domain }\n  infra: { in: src/main/java/com/acme/shop/infra }\n  web: { in: src/main/java/com/acme/shop/web }\nrules:\n  infra: { may_depend_on: [domain], forbid_symbol: [com.acme.shop.domain.Order.empty, com.acme.shop.domain.empty, Order.empty] }\n  web: { may_depend_on: [domain, infra] }\n",
+    )
+    .unwrap();
+    let out = easement(&root, &["check", "--format", "json"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(report["violations"], serde_json::json!([]), "{report}");
+    assert_eq!(report["confidence"], "partial", "{report}");
+    let gaps = symbol_gaps(&report);
+    assert_eq!(gaps.len(), 1, "{report}");
+    assert_eq!(
+        gaps[0]["files"],
+        serde_json::json!(["src/main/java/com/acme/shop/infra/OrderRepository.java"])
+    );
+    assert!(
+        gaps[0]["message"].as_str().unwrap().contains("java"),
+        "{report}"
+    );
+}
+
 fn git(root: &Path, args: &[&str]) {
     let status = std::process::Command::new("git")
         .current_dir(root)
@@ -1821,6 +1855,52 @@ fn kotlin_resolves_packages_and_declarations() {
         "src/main/kotlin/com/acme/shop/infra/OrderRepository.kt",
         3,
     );
+}
+
+/// The `symbols` evidence gaps of a JSON report.
+fn symbol_gaps(report: &serde_json::Value) -> Vec<&serde_json::Value> {
+    report["evidence_gaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|gap| gap["kind"] == "symbols")
+        .collect()
+}
+
+#[test]
+fn a_symbol_rule_over_kotlin_is_an_evidence_gap() {
+    // An adapter reports no symbol uses, so the rule passes without judging anything.
+    let (_tmp, root) = fixture("kotlin");
+    let config = root.join("easement.yml");
+    // The fixture's one violation (web -> infra) is allowed, so only the gap is left.
+    let yaml = fs::read_to_string(&config).unwrap().replace(
+        "web: { may_depend_on: [domain] }",
+        "web: { may_depend_on: [domain, infra] }",
+    ) + "\nforbid_symbol: [com.acme.shop.domain.Order]\n";
+    fs::write(&config, yaml).unwrap();
+    let out = easement(&root, &["check", "--format", "json"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(report["confidence"], "partial", "{report}");
+    let gaps = symbol_gaps(&report);
+    assert_eq!(gaps.len(), 1, "{report}");
+    assert_eq!(
+        gaps[0]["files"],
+        serde_json::json!([
+            "src/main/kotlin/com/acme/shop/domain/Order.kt",
+            "src/main/kotlin/com/acme/shop/infra/OrderRepository.kt",
+            "src/main/kotlin/com/acme/shop/web/OrderController.kt",
+        ])
+    );
+    let message = gaps[0]["message"].as_str().unwrap();
+    assert!(
+        message.contains("`forbid_symbol`") && message.contains("kotlin"),
+        "{message}"
+    );
+    easement(&root, &["check", "--require-evidence"]).code(4);
 }
 
 #[test]

@@ -306,6 +306,18 @@ impl Project {
             stats.parts_partial = parts_reasons(&scan.parts_doubts);
         }
         stats.symbols_partial = check::symbols_partial(&self.config, &map, &scan.unnamed_uses);
+        let in_scope: Vec<&str> = scan
+            .paths
+            .iter()
+            .filter(|f| scope.contains(&map, f))
+            .map(String::as_str)
+            .collect();
+        stats.symbols_partial.extend(check::symbols_unverified(
+            &self.config,
+            &map,
+            &in_scope,
+            &scan.deps,
+        ));
         // Only a whole index can tell a name that matches nothing: files it did not
         // cover, names it left unnamed and languages without an index may hold it.
         let indexed_whole = scan.uncovered.is_empty()

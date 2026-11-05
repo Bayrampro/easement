@@ -405,17 +405,17 @@ A use in a file no component owns is reported as `unowned files must not use …
 
 The indexer resolves every name to its definition, so `db.Client` is matched by what it is, not by how it is spelled: an import alias or a local variable that shadows the package name makes no difference, and a method call on a value of that type (`c.Query()`) counts as a use of `Client`.
 
-The qualifier in front of the name depends on the language:
+Symbol rules judge Go, TypeScript and JavaScript, Python, Rust and Ruby. The qualifier in front of the name depends on the language:
 
 - Go: the import path or its package name;
 - TypeScript: the npm package (`lodash.debounce`) or the file without extension (`src/db/client.Client`);
 - Python: the dotted module;
-- PHP: the namespace with `\`;
-- Java and C#: the namespace with `.`;
+- PHP (not judged yet): the namespace with `\`;
+- Java and C# (not judged yet): the namespace with `.`;
 - Ruby: the module path with `::` (`ActiveRecord.Rollback`); a method is named by the class or module that defines it (`Shop::Db::Client.connect`) and also counts as a use of it;
 - Rust: the crate and module path.
 
-Symbol rules work for Go, TypeScript, Python, Rust and Ruby. PHP, Java and C# do not report symbol uses yet, and Kotlin and Swift, which are read with tree-sitter, say nothing.
+The uses of names that the Java, C# and PHP indexers report are not verified yet, and Kotlin and Swift, which are read with tree-sitter, report none, so easement does not judge them. A `forbid_symbol` that covers files of these languages (the top-level list, or a component's own), and a `public_symbols` component that such a file imports from another component, leave those files unchecked: the report says so as a `symbols` evidence gap that names the rule, the language and the files, with `confidence: partial`, and `--require-evidence` fails.
 
 ### Tests
 

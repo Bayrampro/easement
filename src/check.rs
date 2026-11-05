@@ -1105,28 +1105,103 @@ pub fn symbols(config: &Config, map: &ComponentMap, uses: &[SymbolRef]) -> Vec<V
 /// Only files that a `forbid_symbol` list covers count: all of them for the top-level
 /// list, else those of a component with its own.
 pub fn symbols_partial(config: &Config, map: &ComponentMap, unnamed: &[String]) -> Vec<Unjudged> {
-    const SHOWN: usize = 3;
     let unnamed: Vec<&str> = unnamed
         .iter()
         .map(String::as_str)
-        .filter(|file| {
-            !config.forbid_symbol.is_empty()
-                || map
-                    .component_of(file)
-                    .and_then(|component| config.rules.get(component))
-                    .is_some_and(|rule| !rule.forbid_symbol.is_empty())
-        })
+        .filter(|file| forbids_symbols(config, map, file))
         .collect();
     if unnamed.is_empty() {
         return Vec::new();
     }
-    let mut files = unnamed[..unnamed.len().min(SHOWN)].join(", ");
-    if unnamed.len() > SHOWN {
-        files.push_str(&format!(" and {} more files", unnamed.len() - SHOWN));
-    }
+    let files = some_files(&unnamed);
     vec![Unjudged::new(format!(
         "`forbid_symbol` cannot tell the npm package of the names used in {files}: a `package.json` without `name` inside the package hides it from the indexer, so those uses were not checked; scip-typescript 0.6.1 or newer names such a package: update the indexer and run again"
     )).in_files(unnamed)]
+}
+
+/// Whether a `forbid_symbol` list covers `file`: the top-level one, or that of
+/// its component.
+fn forbids_symbols(config: &Config, map: &ComponentMap, file: &str) -> bool {
+    !config.forbid_symbol.is_empty()
+        || map
+            .component_of(file)
+            .and_then(|component| config.rules.get(component))
+            .is_some_and(|rule| !rule.forbid_symbol.is_empty())
+}
+
+/// The first few of `files`, and how many more there are.
+fn some_files(files: &[&str]) -> String {
+    const SHOWN: usize = 3;
+    let mut shown = files[..files.len().min(SHOWN)].join(", ");
+    if files.len() > SHOWN {
+        shown.push_str(&format!(" and {} more files", files.len() - SHOWN));
+    }
+    shown
+}
+
+/// The files among `files` that a symbol rule applies to although the registry
+/// says their language has no verified uses of names: the rule passes there
+/// without judging anything. One per rule and language.
+///
+/// `forbid_symbol` applies to every file when the top-level list is set, else to
+/// the files of a component with its own; `public_symbols` to the files of a
+/// component that import another component that has it.
+pub fn symbols_unverified(
+    config: &Config,
+    map: &ComponentMap,
+    files: &[&str],
+    deps: &[Dep],
+) -> Vec<Unjudged> {
+    // The language of a file whose uses of names easement does not read.
+    let unverified = |file: &str| registry::of(file).filter(|language| !language.symbols);
+    let mut found: BTreeMap<(&str, &str), Vec<&str>> = BTreeMap::new();
+    for file in files.iter().copied() {
+        if let Some(language) = unverified(file)
+            && forbids_symbols(config, map, file)
+        {
+            found
+                .entry(("forbid_symbol", language.name))
+                .or_default()
+                .push(file);
+        }
+    }
+    let files: BTreeSet<&str> = files.iter().copied().collect();
+    for dep in deps {
+        let file = slash(&dep.file);
+        let Some(&file) = files.get(file.as_str()) else {
+            continue;
+        };
+        let Some(language) = unverified(file) else {
+            continue;
+        };
+        let Some(from) = map.component_of_unit(&dep.from) else {
+            continue;
+        };
+        let Target::Internal(unit) = &dep.target else {
+            continue;
+        };
+        if let Some(to) = map.component_of_unit(unit)
+            && to != from
+            && config.components[to].public_symbols.is_some()
+        {
+            found
+                .entry(("public_symbols", language.name))
+                .or_default()
+                .push(file);
+        }
+    }
+    found
+        .into_iter()
+        .map(|((rule, language), mut files)| {
+            files.sort_unstable();
+            files.dedup();
+            Unjudged::new(format!(
+                "`{rule}` cannot judge {language} files, whose uses of names easement does not read, so the names used in {} were not checked; review them by hand",
+                some_files(&files)
+            ))
+            .in_files(files)
+        })
+        .collect()
 }
 
 /// The `forbid_symbol` names that no symbol of the index matches, though a symbol
@@ -1699,6 +1774,50 @@ rules:
             "{notes:?}"
         );
         assert_eq!(notes[0].files, ["web/a.ts"]);
+    }
+
+    #[test]
+    fn public_symbols_over_files_without_verified_uses_is_a_gap() {
+        let config: Config = serde_norway::from_str(
+            "version: 1
+components:
+  core: { in: core, public_symbols: [Order] }
+  web: { in: web }
+  api: { in: api }
+",
+        )
+        .unwrap();
+        let map = ComponentMap::new(&config).unwrap();
+        let dep = |from: &str, to: &str| Dep {
+            from: from.into(),
+            file: from.into(),
+            line: 1,
+            specifier: String::new(),
+            target: Target::Internal(to.into()),
+        };
+        let deps = [
+            dep("web/A.kt", "core/Order.kt"),
+            dep("web/B.kt", "web/A.kt"),
+            dep("api/c.go", "core/Order.kt"),
+            dep("core/Repo.kt", "core/Order.kt"),
+        ];
+        let files = ["web/A.kt", "web/B.kt", "api/c.go", "core/Repo.kt"];
+        let notes = symbols_unverified(&config, &map, &files, &deps);
+        // Only a kotlin file that imports `core` from another component is unjudged:
+        // Go uses are read, and `public_symbols` binds no file of its own component.
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].files, ["web/A.kt"]);
+        assert!(
+            notes[0].reason.contains("`public_symbols`") && notes[0].reason.contains("kotlin"),
+            "{notes:?}"
+        );
+        // Without a symbol rule nothing is unjudged.
+        let plain: Config = serde_norway::from_str(
+            "version: 1\ncomponents:\n  core: { in: core }\n  web: { in: web }\n",
+        )
+        .unwrap();
+        let map = ComponentMap::new(&plain).unwrap();
+        assert!(symbols_unverified(&plain, &map, &files, &deps).is_empty());
     }
 
     #[test]

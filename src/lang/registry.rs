@@ -48,6 +48,10 @@ pub struct Language {
     pub conventional: &'static [&'static str],
     /// The manifest the `manifests` rule checks its imports against.
     pub manifest: Option<Manifest>,
+    /// Whether easement reads verified uses of names from its files, which
+    /// `forbid_symbol` and `public_symbols` judge. A symbol rule over a language
+    /// without them is an evidence gap.
+    pub symbols: bool,
     /// Finds the parts of a source file that a dependency belongs to instead of the
     /// file, for example the code of a test build. `None` when the file is one unit.
     pub parts: Option<fn(&str, &str) -> Found>,
@@ -65,6 +69,7 @@ pub static GO: Language = Language {
     unused: &["go"],
     conventional: &[],
     manifest: Some(Manifest::Go),
+    symbols: true,
     parts: None,
 };
 
@@ -79,6 +84,7 @@ pub static TYPESCRIPT: Language = Language {
     unused: TYPESCRIPT_EXTENSIONS,
     conventional: &["**/*.d.ts"],
     manifest: Some(Manifest::Npm),
+    symbols: true,
     parts: None,
 };
 
@@ -93,6 +99,7 @@ pub static PYTHON: Language = Language {
     unused: &["py"],
     conventional: &["**/conftest.py", "**/__main__.py", "**/setup.py"],
     manifest: None,
+    symbols: true,
     parts: None,
 };
 
@@ -106,6 +113,8 @@ pub static JAVA: Language = Language {
     unused: &["java"],
     conventional: &["**/package-info.java", "**/module-info.java"],
     manifest: None,
+    // Its indexer reports member uses, but none is verified yet.
+    symbols: false,
     parts: None,
 };
 
@@ -120,6 +129,7 @@ pub static KOTLIN: Language = Language {
     unused: &[],
     conventional: &[],
     manifest: None,
+    symbols: false,
     parts: None,
 };
 
@@ -133,6 +143,8 @@ pub static CSHARP: Language = Language {
     unused: &["cs"],
     conventional: &[],
     manifest: None,
+    // Its indexer reports member uses, but none is verified yet.
+    symbols: false,
     parts: None,
 };
 
@@ -146,6 +158,8 @@ pub static PHP: Language = Language {
     unused: &["php"],
     conventional: &[],
     manifest: None,
+    // Its indexer reports member uses, but none is verified yet.
+    symbols: false,
     parts: None,
 };
 
@@ -160,6 +174,7 @@ pub static SWIFT: Language = Language {
     unused: &[],
     conventional: &[],
     manifest: None,
+    symbols: false,
     parts: None,
 };
 
@@ -174,6 +189,7 @@ pub static RUBY: Language = Language {
     unused: &[],
     conventional: &[],
     manifest: None,
+    symbols: true,
     parts: None,
 };
 
@@ -206,6 +222,7 @@ pub static RUST: Language = Language {
         "**/tests/**",
     ],
     manifest: Some(Manifest::Cargo),
+    symbols: true,
     parts: Some(parts::rust),
 };
 

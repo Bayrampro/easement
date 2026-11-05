@@ -327,6 +327,15 @@ pub fn scan(root: &Path, config: &Config, cache: &mut Cache) -> Result<Scan> {
         .symbols
         .into_iter()
         .filter(|symbol| is_source(&symbol.file))
+        // Uses of names count only for a language whose uses are verified; a rule
+        // over the others is an evidence gap (`check::symbols_unverified`).
+        .filter(|symbol| {
+            symbol
+                .file
+                .to_str()
+                .and_then(lang::registry::of)
+                .is_some_and(|language| language.symbols)
+        })
         // A use of a name an excluded file defines adds nothing: its import
         // already fails as `excluded`.
         .filter(|symbol| {
