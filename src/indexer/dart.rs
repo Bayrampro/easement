@@ -1,10 +1,9 @@
-//! Dart-only orchestration and coverage. SCIP owns semantic resolution.
+//! Dart prerequisites, configured inputs and SCIP postprocessing.
 use super::*;
 use crate::scan::AnalysisGap;
-use serde::{Deserialize, Serialize};
 
-mod cache;
 pub(crate) mod directives;
+mod inputs;
 mod private;
 use directives::Kind;
 
@@ -24,23 +23,6 @@ pub(crate) fn names_package(source: &str, package: &str) -> bool {
                     .is_some_and(|uri| registry::Manifest::Pub.package(uri) == package)
         })
     })
-}
-
-fn roots(root: &Path, files: &[String]) -> Result<Vec<PathBuf>> {
-    let mut roots = BTreeSet::new();
-    for file in files
-        .iter()
-        .filter(|f| registry::is(Path::new(f), &registry::DART))
-    {
-        let absolute = root.join(file);
-        let owner = absolute
-            .ancestors()
-            .skip(1)
-            .take_while(|p| p.starts_with(root))
-            .find(|p| p.join("pubspec.yaml").is_file());
-        roots.insert(owner.with_context(|| format!("{file} has no owning pubspec.yaml inside the analysis root; run from the package or workspace root"))?.to_path_buf());
-    }
-    Ok(roots.into_iter().collect())
 }
 
 /// Pub resolution uses file URIs, with relative URIs resolved against its file.
@@ -96,7 +78,14 @@ fn local_uri(base: &Path, uri: &str) -> Result<PathBuf> {
 }
 
 fn resolution(dir: &Path) -> Result<Resolution> {
-    let path = dir.ancestors().map(|p| p.join(".dart_tool/package_config.json")).find(|p| p.is_file()).context("missing .dart_tool/package_config.json (including ancestor workspace resolution); run dart pub get or flutter pub get")?;
+    let path = dir
+        .ancestors()
+        .map(|p| p.join(".dart_tool/package_config.json"))
+        .find(|p| p.is_file())
+        .context(
+            "missing .dart_tool/package_config.json (including ancestor workspace resolution); \
+             run dart pub get or flutter pub get",
+        )?;
     let text = std::fs::read(&path).context("cannot read Dart package configuration")?;
     let json: serde_json::Value = serde_json::from_slice(&text)
         .context("invalid Dart package configuration; run dart pub get or flutter pub get")?;
@@ -234,212 +223,104 @@ pub(super) fn needs(_: &Path, dir: &Path, _: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn diagnosis(root: &Path, files: &[String], language: &Indexer) -> Diagnosis {
-    let binary = which::which(language.binary).ok();
-    let mut problems = roots(root, files)
-        .map(|dirs| {
-            let mut problems = Vec::new();
-            for dir in dirs {
-                if let Err(e) = needs(root, &dir, "") {
-                    problems.push(format!("{}: {e:#}", dir.display()));
-                }
-            }
-            problems
-        })
-        .unwrap_or_else(|e| vec![e.to_string()]);
-    let probe = binary
-        .as_ref()
-        .map(|path| Command::new(path).arg("--version").output());
-    let version = match probe {
-        Some(Ok(output)) if output.status.success() => String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .next()
-            .map(str::to_string),
-        Some(Ok(output)) => {
-            problems.push(format!(
-                "scip_dart --version failed ({}); reinstall the pinned indexer: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-                    .lines()
-                    .next()
-                    .unwrap_or("no diagnostic")
-            ));
-            None
-        }
-        Some(Err(error)) => {
-            problems.push(format!("cannot execute scip_dart: {error}"));
-            None
-        }
-        None => None,
-    };
-    Diagnosis {
-        language: language.name(),
-        binary: language.binary,
-        found: binary.is_some(),
-        version,
-        path: binary.map(|p| p.display().to_string()),
-        install: language.install,
-        mise: language.mise,
-        problems,
-    }
+pub(super) fn resolved_inputs(context: &InputContext<'_>) -> Result<Vec<Input>> {
+    let cwd = context.root.join(context.dir);
+    let resolution = resolution(&cwd)?;
+    let sdk = sdk(&cwd)?;
+    inputs::collect(context.binary, &sdk, &cwd, &resolution)
 }
 
-#[derive(Serialize, Deserialize)]
-struct Entry {
-    version: u32,
-    index: Vec<u8>,
-    gaps: Vec<AnalysisGap>,
+pub(super) fn reader() -> Box<dyn super::Reader> {
+    Box::<DartReader>::default()
 }
 
-pub(super) fn run(
-    root: &Path,
-    files: &[String],
-    excluded: &[String],
-    mode: CacheUse,
-    config: &crate::config::Config,
-) -> Result<Option<Indexed>> {
-    if !files
-        .iter()
-        .any(|f| registry::is(Path::new(f), &registry::DART))
-    {
-        return Ok(None);
-    }
-    let dirs = roots(root, files)?;
-    let binary = which::which("scip_dart").context("scip_dart is missing; run `dart pub global activate scip_dart 1.8.1` or install the pinned launcher from an easement source checkout (see README), then run easement doctor")?;
-    let sdk = sdk(root)?;
-    let mut parts = Vec::new();
-    let mut inventory = scip::dart::private::Inventory::default();
-    let (mut ran, mut cached) = (0, 0);
-    let mut gaps = Vec::new();
-    let all: BTreeSet<&str> = files.iter().chain(excluded).map(String::as_str).collect();
-    for dir in dirs {
-        let resolution = resolution(&dir).with_context(|| format!("Dart package {} is not prepared; run dart pub get or flutter pub get in that directory", dir.display()))?;
-        let base = dir.strip_prefix(root)?;
+#[derive(Default)]
+struct DartReader {
+    inventory: scip::dart::private::Inventory,
+}
+
+impl super::Reader for DartReader {
+    fn read(&mut self, bytes: &[u8], root: &Path, base: &Path) -> Result<ReadFacts> {
+        let cwd = root.join(base);
+        let resolution = resolution(&cwd)?;
+        let sdk = sdk(&cwd)?;
         let sdk_modules = sdk_modules(&sdk, &resolution)?;
-        let inputs = Inputs {
-            packages: &resolution.packages,
-            sdk_modules: &sdk_modules,
-        };
-        let key = if mode == CacheUse::Off {
-            None
-        } else {
-            cache::fingerprint(&binary, &sdk, &dir, &resolution).ok()
-        };
-        let path = key.as_ref().and_then(|key| {
-            cache_dir().map(|p| {
-                p.join(format!(
-                    "dart-v1-{:016x}-{key}.json",
-                    content_hash(dir.as_os_str().as_encoded_bytes())
-                ))
-            })
-        });
-        let entry = path
-            .as_ref()
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|b| serde_json::from_slice::<Entry>(&b).ok())
-            .filter(|e| e.version == 1);
-        let (parsed, entry) = if let Some(entry) = entry
-            && let Ok(parsed) = scip::dart::parse(&entry.index, root, base, &inputs)
-            && !parsed.documents.is_empty()
-        {
-            cached += 1;
-            (parsed, entry)
-        } else {
-            if mode == CacheUse::Only {
-                return Err(NotCached {
-                    language: "dart",
-                    dir: crate::scan::slash(base),
-                }
-                .into());
-            }
-            let temp = tempfile::tempdir()?;
-            let output = Command::new(&binary)
-                .args([
-                    std::ffi::OsStr::new("--output"),
-                    temp.path().join("index.scip").as_os_str(),
-                    std::ffi::OsStr::new("."),
-                ])
-                .current_dir(&dir)
-                .output()
-                .context("cannot run scip_dart")?;
-            if !output.status.success() {
-                bail!(
-                    "scip_dart failed in {} ({}):\n{}{}",
-                    dir.display(),
-                    output.status,
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-            let index = std::fs::read(temp.path().join("index.scip"))
-                .context("scip_dart wrote no index")?;
-            let parsed = scip::dart::parse(&index, root, base, &inputs)?;
-            if parsed.documents.is_empty() {
-                bail!(
-                    "scip_dart indexed no files in {}; check analyzer exclusions and package resolution",
-                    dir.display()
-                );
-            }
-            let gaps = analyze(root, &dir, &sdk)?;
-            let entry = Entry {
-                version: 1,
-                index,
-                gaps,
-            };
-            // Do not publish a cache entry if input changed while tools ran.
-            if let Some(path) = path
-                && key == cache::fingerprint(&binary, &sdk, &dir, &resolution).ok()
-            {
-                cache::write(&path, &entry);
-            }
-            ran += 1;
-            (parsed, entry)
-        };
-        gaps.extend(entry.gaps);
-        gaps.extend(parsed.gaps);
-        inventory.merge(parsed.private);
-        parts.push(parsed.documents);
-    }
-    let mut documents = Documents::merged(parts)?;
-    // Module aliases resolve known targets, but do not establish source coverage.
-    let indexed: BTreeSet<String> = documents.0.iter().map(|d| d.path.clone()).collect();
-    // Only original SCIP documents can supply outgoing directive occurrences.
-    gaps.extend(directive_gaps(root, &mut documents.0, &mut inventory)?);
-    gaps.extend(scip::dart::complete(root, &mut documents.0, &all, excluded));
-    gaps.sort();
-    gaps.dedup();
-    let uncovered = all
-        .iter()
-        .copied()
-        .filter(|f| {
-            registry::is(Path::new(f), &registry::DART)
-                && files.iter().any(|s| s == f)
-                && !indexed.contains(*f)
+        let parsed = scip::dart::parse(
+            bytes,
+            root,
+            base,
+            &Inputs {
+                packages: &resolution.packages,
+                sdk_modules: &sdk_modules,
+            },
+        )?;
+        if parsed.documents.is_empty() {
+            bail!(
+                "scip_dart indexed no files in {}; check analyzer exclusions and package resolution",
+                cwd.display()
+            );
+        }
+        self.inventory.merge(parsed.private);
+        Ok(ReadFacts {
+            documents: parsed.documents,
+            gaps: parsed.gaps,
         })
-        .map(str::to_string)
-        .collect();
-    inventory.ensure(&documents.0);
-    let (sources, hidden): (Vec<_>, Vec<_>) = inventory
-        .documents
-        .into_values()
-        .filter(|d| all.contains(d.path.as_str()))
-        .partition(|d| files.contains(&d.path));
-    let map = crate::components::ComponentMap::new(config)?;
-    let target_only = crate::scan::glob_set(&config.target_only, "target_only")?;
-    gaps.extend(private::coverage(
-        config,
-        &map,
-        &sources,
-        &hidden,
-        &target_only,
-    )?);
-    Ok(Some(Indexed {
-        documents,
-        ran,
-        cached,
-        uncovered,
-        analysis_partial: gaps,
-    }))
+    }
+
+    fn validate(&mut self, root: &Path, cwd: &Path) -> Result<Vec<AnalysisGap>> {
+        analyze(root, cwd, &sdk(cwd)?)
+    }
+
+    fn finish(
+        self: Box<Self>,
+        _language: &Indexer,
+        mut documents: Documents,
+        mut gaps: Vec<AnalysisGap>,
+        context: &RunContext<'_>,
+    ) -> Result<Indexed> {
+        let RunContext {
+            root,
+            files,
+            excluded,
+            config,
+        } = context;
+        let mut inventory = self.inventory;
+        let all: BTreeSet<&str> = files.iter().chain(*excluded).map(String::as_str).collect();
+        let indexed: BTreeSet<String> = documents.0.iter().map(|d| d.path.clone()).collect();
+        gaps.extend(directive_gaps(root, &mut documents.0, &mut inventory)?);
+        gaps.extend(scip::dart::complete(root, &mut documents.0, &all, excluded));
+        gaps.sort();
+        gaps.dedup();
+        let uncovered = files
+            .iter()
+            .filter(|file| {
+                registry::is(Path::new(file), &registry::DART) && !indexed.contains(file.as_str())
+            })
+            .cloned()
+            .collect();
+        inventory.ensure(&documents.0);
+        let (sources, hidden): (Vec<_>, Vec<_>) = inventory
+            .documents
+            .into_values()
+            .filter(|d| all.contains(d.path.as_str()))
+            .partition(|d| files.contains(&d.path));
+        let map = crate::components::ComponentMap::new(config)?;
+        let target_only = crate::scan::glob_set(&config.target_only, "target_only")?;
+        gaps.extend(private::coverage(
+            config,
+            &map,
+            &sources,
+            &hidden,
+            &target_only,
+        )?);
+        Ok(Indexed {
+            documents,
+            analysis_partial: gaps,
+            uncovered,
+            ran: 0,
+            cached: 0,
+        })
+    }
 }
 
 fn analyze(root: &Path, dir: &Path, sdk: &Path) -> Result<Vec<AnalysisGap>> {
@@ -474,7 +355,14 @@ fn analyze(root: &Path, dir: &Path, sdk: &Path) -> Result<Vec<AnalysisGap>> {
             .unwrap_or_else(|_| {
                 crate::scan::slash(dir.strip_prefix(root).unwrap_or(Path::new("pubspec.yaml")))
             });
-        gaps.push(AnalysisGap { file, line: Some(fields[4].parse().context("invalid Dart diagnostic line")?), reason: format!("Dart analyzer {}: {}; repair source or dependency preparation and run with --no-cache", fields[2], fields[7]) });
+        gaps.push(AnalysisGap {
+            file,
+            line: Some(fields[4].parse().context("invalid Dart diagnostic line")?),
+            reason: format!(
+                "Dart analyzer {}: {}; repair source or dependency preparation and run with --no-cache",
+                fields[2], fields[7]
+            ),
+        });
     }
     if !output.status.success() && (records == 0 || !matches!(output.status.code(), Some(1..=3))) {
         bail!("dart analyze failed ({}): {text}", output.status);
@@ -527,7 +415,12 @@ fn directive_gaps(
         let directives = match directives::read(&source) {
             Ok(d) => d,
             Err(()) => {
-                gaps.push(gap(&document.path, None, "Dart directive inventory could not read this source; repair syntax and run with --no-cache"));
+                gaps.push(gap(
+                    &document.path,
+                    None,
+                    "Dart directive inventory could not read this source; \
+                     repair syntax and run with --no-cache",
+                ));
                 Vec::new()
             }
         };
@@ -545,10 +438,20 @@ fn directive_gaps(
                     .push(document.path.clone());
             }
             if directive.conditional {
-                gaps.push(gap(&document.path, Some(directive.line), "conditional Dart directive: SCIP does not cover every branch; verify other platform branches separately"));
+                gaps.push(gap(
+                    &document.path,
+                    Some(directive.line),
+                    "conditional Dart directive: SCIP does not cover every branch; \
+                     verify other platform branches separately",
+                ));
             }
             if directive.uri.is_some() && reference.is_none() {
-                gaps.push(gap(&document.path, Some(directive.line), "Dart directive has no matching SCIP reference; repair resolution or generated input and run with --no-cache"));
+                gaps.push(gap(
+                    &document.path,
+                    Some(directive.line),
+                    "Dart directive has no matching SCIP reference; \
+                     repair resolution or generated input and run with --no-cache",
+                ));
             }
             if directive.uri.is_none() && directive.kind != Kind::NamedPartOf {
                 gaps.push(gap(
@@ -590,7 +493,12 @@ fn directive_gaps(
                     spelled: None,
                 });
             } else {
-                gaps.push(gap(&document.path, Some(directive.line), "named part of has no unique indexed owning library; its dependency was not verified"));
+                gaps.push(gap(
+                    &document.path,
+                    Some(directive.line),
+                    "named part of has no unique indexed owning library; \
+                     its dependency was not verified",
+                ));
             }
         }
     }

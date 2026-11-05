@@ -1,5 +1,6 @@
-//! Conservative keys include resolved inputs outside the ordinary source walk.
+//! Enumerate resolved Dart inputs; hashing and cache I/O belong to the shared engine.
 use super::*;
+use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct Launcher {
@@ -12,24 +13,18 @@ fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn field(hash: &mut blake3::Hasher, value: &[u8]) {
-    hash.update(&(value.len() as u64).to_le_bytes());
-    hash.update(value);
-}
-
-pub(super) fn fingerprint(
+pub(super) fn collect(
     binary: &Path,
     sdk: &Path,
     dir: &Path,
     resolution: &Resolution,
-) -> Result<String> {
-    let prefix = "# easement-scip-dart-v1 ";
+) -> Result<Vec<Input>> {
     let wrapper =
         std::fs::read_to_string(binary).context("Dart cache needs a verifiable launcher")?;
     let header = wrapper.lines().nth(1).context("unknown Dart launcher")?;
     let launcher: Launcher = serde_json::from_str(
         header
-            .strip_prefix(prefix)
+            .strip_prefix("# easement-scip-dart-v1 ")
             .context("unknown Dart launcher; use the pinned installation for cache support")?,
     )?;
     let expected = format!(
@@ -41,23 +36,17 @@ pub(super) fn fingerprint(
     if wrapper != expected {
         bail!("unrecognized Dart launcher implementation");
     }
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"easement-dart-cache-v1");
-    field(
-        &mut hash,
-        b"scip_dart --output <temporary> .; dart --suppress-analytics analyze --format=machine .",
-    );
-    field(&mut hash, wrapper.as_bytes());
-    let mut environment: Vec<_> = std::env::vars_os()
-        .filter(|(key, _)| key != "EASEMENT_CACHE_DIR")
-        .collect();
-    environment.sort();
-    for (key, value) in environment {
-        field(&mut hash, format!("{key:?}").as_bytes());
-        field(&mut hash, format!("{value:?}").as_bytes());
-    }
-    let mut seen = BTreeSet::new();
-    tree(dir, &mut seen, &mut hash)?;
+    let mut inputs = vec![
+        Input::Tree(dir.to_path_buf()),
+        Input::File(binary.to_path_buf()),
+        Input::File(launcher.source.clone()),
+        Input::Value(
+            "extraction profile".into(),
+            b"v1: scip_dart --output <temporary> .; \
+              dart --suppress-analytics analyze --format=machine ."
+                .to_vec(),
+        ),
+    ];
     for sdk in [
         sdk,
         launcher
@@ -66,100 +55,49 @@ pub(super) fn fingerprint(
             .and_then(Path::parent)
             .context("launcher has no SDK")?,
     ] {
-        for name in ["bin", "lib", "version"] {
-            tree(&sdk.join(name), &mut seen, &mut hash)?;
-        }
+        inputs.push(Input::Tree(sdk.join("bin")));
+        inputs.push(Input::Tree(sdk.join("lib")));
+        inputs.push(Input::File(sdk.join("version")));
     }
-    tree(&launcher.source, &mut seen, &mut hash)?;
-    inputs(&launcher.config, &mut seen, &mut hash)?;
-    inputs(&resolution.path, &mut seen, &mut hash)?;
+    package_inputs(&launcher.config, &mut inputs)?;
+    package_inputs(&resolution.path, &mut inputs)?;
     for package in resolution.packages.values() {
-        tree(&package.root, &mut seen, &mut hash)?;
-        options(&package.root, resolution, &mut seen, &mut hash)?;
+        inputs.push(Input::Tree(package.root.clone()));
+        options(&package.root, resolution, &mut inputs)?;
     }
     for parent in dir.ancestors() {
         for name in ["pubspec.yaml", "pubspec.lock", "pubspec_overrides.yaml"] {
-            let path = parent.join(name);
-            field(&mut hash, path.to_string_lossy().as_bytes());
-            if path.exists() {
-                tree(&path, &mut seen, &mut hash)?;
-            }
+            inputs.push(Input::File(parent.join(name)));
         }
     }
-    options(dir, resolution, &mut seen, &mut hash)?;
-    Ok(hash.finalize().to_hex().to_string())
+    options(dir, resolution, &mut inputs)?;
+    Ok(inputs)
 }
 
-fn tree(path: &Path, seen: &mut BTreeSet<PathBuf>, hash: &mut blake3::Hasher) -> Result<()> {
-    field(hash, path.as_os_str().as_encoded_bytes());
-    let canonical = dunce::canonicalize(path)?;
-    field(hash, canonical.as_os_str().as_encoded_bytes());
-    if !seen.insert(canonical.clone()) {
-        hash.update(b"alias");
-        return Ok(());
-    }
-    if canonical.is_dir() {
-        let mut children = std::fs::read_dir(&canonical)?.collect::<std::io::Result<Vec<_>>>()?;
-        children.sort_by_key(|entry| entry.file_name());
-        hash.update(b"directory");
-        hash.update(&(children.len() as u64).to_le_bytes());
-        for entry in children {
-            if entry.file_name() == ".git" {
-                continue;
-            }
-            tree(&entry.path(), seen, hash)?;
-        }
-    } else {
-        if !std::fs::metadata(&canonical)?.is_file() {
-            bail!("non-file Dart input cannot be fingerprinted safely");
-        }
-        use std::io::Read;
-        let mut file = std::fs::File::open(canonical)?;
-        let mut buffer = [0; 65536];
-        let mut content = blake3::Hasher::new();
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            content.update(&buffer[..read]);
-        }
-        hash.update(b"file");
-        hash.update(content.finalize().as_bytes());
-    }
-    Ok(())
-}
-
-fn inputs(config: &Path, seen: &mut BTreeSet<PathBuf>, hash: &mut blake3::Hasher) -> Result<()> {
-    tree(config, seen, hash)?;
+fn package_inputs(config: &Path, inputs: &mut Vec<Input>) -> Result<()> {
+    inputs.push(Input::File(config.to_path_buf()));
     let json: serde_json::Value = serde_json::from_slice(&std::fs::read(config)?)?;
     for package in json["packages"]
         .as_array()
         .context("launcher has no resolved packages")?
     {
-        let path = local_uri(
+        inputs.push(Input::Tree(local_uri(
             config.parent().context("resolution has no parent")?,
             package["rootUri"]
                 .as_str()
                 .context("package has no rootUri")?,
-        )?;
-        tree(&path, seen, hash)?;
+        )?));
     }
     Ok(())
 }
 
-fn options(
-    dir: &Path,
-    resolution: &Resolution,
-    seen: &mut BTreeSet<PathBuf>,
-    hash: &mut blake3::Hasher,
-) -> Result<()> {
+fn options(dir: &Path, resolution: &Resolution, inputs: &mut Vec<Input>) -> Result<()> {
     for parent in dir.ancestors() {
         for name in ["analysis_options.yaml", ".analysis_options"] {
             let path = parent.join(name);
-            field(hash, path.to_string_lossy().as_bytes());
+            inputs.push(Input::File(path.clone()));
             if path.exists() {
-                included(&path, resolution, seen, &mut BTreeSet::new(), hash)?;
+                included(&path, resolution, inputs, &mut BTreeSet::new())?;
             }
         }
     }
@@ -169,15 +107,14 @@ fn options(
 fn included(
     path: &Path,
     resolution: &Resolution,
-    seen: &mut BTreeSet<PathBuf>,
+    inputs: &mut Vec<Input>,
     active: &mut BTreeSet<PathBuf>,
-    hash: &mut blake3::Hasher,
 ) -> Result<()> {
     let path = dunce::canonicalize(path)?;
     if !active.insert(path.clone()) {
         bail!("cyclic analyzer configuration; cache bypassed");
     }
-    tree(&path, seen, hash)?;
+    inputs.push(Input::File(path.clone()));
     let yaml: serde_norway::Value = serde_norway::from_slice(&std::fs::read(&path)?)?;
     if !yaml["plugins"].is_null() || !yaml["analyzer"]["plugins"].is_null() {
         bail!("analyzer plugin inputs cannot be fingerprinted completely; cache bypassed");
@@ -202,36 +139,17 @@ fn included(
         } else {
             local_uri(path.parent().context("options have no parent")?, include)?
         };
-        included(&next, resolution, seen, active, hash)?;
+        included(&next, resolution, inputs, active)?;
     }
     active.remove(&path);
     Ok(())
-}
-
-pub(super) fn write(path: &Path, entry: &impl Serialize) {
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    let result = || -> Result<()> {
-        std::fs::create_dir_all(parent)?;
-        let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        serde_json::to_writer(file.as_file_mut(), entry)?;
-        file.persist(path)?;
-        if let Some(name) = path.file_name().and_then(|name| name.to_str())
-            && let Some((prefix, _)) = name.rsplit_once('-')
-        {
-            super::super::prune(parent, &format!("{prefix}-"));
-        }
-        Ok(())
-    };
-    let _ = result();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn dart_fingerprint_tracks_sdk_indexer_hidden_inputs_and_local_dependencies() {
+    fn resolved_inputs_track_sdk_indexer_hidden_inputs_and_local_dependencies() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("app");
         let sdk = tmp.path().join("sdk");
@@ -262,7 +180,10 @@ mod tests {
             std::fs::write(path, text).unwrap();
         }
         let config = root.join(".dart_tool/package_config.json");
-        let json = serde_json::json!({"configVersion": 2, "packages": [{"name": "runner", "rootUri": runner.to_str().unwrap()}]});
+        let json = serde_json::json!({
+            "configVersion": 2,
+            "packages": [{"name": "runner", "rootUri": runner.to_str().unwrap()}]
+        });
         std::fs::write(&config, json.to_string()).unwrap();
         let binary = tmp.path().join("scip_dart");
         let dart = sdk.join("bin/dart");
@@ -291,7 +212,12 @@ mod tests {
                 },
             )]),
         };
-        let key = || fingerprint(&binary, &sdk, &root, &resolution).unwrap();
+        let key = || {
+            let inputs = collect(&binary, &sdk, &root, &resolution).unwrap();
+            let mut hash = StableHasher::default();
+            super::super::super::cache::hash_inputs(inputs, &root, &mut hash).unwrap();
+            hash.finish()
+        };
         let mut previous = key();
         assert_eq!(previous, key());
         for path in [
@@ -315,6 +241,6 @@ mod tests {
             "plugins: {custom: {path: ../plugin}}\n",
         )
         .unwrap();
-        assert!(fingerprint(&binary, &sdk, &root, &resolution).is_err());
+        assert!(collect(&binary, &sdk, &root, &resolution).is_err());
     }
 }

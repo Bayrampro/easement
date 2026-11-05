@@ -733,15 +733,20 @@ Indexers are slow (a second or two for a small project, ten or more for a big on
 - **Where:** the user's cache directory (`~/Library/Caches/easement` on macOS, `~/.cache/easement` on Linux). Set `EASEMENT_CACHE_DIR` to move it, for example to one directory that every checkout, worktree or container of the project uses.
 - **Key:** the content of the project, not where it is: the indexer's content and resolved path (not its install time, so a toolchain restored from a CI cache still finds the indexes), the environment variables that change what it writes (for Go `GO…` without an underscore and `CGO_*`; for Python `PYTHON*` but `PYTHONHASHSEED`, and `PIP_*`; for Java `JAVA_HOME`, `JAVA_OPTS`, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, `_JAVA_OPTIONS`, `MAVEN_*`, `GRADLE_OPTS`, `GRADLE_USER_HOME` and `ORG_GRADLE_PROJECT_*`; for C# `DOTNET_*`, `MSBUILD*`, `NUGET_*` and the properties `DefineConstants`, `Configuration`, `Platform`, `TargetFramework(s)`, `RuntimeIdentifier(s)` and `LangVersion`, in any case; for Rust `RUSTFLAGS`, `RUSTC*`, `RUSTDOC*`, `CARGO`, `RUSTUP_TOOLCHAIN`, `RUSTUP_HOME`, `RUST_SRC_PATH` and `CARGO_*` but those Cargo sets for what it runs; none for TypeScript, PHP and Ruby, whose indexers read none that changes the index. MSBuild reads every variable as a property, so a C# project that reads another one in its build needs `--no-cache` after changing it), and the name and content of the project files under the directory of the index that its indexer reads (build output such as `target/` left out) and of the files directly above it (`tsconfig.base.json`, `go.work`, a root `package.json`). For Go these are the `.go` files and `go.mod`, `go.sum`, `go.work`, `go.work.sum` and `modules.txt`; for TypeScript the sources, every JSON file and the lock files; for the other languages, whose build tools read files of their own choosing, every file. A Go backend and a TypeScript frontend in one root keep apart: a change to the frontend reuses the Go index, a change to the docs reuses both. A fresh worktree of code that was already checked reuses the indexes, a file touched without a change does not miss, and any change to what an indexer reads runs it again.
 - **Kept:** the newest 32 indexes of each directory and indexer.
-- **Not looked at:** dependencies outside the project (`node_modules`, `vendor/`, the Go module cache, the Python environment), and the toolchain an indexer calls on the `PATH` (`go`, `python3`, `dotnet`, the JDK, Maven). After changing them without touching a lock file, run `easement check --no-cache`. An indexer run through rustup or a mise shim is known by the binary that rustup or mise runs in the directory of the index; other proxies (Volta, proto) are not resolved, so after switching a toolchain behind them run `--no-cache` too.
+- **Not looked at by the other language keys:** dependencies outside the project (`node_modules`, `vendor/`, the Go module cache, the Python environment), and the toolchain an indexer calls on the `PATH` (`go`, `python3`, `dotnet`, the JDK, Maven). After changing them without touching a lock file, run `easement check --no-cache`. An indexer run through rustup or a mise shim is known by the binary that rustup or mise runs in the directory of the index; other proxies (Volta, proto) are not resolved, so after switching a toolchain behind them run `--no-cache` too.
 
-Dart uses a dedicated dependency cache key; its resolution inputs, tool identity and bypass conditions are described under [Dart and Flutter](#dart-and-flutter).
+All SCIP indexers use the same cache container: extraction diagnostics and raw
+SCIP are stored together, with a checksum and atomic publication. Normalization
+and policy coverage checks run again on every read. Inputs are checked again
+before publication; changes during extraction prevent a cache write. Older cache
+formats safely miss. Dart supplies its resolved inputs to the same engine; see
+[Dart and Flutter](#dart-and-flutter).
 
 `--format json` reports `stats.indexed` and `stats.from_cache`. When an index came from the cache, the report says so, in `cached` of `--format json` and in a line of the text, with what the key leaves out and that `--no-cache` indexes again. `impact` (`cached` in its JSON), `why`, `suggest` and `baseline` say it the same way; `graph` and `suggest --patch`, whose output is a diagram or a patch, say it on stderr, with `graph` naming there the reasons its graph may be partial too.
 
 `--cache-only` runs no indexer and exits 3 when an index is not cached. A CI job can call it first and set up an indexer's toolchain (the Go module cache, `npm install`) only on a miss; the dependencies an indexer needs are checked only when it runs, since a cached index was written with them in place.
 
-`--jobs N` indexes N languages at once, and `--jobs cpus` one per processor. The default is one: scip-java and rust-analyzer can each take gigabytes. The directories of one language are still indexed one after another, since they share its build state, and the report is the same whatever the number. Build tools of different languages do run at once, though: a directory with both `pom.xml` and `Cargo.toml` has Maven and cargo writing into one `target/`, each in its own subdirectories; keep one job there if a build tool objects.
+`--jobs N` indexes N languages at once, including Dart, and `--jobs cpus` one per processor. The default is one: scip-java and rust-analyzer can each take gigabytes. The directories of one language are still indexed one after another, since they share its build state, and the report is the same whatever the number. Build tools of different languages do run at once, though: a directory with both `pom.xml` and `Cargo.toml` has Maven and cargo writing into one `target/`, each in its own subdirectories; keep one job there if a build tool objects.
 
 ### Indexers
 
@@ -833,7 +838,7 @@ easement init
 easement check
 ```
 
-Checks run the indexer and `dart analyze --format=machine`; they never run Pub,
+Fresh extraction runs the indexer and `dart analyze --format=machine`; it never runs Pub,
 code generators, Flutter builds, tests, or emulators. Missing prerequisites are
 errors. Analyzer errors, unresolved indexed references and unmatched source
 directives lower confidence. Warnings and lints alone are not architecture
@@ -872,7 +877,9 @@ their workspace dependency declarations.
 A workspace can declare `workspace: [packages/app, packages/domain]` in its root
 manifest and `resolution: workspace` in member manifests. Run Pub once at the
 root, then run easement there with components covering each member's sources.
-Source-free workspace containers are not indexed as source packages.
+Each Dart source belongs to the nearest `pubspec.yaml` inside the analysis
+root. `check` and `doctor` use these same package roots. Source-free workspace
+containers are not indexed as source packages.
 Standalone nested/path packages inside the analysis root each need their own
 Pub preparation; run `dart pub get` or `flutter pub get` in each package. A Pub
 workspace instead uses its one shared ancestor configuration.
@@ -907,7 +914,10 @@ Dart cache keys read hidden resolution state, package and workspace metadata,
 sources and resolved local/external package inputs, inherited/included analyzer
 options, SDK artifacts, indexer implementation and environment. Full content
 fingerprinting can cost more than ordinary language keys and is deliberately
-conservative. Analyzer plugins or unverifiable launchers bypass caching.
+conservative. The environment is included except `EASEMENT_CACHE_DIR`. Analyzer
+plugins, cyclic includes, unreadable required inputs or unverifiable launchers
+bypass caching. A hit reuses analyzer diagnostics without running either tool;
+normalization, directive checks and private coverage are recalculated.
 `--no-cache` reruns both tools; `--cache-only` runs neither and exits 3 without a
 trustworthy entry. Store the cache outside source and package directories.
 

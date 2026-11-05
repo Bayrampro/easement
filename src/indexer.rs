@@ -16,6 +16,7 @@ use crate::lang::registry::{self, Language};
 use crate::relpath;
 use crate::scip::{self, Document, Documents};
 
+mod cache;
 pub(crate) mod dart;
 
 /// The SCIP indexer of a language: how to run it and what its index depends on.
@@ -27,6 +28,9 @@ pub struct Indexer {
     markers: &'static [&'static str],
     /// Run only in the outermost marked directories: a Cargo workspace holds its members.
     outermost: bool,
+    root_policy: RootPolicy,
+    reader: fn() -> Box<dyn Reader>,
+    strict_version: bool,
     /// Run at the project root when no marker is found (Python projects often have none).
     fallback_root: bool,
     /// Arguments that write the index to the given file.
@@ -40,13 +44,118 @@ pub struct Indexer {
     writes_in_cwd: Option<&'static str>,
     /// What has to be in place before the indexer runs: (project root, directory, shown name).
     needs: fn(&Path, &Path, &str) -> Result<()>,
-    /// Which project files under the index directory the cache key reads (the `/`-separated
-    /// path): what the indexer could see. Another language's sources, docs and assets are left
-    /// out, so a change to them reuses the index. When in doubt, a file is in.
-    inputs: fn(&str) -> bool,
+    /// Enumerate files, trees and named values that determine extraction.
+    /// An error bypasses caching while allowing an ordinary run.
+    inputs: fn(&InputContext<'_>) -> Result<Vec<Input>>,
+    /// Project-relative files used by the default collector. Each language keeps
+    /// its existing source/build filters; ancestor files are included as well.
+    project_files: fn(&str) -> bool,
     /// Which inherited environment variables change what the indexer writes
     /// (`GOFLAGS`, `PYTHONPATH`); their values are in the cache key.
     env: fn(&str) -> bool,
+}
+
+#[derive(Clone, Copy)]
+enum RootPolicy {
+    Markers,
+    SourceOwners,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Input {
+    File(PathBuf),
+    Tree(PathBuf),
+    Value(String, Vec<u8>),
+}
+
+struct InputContext<'a> {
+    language: &'a Indexer,
+    binary: &'a Path,
+    root: &'a Path,
+    dir: &'a str,
+    files: &'a [String],
+}
+
+struct RunContext<'a> {
+    root: &'a Path,
+    files: &'a [String],
+    excluded: &'a [String],
+    config: &'a crate::config::Config,
+}
+
+struct ReadFacts {
+    documents: Vec<Document>,
+    gaps: Vec<crate::scan::AnalysisGap>,
+}
+
+trait Reader: Send {
+    fn read(&mut self, bytes: &[u8], root: &Path, base: &Path) -> Result<ReadFacts>;
+
+    fn validate(&mut self, _root: &Path, _cwd: &Path) -> Result<Vec<crate::scan::AnalysisGap>> {
+        Ok(Vec::new())
+    }
+
+    fn finish(
+        self: Box<Self>,
+        language: &Indexer,
+        documents: Documents,
+        gaps: Vec<crate::scan::AnalysisGap>,
+        context: &RunContext<'_>,
+    ) -> Result<Indexed> {
+        let covered: BTreeSet<&str> = documents.0.iter().map(|d| d.path.as_str()).collect();
+        let uncovered = context
+            .files
+            .iter()
+            .filter(|file| language.covers(file) && !covered.contains(file.as_str()))
+            .cloned()
+            .collect();
+        Ok(Indexed {
+            documents,
+            analysis_partial: gaps,
+            uncovered,
+            ran: 0,
+            cached: 0,
+        })
+    }
+}
+
+struct ScipReader;
+
+impl Reader for ScipReader {
+    fn read(&mut self, bytes: &[u8], root: &Path, base: &Path) -> Result<ReadFacts> {
+        Ok(ReadFacts {
+            documents: scip::parse(bytes, root, base)?,
+            gaps: Vec::new(),
+        })
+    }
+}
+
+fn ordinary_reader() -> Box<dyn Reader> {
+    Box::new(ScipReader)
+}
+
+fn project_inputs(context: &InputContext<'_>) -> Result<Vec<Input>> {
+    let prefix = if context.dir.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", context.dir)
+    };
+    let above = |file: &str| {
+        let parent = relpath::parent(file);
+        parent.len() < context.dir.len()
+            && (parent.is_empty() || context.dir.starts_with(&format!("{parent}/")))
+    };
+    Ok(context
+        .files
+        .iter()
+        .filter(|file| {
+            (file.starts_with(&prefix)
+                && !context.language.in_skip_dir(file)
+                && (context.language.project_files)(file))
+                || above(file)
+        })
+        .map(|file| Input::File(context.root.join(file)))
+        .collect())
 }
 
 /// Go's own variables (`GOFLAGS`, `GOOS`, `GO111MODULE`) have no `_` after `GO`,
@@ -179,6 +288,9 @@ pub static INDEXERS: &[Indexer] = &[
         binary: "scip-go",
         markers: &["go.mod"],
         outermost: false,
+        root_policy: RootPolicy::Markers,
+        reader: ordinary_reader,
+        strict_version: false,
         fallback_root: false,
         args: |out| vec!["--output".into(), out.display().to_string()],
         install: "mise use -g go:github.com/scip-code/scip-go/cmd/scip-go",
@@ -186,7 +298,8 @@ pub static INDEXERS: &[Indexer] = &[
         skip_dirs: &[],
         writes_in_cwd: None,
         needs: nothing_needed,
-        inputs: go_inputs,
+        inputs: project_inputs,
+        project_files: go_inputs,
         env: go_env,
     },
     Indexer {
@@ -194,6 +307,9 @@ pub static INDEXERS: &[Indexer] = &[
         binary: "scip-typescript",
         markers: &["tsconfig.json"],
         outermost: false,
+        root_policy: RootPolicy::Markers,
+        reader: ordinary_reader,
+        strict_version: false,
         fallback_root: false,
         args: |out| {
             vec![
@@ -208,7 +324,8 @@ pub static INDEXERS: &[Indexer] = &[
         skip_dirs: &[],
         writes_in_cwd: None,
         needs: require_installed,
-        inputs: typescript_inputs,
+        inputs: project_inputs,
+        project_files: typescript_inputs,
         env: |_| false,
     },
     Indexer {
@@ -221,6 +338,9 @@ pub static INDEXERS: &[Indexer] = &[
             "requirements.txt",
         ],
         outermost: false,
+        root_policy: RootPolicy::Markers,
+        reader: ordinary_reader,
+        strict_version: false,
         fallback_root: true,
         args: |out| {
             vec![
@@ -240,7 +360,8 @@ pub static INDEXERS: &[Indexer] = &[
         skip_dirs: &[],
         writes_in_cwd: None,
         needs: nothing_needed,
-        inputs: every_file,
+        inputs: project_inputs,
+        project_files: every_file,
         env: python_env,
     },
     Indexer {
@@ -248,6 +369,9 @@ pub static INDEXERS: &[Indexer] = &[
         binary: "scip-php",
         markers: &["composer.json"],
         outermost: false,
+        root_policy: RootPolicy::Markers,
+        reader: ordinary_reader,
+        strict_version: false,
         fallback_root: false,
         args: |_| Vec::new(),
         install: "composer global require davidrjenni/scip-php",
@@ -255,7 +379,8 @@ pub static INDEXERS: &[Indexer] = &[
         skip_dirs: &["vendor"],
         writes_in_cwd: Some("index.scip"),
         needs: require_composer,
-        inputs: every_file,
+        inputs: project_inputs,
+        project_files: every_file,
         env: |_| false,
     },
     Indexer {
@@ -263,6 +388,9 @@ pub static INDEXERS: &[Indexer] = &[
         binary: "scip-java",
         markers: &["pom.xml", "build.gradle", "build.gradle.kts"],
         outermost: true,
+        root_policy: RootPolicy::Markers,
+        reader: ordinary_reader,
+        strict_version: false,
         fallback_root: false,
         args: |out| vec!["index".into(), "--output".into(), out.display().to_string()],
         install: "mise use -g github:sourcegraph/scip-java",
@@ -270,7 +398,8 @@ pub static INDEXERS: &[Indexer] = &[
         skip_dirs: &["target", "build"],
         writes_in_cwd: None,
         needs: nothing_needed,
-        inputs: every_file,
+        inputs: project_inputs,
+        project_files: every_file,
         env: java_env,
     },
     Indexer {
@@ -278,6 +407,9 @@ pub static INDEXERS: &[Indexer] = &[
         binary: "scip-dotnet",
         markers: &["*.csproj", "*.sln", "*.slnx"],
         outermost: true,
+        root_policy: RootPolicy::Markers,
+        reader: ordinary_reader,
+        strict_version: false,
         fallback_root: false,
         args: |out| vec!["index".into(), "--output".into(), out.display().to_string()],
         install: "dotnet tool install --global scip-dotnet",
@@ -285,7 +417,8 @@ pub static INDEXERS: &[Indexer] = &[
         skip_dirs: &["bin", "obj"],
         writes_in_cwd: None,
         needs: nothing_needed,
-        inputs: every_file,
+        inputs: project_inputs,
+        project_files: every_file,
         env: csharp_env,
     },
     Indexer {
@@ -293,6 +426,9 @@ pub static INDEXERS: &[Indexer] = &[
         binary: "scip-ruby",
         markers: &["Gemfile", "*.gemspec"],
         outermost: true,
+        root_policy: RootPolicy::Markers,
+        reader: ordinary_reader,
+        strict_version: false,
         fallback_root: false,
         args: |out| {
             vec![
@@ -308,7 +444,8 @@ pub static INDEXERS: &[Indexer] = &[
         skip_dirs: &["vendor"],
         writes_in_cwd: None,
         needs: nothing_needed,
-        inputs: every_file,
+        inputs: project_inputs,
+        project_files: every_file,
         // scip-ruby reads no variable that changes the index; Bundler's are read
         // by the gem's wrapper, which easement does not run.
         env: |_| false,
@@ -318,6 +455,9 @@ pub static INDEXERS: &[Indexer] = &[
         binary: "rust-analyzer",
         markers: &["Cargo.toml"],
         outermost: true,
+        root_policy: RootPolicy::Markers,
+        reader: ordinary_reader,
+        strict_version: false,
         fallback_root: false,
         args: |out| {
             vec![
@@ -332,7 +472,8 @@ pub static INDEXERS: &[Indexer] = &[
         skip_dirs: &[],
         writes_in_cwd: None,
         needs: nothing_needed,
-        inputs: every_file,
+        inputs: project_inputs,
+        project_files: every_file,
         env: rust_env,
     },
     Indexer {
@@ -340,6 +481,9 @@ pub static INDEXERS: &[Indexer] = &[
         binary: "scip_dart",
         markers: &["pubspec.yaml"],
         outermost: false,
+        root_policy: RootPolicy::SourceOwners,
+        reader: dart::reader,
+        strict_version: true,
         fallback_root: false,
         args: |out| vec!["--output".into(), out.display().to_string(), ".".into()],
         install: "dart pub global activate scip_dart 1.8.1",
@@ -347,8 +491,9 @@ pub static INDEXERS: &[Indexer] = &[
         skip_dirs: &[".dart_tool"],
         writes_in_cwd: None,
         needs: dart::needs,
-        inputs: every_file,
-        env: |_| true,
+        inputs: dart::resolved_inputs,
+        project_files: every_file,
+        env: |name| name != "EASEMENT_CACHE_DIR",
     },
 ];
 
@@ -376,6 +521,52 @@ impl Indexer {
     /// Whether a file is in a directory of build output or dependencies.
     fn in_skip_dir(&self, file: &str) -> bool {
         file.split('/').any(|part| self.skip_dirs.contains(&part))
+    }
+
+    fn index_roots(&self, root: &Path, files: &[String]) -> Result<Vec<String>> {
+        if matches!(self.root_policy, RootPolicy::Markers) {
+            return Ok(self.roots(files));
+        }
+        let marker_in = |dir: &Path| {
+            let relative = crate::scan::slash(dir.strip_prefix(root).expect("project ancestor"));
+            files.iter().any(|file| {
+                relpath::parent(file) == relative && self.has_marker(relpath::file_name(file))
+            }) || self
+                .markers
+                .iter()
+                .any(|marker| !marker.contains('*') && dir.join(marker).is_file())
+                || (self.markers.iter().any(|marker| marker.contains('*'))
+                    && std::fs::read_dir(dir)
+                        .ok()
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .any(|entry| {
+                            entry.file_type().is_ok_and(|kind| kind.is_file())
+                                && entry
+                                    .file_name()
+                                    .to_str()
+                                    .is_some_and(|name| self.has_marker(name))
+                        }))
+        };
+        let mut roots = BTreeSet::new();
+        for file in files.iter().filter(|file| self.covers(file)) {
+            let absolute = root.join(file);
+            let owner = absolute
+                .ancestors()
+                .skip(1)
+                .take_while(|dir| dir.starts_with(root))
+                .find(|dir| marker_in(dir))
+                .with_context(|| {
+                    format!(
+                        "{file} has no owning {} inside the analysis root; \
+                         run from the package or workspace root",
+                        self.markers.join(" or ")
+                    )
+                })?;
+            roots.insert(crate::scan::slash(owner.strip_prefix(root)?));
+        }
+        Ok(roots.into_iter().collect())
     }
 
     fn roots(&self, files: &[String]) -> Vec<String> {
@@ -468,76 +659,85 @@ pub fn run(
     jobs: Jobs,
     config: &crate::config::Config,
 ) -> Result<Indexed> {
-    let mut dart_indexed = dart::run(root, files, excluded, cache, config)?;
-    let (mut ran, mut cached) = (0, 0);
+    let context = RunContext {
+        root,
+        files,
+        excluded,
+        config,
+    };
     let keyed: Vec<String> = files.iter().chain(excluded).cloned().collect();
-    let mut wanted: Vec<&String> = Vec::new();
     let mut groups = Vec::new();
+    let mut wanted = Vec::new();
     for language in INDEXERS {
-        if language.name() == "dart" {
+        wanted.extend(files.iter().filter(|file| language.covers(file)).cloned());
+        if !files.iter().any(|file| language.covers(file)) {
             continue;
         }
-        wanted.extend(files.iter().filter(|f| language.covers(f)));
-        if !files.iter().any(|f| language.covers(f)) {
-            continue;
-        }
-        // Source files with no `go.mod` or `tsconfig.json` above them are not
-        // indexed; they are reported as uncovered, or can be `exclude`d.
-        let roots = language.roots(files);
+        let roots = language.index_roots(root, files)?;
         if !roots.is_empty() {
             groups.push((language, roots));
         }
     }
-    let results = in_parallel(&groups, jobs.get(), |(language, roots)| {
-        roots
-            .iter()
-            .map(|dir| index_dir(language, root, dir, &keyed, cache, &config.go.tags))
-            .collect::<Result<Vec<_>>>()
-    })?;
+    let results = in_parallel(
+        &groups,
+        jobs.get(),
+        |(language, roots)| -> Result<Indexed> {
+            let mut reader = (language.reader)();
+            let mut parts = Vec::new();
+            let mut gaps = Vec::new();
+            let (mut ran, mut cached) = (0, 0);
+            for dir in roots {
+                let (read, hit) = index_dir(
+                    language,
+                    reader.as_mut(),
+                    root,
+                    dir,
+                    &keyed,
+                    cache,
+                    &config.go.tags,
+                )?;
+                parts.push(read.documents);
+                gaps.extend(read.gaps);
+                if hit {
+                    cached += 1;
+                } else {
+                    ran += 1;
+                }
+            }
+            let mut indexed = reader.finish(language, Documents::merged(parts)?, gaps, &context)?;
+            indexed.ran = ran;
+            indexed.cached = cached;
+            Ok(indexed)
+        },
+    )?;
     let mut parts = Vec::new();
-    if let Some(indexed) = dart_indexed.take() {
+    let mut analysis_partial = Vec::new();
+    let mut uncovered = BTreeSet::new();
+    let (mut ran, mut cached) = (0, 0);
+    for indexed in results {
+        parts.push(indexed.documents.0);
+        analysis_partial.extend(indexed.analysis_partial);
+        uncovered.extend(indexed.uncovered);
         ran += indexed.ran;
         cached += indexed.cached;
-        wanted.extend(
-            files
-                .iter()
-                .filter(|f| registry::is(Path::new(f), &registry::DART)),
-        );
-        parts.push(indexed.documents.0);
-        dart_indexed = Some(Indexed {
-            documents: Documents::default(),
-            ..indexed
-        });
-    }
-    for (documents, from_cache) in results.into_iter().flatten() {
-        parts.push(documents);
-        if from_cache {
-            cached += 1;
-        } else {
-            ran += 1;
-        }
     }
     let documents = if parts.is_empty() {
         Documents::default()
     } else {
         Documents::merged(parts)?
     };
-    let indexed: BTreeSet<&str> = documents.0.iter().map(|d| d.path.as_str()).collect();
-    let mut uncovered: BTreeSet<String> = wanted
-        .into_iter()
-        .filter(|f| !indexed.contains(f.as_str()))
-        .cloned()
-        .collect();
-    if let Some(dart) = &dart_indexed {
-        uncovered.extend(dart.uncovered.iter().cloned());
-    }
-    let uncovered = uncovered.into_iter().collect();
+    let covered: BTreeSet<&str> = documents.0.iter().map(|d| d.path.as_str()).collect();
+    uncovered.extend(
+        wanted
+            .into_iter()
+            .filter(|file| !covered.contains(file.as_str())),
+    );
     Ok(Indexed {
-        analysis_partial: dart_indexed.map_or_else(Vec::new, |d| d.analysis_partial),
         documents,
+        analysis_partial,
+        uncovered: uncovered.into_iter().collect(),
         ran,
         cached,
-        uncovered,
     })
 }
 
@@ -644,15 +844,8 @@ fn cache_dir() -> Option<PathBuf> {
     Some(user.join("easement"))
 }
 
-/// Everything that decides what an indexer would write: the indexer itself, its
-/// environment ([`key_env`]) and
-/// the name and content of every project file under `dir` that the indexer reads
-/// (`Language::inputs`, all but build output), plus the files that sit directly in the directories above `dir`
-/// (`tsconfig.base.json`, `go.work`, a root `package.json`), which the project
-/// files extend. Nothing about the checkout (its path, the modification times)
-/// is in the key, so a worktree of the same code reuses the index. Dependencies
-/// outside the project are not covered; `--no-cache` is for when they change
-/// without a lock file.
+/// Hash the indexer, configured inputs, commands and inherited environment.
+/// Unverifiable inputs disable caching; they never become a reusable weak key.
 fn fingerprint(
     language: &Indexer,
     binary: &Path,
@@ -660,37 +853,32 @@ fn fingerprint(
     dir: &str,
     files: &[String],
     env: &[(String, String)],
-) -> u64 {
-    let mut hasher = StableHasher::default();
-    language.name().hash(&mut hasher);
-    env.hash(&mut hasher);
-    (language.args)(Path::new("")).hash(&mut hasher);
-    what_runs(binary, language.binary, &root.join(dir), &multiplexers()).hash(&mut hasher);
-    let prefix = if dir.is_empty() {
-        String::new()
-    } else {
-        format!("{dir}/")
-    };
-    let above = |f: &str| {
-        let parent = relpath::parent(f);
-        parent.len() < dir.len() && (parent.is_empty() || dir.starts_with(&format!("{parent}/")))
-    };
-    let mut seen: Vec<(&str, Option<u64>)> = files
-        .iter()
-        .filter(|f| {
-            (f.starts_with(&prefix) && !language.in_skip_dir(f) && (language.inputs)(f)) || above(f)
-        })
-        .map(|f| {
-            // An unreadable file is a different state from every readable one.
-            let content = std::fs::read(root.join(f))
-                .ok()
-                .map(|bytes| content_hash(&bytes));
-            (f.as_str(), content)
-        })
-        .collect();
-    seen.sort();
-    seen.hash(&mut hasher);
-    hasher.finish()
+) -> Result<u64> {
+    let mut hash = StableHasher::default();
+    "easement-index-v2".hash(&mut hash);
+    language.name().hash(&mut hash);
+    env.hash(&mut hash);
+    (language.args)(Path::new("")).hash(&mut hash);
+    let identity = what_runs(binary, language.binary, &root.join(dir), &multiplexers());
+    if !matches!(identity, Runs::Binary((_, Some(_), _))) {
+        bail!("indexer implementation cannot be verified for caching");
+    }
+    identity.hash(&mut hash);
+    let mut inputs = (language.inputs)(&InputContext {
+        language,
+        binary,
+        root,
+        dir,
+        files,
+    })?;
+    // Read content again even if the implementation identity was memoized. A
+    // replacement preserving size and mtime must not reuse an extraction.
+    inputs.push(Input::File(binary.to_path_buf()));
+    if let Runs::Binary((Some(real), _, _)) = identity {
+        inputs.push(Input::File(real));
+    }
+    cache::hash_inputs(inputs, root, &mut hash)?;
+    Ok(hash.finish())
 }
 
 /// The environment an indexer runs with, as far as it changes the index: the
@@ -850,8 +1038,8 @@ fn cache_file(language: &Indexer, dir: &str, key: u64) -> Option<(PathBuf, Strin
     (language.name(), dir).hash(&mut hasher);
     let prefix = format!("{:016x}-", hasher.finish());
     Some((
-        cache_dir()?.join(format!("{prefix}{key:016x}.scip")),
-        prefix,
+        cache_dir()?.join(format!("v2-{prefix}{key:016x}.idx")),
+        format!("v2-{prefix}"),
     ))
 }
 
@@ -885,21 +1073,28 @@ pub fn diagnose(root: &Path, files: &[String]) -> Vec<Diagnosis> {
         .iter()
         .filter(|language| files.iter().any(|f| language.covers(f)))
         .map(|language| {
-            if language.name() == "dart" {
-                return dart::diagnosis(root, files, language);
-            }
             let binary = which::which(language.binary).ok();
-            let version = binary.as_deref().and_then(version_of);
-            let problems = language
-                .roots(files)
-                .iter()
-                .filter_map(|dir| {
-                    let shown = if dir.is_empty() { "." } else { dir };
-                    (language.needs)(root, &root.join(dir), shown)
-                        .err()
-                        .map(|e| e.to_string())
-                })
-                .collect();
+            let mut problems = Vec::new();
+            match language.index_roots(root, files) {
+                Ok(roots) => {
+                    for dir in roots {
+                        let shown = if dir.is_empty() { "." } else { &dir };
+                        if let Err(error) = (language.needs)(root, &root.join(&dir), shown) {
+                            problems.push(format!("{error:#}"));
+                        }
+                    }
+                }
+                Err(error) => problems.push(format!("{error:#}")),
+            }
+            let version = binary.as_deref().and_then(|path| {
+                match version_of(path, language.strict_version) {
+                    Ok(version) => version,
+                    Err(error) => {
+                        problems.push(format!("{error:#}"));
+                        None
+                    }
+                }
+            });
             Diagnosis {
                 language: language.name(),
                 binary: language.binary,
@@ -915,25 +1110,43 @@ pub fn diagnose(root: &Path, files: &[String]) -> Vec<Diagnosis> {
 }
 
 /// The first line a tool prints for `--version`.
-fn version_of(binary: &Path) -> Option<String> {
-    let output = Command::new(binary).arg("--version").output().ok()?;
-    [output.stdout, output.stderr].iter().find_map(|bytes| {
+fn version_of(binary: &Path, strict: bool) -> Result<Option<String>> {
+    let output = match Command::new(binary).arg("--version").output() {
+        Ok(output) => output,
+        Err(error) if strict => {
+            return Err(error).with_context(|| format!("cannot execute {}", binary.display()));
+        }
+        Err(_) => return Ok(None),
+    };
+    if strict && !output.status.success() {
+        bail!(
+            "{} --version failed ({}); reinstall the indexer: {}",
+            binary.file_name().unwrap_or_default().to_string_lossy(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .next()
+                .unwrap_or("no diagnostic")
+        );
+    }
+    Ok([output.stdout, output.stderr].iter().find_map(|bytes| {
         String::from_utf8_lossy(bytes)
             .lines()
             .map(str::trim)
             .find(|line| !line.is_empty())
             .map(str::to_string)
-    })
+    }))
 }
 
 fn index_dir(
     language: &Indexer,
+    reader: &mut dyn Reader,
     root: &Path,
     dir: &str,
     files: &[String],
     cache: CacheUse,
     go_tags: &[String],
-) -> Result<(Vec<Document>, bool)> {
+) -> Result<(ReadFacts, bool)> {
     let env = environment(language, go_tags);
     let cwd = if dir.is_empty() {
         root.to_path_buf()
@@ -950,27 +1163,31 @@ fn index_dir(
             language.install
         )
     })?;
-    let key = fingerprint(
-        language,
-        &binary,
-        root,
-        dir,
-        files,
-        &key_env(language, std::env::vars_os(), &env),
-    );
-    let cached = (cache != CacheUse::Off)
-        .then(|| cache_file(language, dir, key))
-        .flatten();
+    let key = if cache == CacheUse::Off {
+        None
+    } else {
+        fingerprint(
+            language,
+            &binary,
+            root,
+            dir,
+            files,
+            &key_env(language, std::env::vars_os(), &env),
+        )
+        .ok()
+    };
+    let cached = key.and_then(|key| cache_file(language, dir, key));
     if let Some((path, _)) = &cached
         && let Ok(bytes) = std::fs::read(path)
-        && let Ok(documents) = scip::parse(&bytes, root, Path::new(dir))
-        && !documents.is_empty()
+        && let Ok(artifact) = cache::decode(&bytes)
+        && let Ok(mut read) = reader.read(artifact.index, root, Path::new(dir))
+        && !read.documents.is_empty()
     {
-        // Recency decides what pruning keeps: best effort, a failure only ages the entry.
         if let Ok(file) = std::fs::File::options().write(true).open(path) {
             let _ = file.set_modified(std::time::SystemTime::now());
         }
-        return Ok((documents, true));
+        read.gaps.extend(artifact.gaps);
+        return Ok((read, true));
     }
     if cache == CacheUse::Only {
         return Err(NotCached {
@@ -997,7 +1214,7 @@ fn index_dir(
         }
         None => out.path().join("index.scip"),
     };
-    let output = Command::new(binary)
+    let output = Command::new(&binary)
         .args((language.args)(&file))
         .envs(env.iter().map(|(k, v)| (*k, v)))
         .current_dir(&cwd)
@@ -1035,28 +1252,32 @@ fn index_dir(
         let _ = std::fs::remove_file(&file);
     }
     let bytes = bytes?;
-    let documents = scip::parse(&bytes, root, Path::new(dir))
+    let mut read = reader
+        .read(&bytes, root, Path::new(dir))
         .with_context(|| format!("cannot read the index of {} in {shown}", language.binary))?;
-    if documents.is_empty() {
+    if read.documents.is_empty() {
         bail!(
             "{} indexed no files in {shown}; check what its project file includes",
             language.binary
         );
     }
+    let validation = reader.validate(root, &cwd)?;
     if let Some((path, prefix)) = cached
-        && let Some(parent) = path.parent()
+        && key
+            == fingerprint(
+                language,
+                &binary,
+                root,
+                dir,
+                files,
+                &key_env(language, std::env::vars_os(), &env),
+            )
+            .ok()
     {
-        // Best effort: a cache that cannot be written only costs the next run its speed.
-        let _ = std::fs::create_dir_all(parent);
-        // Written to a temporary file first, so that a run in another checkout never
-        // reads half an index: a cut at a message boundary would parse as fewer files.
-        let _ = tempfile::NamedTempFile::new_in(parent).and_then(|mut file| {
-            std::io::Write::write_all(&mut file, &bytes)?;
-            file.persist(&path).map_err(|e| e.error)
-        });
-        prune(parent, &prefix);
+        cache::write(&path, &prefix, &bytes, &validation);
     }
-    Ok((documents, false))
+    read.gaps.extend(validation);
+    Ok((read, false))
 }
 
 /// Entries of one directory and indexer that are kept: checkouts of the same
@@ -1337,6 +1558,40 @@ mod tests {
             .map(String::from)
             .to_vec();
         assert_eq!(INDEXERS[7].roots(&nested), ["a", "b"]);
+    }
+
+    #[test]
+    fn source_owners_skip_workspace_containers_and_empty_packages() {
+        let dart = INDEXERS.iter().find(|i| i.name() == "dart").unwrap();
+        let files = [
+            "pubspec.yaml",
+            "packages/app/pubspec.yaml",
+            "packages/app/lib/app.dart",
+            "packages/empty/pubspec.yaml",
+        ]
+        .map(String::from);
+        assert_eq!(
+            dart.index_roots(tempfile::tempdir().unwrap().path(), &files)
+                .unwrap(),
+            ["packages/app"]
+        );
+    }
+
+    #[test]
+    fn source_owners_use_the_nearest_marker_and_never_escape_the_analysis_root() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("workspace");
+        std::fs::create_dir_all(root.join("package/nested/lib")).unwrap();
+        std::fs::write(temporary.path().join("pubspec.yaml"), "name: outside").unwrap();
+        let dart = INDEXERS.iter().find(|i| i.name() == "dart").unwrap();
+        let files = ["package/nested/lib/file.dart".to_string()];
+        assert!(dart.index_roots(&root, &files).is_err());
+        // Markers hidden from the source walk still determine ownership.
+        std::fs::write(root.join("package/pubspec.yaml"), "name: package").unwrap();
+        assert_eq!(dart.index_roots(&root, &files).unwrap(), ["package"]);
+        std::fs::write(root.join("package/nested/pubspec.yaml"), "name: nested").unwrap();
+        assert_eq!(dart.index_roots(&root, &files).unwrap(), ["package/nested"]);
+        assert!(dart.index_roots(&root, &[]).unwrap().is_empty());
     }
 
     #[test]

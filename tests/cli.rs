@@ -1741,7 +1741,7 @@ fn dart_cache_records_hits_and_invalidates_hidden_resolution_and_local_inputs() 
     run(&["check"]).success();
     run(&["check", "--cache-only"]).success();
     for entry in fs::read_dir(cache.path()).unwrap().flatten() {
-        if entry.file_name().to_string_lossy().starts_with("dart-v1-") {
+        if entry.file_name().to_string_lossy().starts_with("v2-") {
             fs::write(entry.path(), "{}").unwrap();
         }
     }

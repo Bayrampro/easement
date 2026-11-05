@@ -287,8 +287,6 @@ impl Coverage {
     }
 }
 
-/// What a verdict over cached indexes rests on. Not a reason for `partial`: the
-/// key holds what decides an index, but not dependencies outside the project.
 /// Gaps inside indexed documents, with their source location.
 pub fn analysis_reasons(stats: &Stats) -> Vec<String> {
     stats
@@ -305,16 +303,14 @@ pub fn analysis_reasons(stats: &Stats) -> Vec<String> {
         .collect()
 }
 
+/// What a verdict over cached indexes rests on. Not a reason for `partial`: the
+/// key holds configured inputs; state outside them still needs re-verification.
 pub fn cache_note(stats: &Stats) -> Option<String> {
-    if stats.from_cache > 0 && stats.dedicated_dart_cache {
-        return Some(format!(
-            "{} index(es) came from the Dart cache, keyed on resolved package inputs, SDK artifacts, indexer implementation and environment; run with `--no-cache` to index and validate again",
-            stats.from_cache
-        ));
-    }
     (stats.from_cache > 0).then(|| {
         format!(
-            "{} index(es) came from the cache, keyed on the project files, the indexer and its environment but not on dependencies outside the project; if those changed without a lock file, run with `--no-cache` to index again",
+            "{} index(es) came from the cache, keyed on the configured source, dependency, \
+             tool and environment inputs; state outside those inputs is not verified, \
+             so run with `--no-cache` after changing it",
             stats.from_cache
         )
     })

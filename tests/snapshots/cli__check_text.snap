@@ -5,6 +5,6 @@ expression: "stdout_of(easement_cached(&root, &[\"check\"], cache.path()).code(1
 ---
 internal/handlers/books.go:6: handler -> repository is not allowed (imports internal/repository/books.go) [dependency]
 
-1 index(es) came from the cache, keyed on the project files, the indexer and its environment but not on dependencies outside the project; if those changed without a lock file, run with `--no-cache` to index again
+1 index(es) came from the cache, keyed on the configured source, dependency, tool and environment inputs; state outside those inputs is not verified, so run with `--no-cache` after changing it
 
 easement failed: 1 violation(s), 0 stale, 0 legalized; 5 files, 6 internal deps, 1 files outside components

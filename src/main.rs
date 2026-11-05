@@ -355,11 +355,6 @@ impl Project {
             .count();
         stats.suppressed = suppressed;
         (stats.indexed, stats.from_cache) = scan.indexed;
-        stats.dedicated_dart_cache = !scan.all_files.iter().any(|file| {
-            indexer::INDEXERS
-                .iter()
-                .any(|indexer| indexer.name() != "dart" && indexer.covers(file))
-        });
         stats.uncovered = scan
             .uncovered
             .iter()
